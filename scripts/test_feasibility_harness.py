@@ -13,13 +13,14 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe_exit=0, scope="--packet-only", build_exit=0, rekey=False):
+    def run_harness(self, *, probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         (root / "scripts").mkdir()
         harness = root / "scripts/verify-feasibility.sh"
         shutil.copyfile(Path(__file__).with_name("verify-feasibility.sh"), harness)
+        shutil.copyfile(Path(__file__).with_name("run-feasibility-isolated.sh"), root / "scripts/run-feasibility-isolated.sh")
         (root / "Cargo.lock").write_text("# synthetic lockfile\n")
         tools = root / "tools"
         tools.mkdir()
@@ -30,7 +31,8 @@ class FeasibilityHarnessTests(unittest.TestCase):
             # Only the namespace launcher is replaced. The real timeout still
             # supervises a real child; these tests do not claim network isolation.
             "unshare": 'while [[ "$1" != bash ]]; do shift; done\nexec "$@"\n',
-            "ip": "exit 0\n",
+            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\n',
+            "cat": f'if [[ "$1" == /proc/self/uid_map ]]; then echo "{mapping}"; else exec /bin/cat "$@"; fi\n',
         }
         for name, source in commands.items():
             path = tools / name
@@ -83,6 +85,34 @@ class FeasibilityHarnessTests(unittest.TestCase):
         outcome = (evidence / "result.txt").read_text()
         self.assertIn("rekey_probe_exit=0", outcome)
         self.assertNotIn("NOT RUN long-lived rekey", outcome)
+
+    def test_kernel_peer_is_removed_and_verified_after_success(self):
+        result, evidence = self.run_harness(scope="--kernel-peer")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fixture-probe --kernel-peer", (evidence / "probe.log").read_text())
+        self.assertIn("CLEANUP independent kernel WireGuard interface removed and verified", result.stdout)
+        self.assertIn("kernel_peer_probe_exit=0", (evidence / "result.txt").read_text())
+
+    def test_failed_kernel_probe_still_removes_interface(self):
+        result, _ = self.run_harness(scope="--kernel-peer", probe_exit=7)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn("CLEANUP independent kernel WireGuard interface removed and verified", result.stdout)
+
+    def test_kernel_cleanup_failure_cannot_report_success(self):
+        result, evidence = self.run_harness(scope="--kernel-peer", cleanup_exit=9)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("FAIL independent kernel interface cleanup", (evidence / "probe.log").read_text())
+
+    def test_probe_failure_is_preserved_when_kernel_cleanup_also_fails(self):
+        result, evidence = self.run_harness(scope="--kernel-peer", probe_exit=7, cleanup_exit=9)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn("FAIL independent kernel interface cleanup", (evidence / "probe.log").read_text())
+
+    def test_initial_user_namespace_is_rejected_before_network_mutation(self):
+        result, evidence = self.run_harness(scope="--kernel-peer", mapping="0 0 4294967295")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("requires a fresh single-UID", (evidence / "probe.log").read_text())
+        self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
 
 
 if __name__ == "__main__":

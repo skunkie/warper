@@ -3,31 +3,41 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Initial packet-level harness. Full kernel/independent-peer gates remain open.
+# Packet and independent kernel-peer probes; full Phase 0 gates remain open.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only [--rekey]]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--kernel-peer] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --kernel-peer ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
-if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" != --packet-only ) ]]; then
-    echo "--rekey requires wireguard-stack --packet-only" >&2
+if [[ "$scope" == --kernel-peer && "$probe" != wireguard-stack ]]; then
+    echo "--kernel-peer requires wireguard-stack" >&2
+    exit 2
+fi
+if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate ) ]]; then
+    echo "--rekey requires wireguard-stack with an explicit probe scope" >&2
     exit 2
 fi
 probe_arguments=()
+isolation_mode=packet
+if [[ "$scope" == --kernel-peer ]]; then
+    probe_arguments+=(--kernel-peer)
+    isolation_mode=kernel
+fi
 timeout_seconds=20
 if [[ "$rekey" == --rekey ]]; then
     probe_arguments+=(--rekey)
     timeout_seconds=150
+    if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=180; fi
 fi
-for tool in cargo rustc git timeout unshare ip bash; do
+for tool in cargo rustc git timeout unshare ip bash python3 cat; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Required feasibility tool is missing: $tool" >&2
         exit 1
@@ -67,18 +77,21 @@ fi
 status=0
 # timeout owns the process group; unshare kills its namespace child if it exits.
 # Namespace destruction independently releases sockets even on probe failure.
-# No resolver, system bus, journal, routes, or persistent interfaces are touched.
-# The positional parameter must expand in the namespace's child shell.
-# shellcheck disable=SC2016
+# Kernel-peer changes are confined to the namespace child and independently removed.
 timeout --signal=TERM --kill-after=2s "${timeout_seconds}s" \
     unshare --user --map-root-user --net --mount --fork --kill-child=KILL \
-    bash -euc 'ip link set lo up
-exec "$@"' bash "$repository_root/target/debug/$probe" "${probe_arguments[@]}" > "$run_directory/probe.log" 2>&1 || status=$?
+    bash "$repository_root/scripts/run-feasibility-isolated.sh" "$isolation_mode" \
+    "$repository_root/target/debug/$probe" "${probe_arguments[@]}" > "$run_directory/probe.log" 2>&1 || status=$?
 cat "$run_directory/probe.log"
 {
     echo "probe_exit=$status"
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
-    echo "NOT RUN kernel TUN/utun traffic, distinct protocol backend instances, independent WireGuard implementation"
+    echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
+    if [[ "$scope" == --kernel-peer ]]; then
+        echo "kernel_peer_probe_exit=$status"
+    else
+        echo "NOT RUN independent WireGuard implementation"
+    fi
     echo "NOT RUN MTU/ICMP acceptance, backend outage/crash injection, native macOS"
     if [[ "$rekey" == --rekey ]]; then
         echo "rekey_probe_exit=$status"
@@ -90,8 +103,8 @@ if [[ "$status" -ne 0 ]]; then
     exit "$status"
 fi
 if [[ "$scope" == gate ]]; then
-    echo "Phase 0 gate incomplete: only packet-level evidence is implemented." >&2
+    echo "Phase 0 gate incomplete: required TUN, contract, and failure evidence remains open." >&2
     echo "INCOMPLETE full feasibility gate" >> "$run_directory/result.txt"
     exit 1
 fi
-echo "PASS packet-only probe; full Phase 0 gate remains open." >> "$run_directory/result.txt"
+echo "PASS ${scope#--} probe; full Phase 0 gate remains open." >> "$run_directory/result.txt"

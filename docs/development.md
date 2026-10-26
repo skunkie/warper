@@ -136,15 +136,22 @@ cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
+./scripts/verify-feasibility.sh wireguard-stack --kernel-peer
+./scripts/verify-feasibility.sh wireguard-stack --kernel-peer --rekey
 ```
 
 Tests require permission to bind loopback UDP sockets. On Linux, the harness
 also requires Bash, Git, coreutils (`timeout`), util-linux (`unshare`),
-iproute2, and enabled unprivileged user/network/mount namespaces. It builds
-before isolation, creates disposable namespaces, and enables only their
-loopback link. It never touches resolver settings, the host bus, or persistent
-network state. The timeout supervises the probe process group; `unshare`
-reaps its child and destroys the namespace independently of probe cleanup.
+iproute2, Python 3, and enabled unprivileged user/network/mount namespaces.
+It builds before isolation and creates disposable namespaces. Packet-only
+mode enables only loopback. Kernel-peer mode also requires a kernel with
+WireGuard support and creates an owned `wg-feasibility` interface entirely
+inside that namespace. The helper never touches resolver settings, the host
+bus, or persistent host state. The timeout supervises the process group;
+`unshare` reaps its child and destroys the namespace independently of the
+probe's cleanup. The helper checks for a single-UID mapped user namespace
+before network mutation, removes its kernel interface after success/failure,
+and verifies removal using the link inventory.
 Do not run against the live host network to work around isolation failures.
 
 The default host probe injects controlled IPv4/IPv6 packets into direct
@@ -195,6 +202,37 @@ it does not prove interoperability with an independent WireGuard peer.
 Polling every millisecond is experimental and is not a production scheduling
 or performance claim. Run long-lived rekey inside a disposable environment.
 
+The explicit `--kernel-peer` scope instead connects the same Rust active
+stack and BoringTun client to Linux's independent WireGuard implementation.
+The kernel peer has `10.66.66.10/24` and `fd66:66::10/64`, MTU 1280, and
+allows only the client's two inner addresses. Its UDP listener uses an
+OS-selected port; only loopback carries outer traffic. Configuration uses
+the pinned Linux-only `wireguard-uapi` library, followed by readback of the
+public key, peer count, allowed IPs, and listening port. Key-bearing messages
+and device snapshots are never logged. This kernel interface is a test peer,
+not part of the production userspace WireGuard backend.
+
+Controlled standard-library TCP/UDP servers check addresses and synthetic
+payloads, preserve empty datagrams, and return TCP response bytes after
+request FIN. The probe retains and joins both server threads, bounds socket
+waits, and checks their results alongside the client result. The first IPv4
+case deliberately drops one handshake initiation and requires the library's
+retry to recover within the ten-second setup budget. No application payload
+is replayed by the harness. After EOF it continues pumping for a 100 ms
+controlled loopback drain so delayed TCP acknowledgements are emitted before
+replacing the fixture session. This is experimental fixture timing, not a
+production shutdown guarantee. Long mode additionally checks at least 135
+seconds of exchange, a second initiation, recent completed handshake state
+on both implementations, and continuing heartbeat replies.
+
+The kernel-peer CLI refuses the initial/broad user namespace and a preexisting
+configured interface. It requires the helper-created single-UID namespace;
+the kernel additionally enforces CAP_NET_ADMIN in the target network
+namespace's owning user namespace. It is not invoked by ordinary Cargo
+tests. On non-Linux platforms it reports an unsupported environment.
+Missing kernel support or denied namespace operations fail explicitly; there
+is no substitution with the same-implementation peer.
+
 The required gate entry points are also available:
 
 ```sh
@@ -203,8 +241,8 @@ The required gate entry points are also available:
 ```
 
 They run the packet experiment but **return nonzero while the full gate is
-incomplete**, even if the packet experiment passes. Kernel TUN/utun traffic,
-two distinct protocol backend instances, independent WireGuard interoperability,
+incomplete**, even if the packet or kernel-peer experiment passes. Host-facing
+TUN/utun traffic, distinct SSH/SOCKS backend instances, production contracts,
 backend outage/crash cleanup, and MTU/ICMP acceptance are still
 unimplemented or unverified. Kernel tests will require a disposable
 TUN-capable Linux environment; native macOS gates require a separate runner.
@@ -220,11 +258,11 @@ TUN-capable environment for that gate.
 Each harness run writes environment/revision information, the lockfile,
 build/probe output, exit status, and explicit unrun gates into a unique
 directory under `target/evidence/phase-0/`. Its timeout is 20 seconds for
-ordinary packet probes and 150 seconds for the explicit WireGuard
-`--packet-only --rekey` case. The latter runs the same disposable namespaces
-and records rekey status separately. The evidence README records commands
-and their scope. Full acceptance must extend the harness before the gate
-can pass.
+ordinary probes, 150 seconds for `--packet-only --rekey`, and 180 seconds
+for `--kernel-peer --rekey`, including bounded handshake recovery and fixture
+drain. The latter modes record rekey status separately. The evidence README
+records commands and their scope. Full acceptance must extend the harness
+before the gate can pass.
 
 Raw logs, packet summaries, environment metadata, and comparison results
 belong under ignored `target/evidence/` or CI artifacts, with synthetic peers

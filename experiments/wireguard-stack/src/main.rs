@@ -7,6 +7,9 @@
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
 
+#[cfg(target_os = "linux")]
+mod kernel_peer;
+
 use std::{
     io,
     net::{IpAddr, SocketAddr, UdpSocket},
@@ -33,6 +36,8 @@ struct Transport {
     allowed_source: IpAddr,
     initiations: usize,
     encrypted_packets: usize,
+    drop_first_handshake: bool,
+    dropped_handshakes: usize,
 }
 
 impl Transport {
@@ -43,6 +48,11 @@ impl Transport {
             TunnResult::WriteToNetwork(packet) => {
                 if packet.first() == Some(&1) {
                     self.initiations += 1;
+                    if self.drop_first_handshake {
+                        self.drop_first_handshake = false;
+                        self.dropped_handshakes += 1;
+                        return Ok(true);
+                    }
                 }
                 ensure!(
                     self.socket.send_to(packet, self.remote)? == packet.len(),
@@ -108,9 +118,21 @@ impl Transport {
 fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
-        arguments.is_empty() || arguments == ["--rekey"],
-        "usage: wireguard-stack [--rekey]"
+        arguments.is_empty()
+            || arguments == ["--rekey"]
+            || arguments == ["--kernel-peer"]
+            || arguments == ["--kernel-peer", "--rekey"],
+        "usage: wireguard-stack [--kernel-peer] [--rekey]"
     );
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--kernel-peer")
+    {
+        #[cfg(target_os = "linux")]
+        return kernel_peer::run(arguments.len() == 2);
+        #[cfg(not(target_os = "linux"))]
+        bail!("kernel WireGuard peer requires Linux disposable namespaces");
+    }
     for ipv6 in [false, true] {
         probe(ipv6, Duration::ZERO)?;
         println!("PASS active TCP/UDP, empty datagram, FIN, IPv6={ipv6}; loopback BoringTun peer");
@@ -125,43 +147,18 @@ fn main() -> Result<()> {
 fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
-    let mut client = Peer::new(client_address, 40000)?;
     let mut server = Peer::new(server_address, 9000)?;
     server
         .sockets
         .get_mut::<tcp::Socket>(server.tcp)
         .listen((server_address, 9000))?;
-    client.sockets.get_mut::<tcp::Socket>(client.tcp).connect(
-        client.interface.context(),
-        (server_address, 9000),
-        (client_address, 40001),
-    )?;
-
-    let client_socket = UdpSocket::bind("127.0.0.1:0")?;
     let server_socket = UdpSocket::bind("127.0.0.1:0")?;
-    client_socket.set_nonblocking(true)?;
     server_socket.set_nonblocking(true)?;
-    // Published synthetic test keys. Never use them with external peers.
+    let (mut client, mut client_transport) = create_client(ipv6, server_socket.local_addr()?)?;
     let client_key = StaticSecret::from([0x11; 32]);
-    let server_key = StaticSecret::from([0x22; 32]);
-    let mut client_transport = Transport {
-        tunnel: Tunn::new(
-            client_key.clone(),
-            PublicKey::from(&server_key),
-            None,
-            Some(1),
-            1,
-            None,
-        ),
-        remote: server_socket.local_addr()?,
-        socket: client_socket,
-        allowed_source: server_address,
-        initiations: 0,
-        encrypted_packets: 0,
-    };
     let mut server_transport = Transport {
         tunnel: Tunn::new(
-            server_key,
+            StaticSecret::from([0x22; 32]),
             PublicKey::from(&client_key),
             None,
             Some(1),
@@ -173,7 +170,60 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
         allowed_source: client_address,
         initiations: 0,
         encrypted_packets: 0,
+        drop_first_handshake: false,
+        dropped_handshakes: 0,
     };
+    run_client(
+        ipv6,
+        minimum_duration,
+        &mut client,
+        &mut client_transport,
+        Some((&mut server, &mut server_transport)),
+    )
+}
+
+fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
+    let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
+    let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
+    let client = Peer::new(client_address, 40000)?;
+    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    socket.set_nonblocking(true)?;
+    // Published synthetic test keys, never credentials for external peers.
+    let server_key = StaticSecret::from([0x22; 32]);
+    let transport = Transport {
+        tunnel: Tunn::new(
+            StaticSecret::from([0x11; 32]),
+            PublicKey::from(&server_key),
+            None,
+            Some(1),
+            1,
+            None,
+        ),
+        socket,
+        remote,
+        allowed_source: server_address,
+        initiations: 0,
+        encrypted_packets: 0,
+        drop_first_handshake: false,
+        dropped_handshakes: 0,
+    };
+    Ok((client, transport))
+}
+
+fn run_client(
+    ipv6: bool,
+    minimum_duration: Duration,
+    client: &mut Peer,
+    client_transport: &mut Transport,
+    mut server: Option<(&mut Peer, &mut Transport)>,
+) -> Result<()> {
+    let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
+    let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
+    client.sockets.get_mut::<tcp::Socket>(client.tcp).connect(
+        client.interface.context(),
+        (server_address, 9000),
+        (client_address, 40001),
+    )?;
     let payloads = [vec![], vec![0x31], vec![0x72; 257]];
     for payload in &payloads {
         client
@@ -182,7 +232,9 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
             .send_slice(payload, (server_address, 9000))?;
     }
     let start = Instant::now();
-    let deadline = minimum_duration + Duration::from_secs(5);
+    // A fresh peer may need WireGuard's first handshake retry after kernel
+    // initiation limiting. Keep this within the canonical 10-second setup budget.
+    let deadline = minimum_duration + Duration::from_secs(10);
     let mut next_heartbeat = Duration::from_secs(1);
     let mut sent = false;
     let mut request = Vec::new();
@@ -190,6 +242,7 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
     let mut response = Vec::new();
     let mut udp_received = 0;
     let mut heartbeat_pending = false;
+    let mut completion_started = None;
     loop {
         ensure!(
             start.elapsed() < deadline,
@@ -197,9 +250,11 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
         );
         let elapsed_ms = i64::try_from(start.elapsed().as_millis())?;
         client.poll(elapsed_ms);
-        server.poll(elapsed_ms);
-        client_transport.pump(&mut client)?;
-        server_transport.pump(&mut server)?;
+        client_transport.pump(client)?;
+        if let Some((server, transport)) = server.as_mut() {
+            server.poll(elapsed_ms);
+            transport.pump(server)?;
+        }
 
         let socket = client.sockets.get_mut::<tcp::Socket>(client.tcp);
         if !sent && socket.can_send() {
@@ -218,33 +273,35 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
             ensure!(response.len() <= RESPONSE.len(), "oversized TCP response");
         }
         let tcp_done = sent && !socket.may_recv();
-        let socket = server.sockets.get_mut::<tcp::Socket>(server.tcp);
-        if socket.can_recv() {
-            socket.recv(|bytes| {
-                request.extend_from_slice(bytes);
-                (bytes.len(), ())
-            })?;
-            ensure!(request.len() <= REQUEST.len(), "oversized TCP request");
-        }
-        if !replied && !socket.may_recv() && socket.can_send() {
-            ensure!(request == REQUEST, "TCP request/FIN changed");
-            ensure!(
-                socket.send_slice(RESPONSE)? == RESPONSE.len(),
-                "partial response admission"
-            );
-            socket.close();
-            replied = true;
-        }
+        if let Some((server, _)) = server.as_mut() {
+            let socket = server.sockets.get_mut::<tcp::Socket>(server.tcp);
+            if socket.can_recv() {
+                socket.recv(|bytes| {
+                    request.extend_from_slice(bytes);
+                    (bytes.len(), ())
+                })?;
+                ensure!(request.len() <= REQUEST.len(), "oversized TCP request");
+            }
+            if !replied && !socket.may_recv() && socket.can_send() {
+                ensure!(request == REQUEST, "TCP request/FIN changed");
+                ensure!(
+                    socket.send_slice(RESPONSE)? == RESPONSE.len(),
+                    "partial response admission"
+                );
+                socket.close();
+                replied = true;
+            }
 
-        let socket = server.sockets.get_mut::<udp::Socket>(server.udp);
-        if socket.can_recv() {
-            let (payload, metadata) = socket.recv()?;
-            let payload = payload.to_vec();
-            ensure!(
-                metadata.endpoint == SocketAddr::new(client_address, 40000).into(),
-                "UDP source changed"
-            );
-            socket.send_slice(&payload, metadata.endpoint)?;
+            let socket = server.sockets.get_mut::<udp::Socket>(server.udp);
+            if socket.can_recv() {
+                let (payload, metadata) = socket.recv()?;
+                let payload = payload.to_vec();
+                ensure!(
+                    metadata.endpoint == SocketAddr::new(client_address, 40000).into(),
+                    "UDP source changed"
+                );
+                socket.send_slice(&payload, metadata.endpoint)?;
+            }
         }
         let socket = client.sockets.get_mut::<udp::Socket>(client.udp);
         if socket.can_recv() {
@@ -278,14 +335,28 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
             && !heartbeat_pending
             && start.elapsed() >= minimum_duration
         {
+            // EOF can precede emission of a delayed TCP ACK. Keep driving the
+            // controlled loopback stacks before replacing this fixture session.
+            let completion = *completion_started.get_or_insert(start.elapsed());
+            if start.elapsed() - completion < Duration::from_millis(100) {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
             ensure!(response == RESPONSE, "TCP response after FIN changed");
             ensure!(
-                client_transport.encrypted_packets > 0 && server_transport.encrypted_packets > 0,
+                client_transport.encrypted_packets > 0
+                    && server
+                        .as_ref()
+                        .is_none_or(|(_, transport)| transport.encrypted_packets > 0),
                 "no outer traffic observed"
             );
             if minimum_duration >= REKEY_DURATION {
                 ensure!(
-                    client_transport.initiations + server_transport.initiations >= 2,
+                    client_transport.initiations
+                        + server
+                            .as_ref()
+                            .map_or(0, |(_, transport)| transport.initiations)
+                        >= 2,
                     "no second handshake initiation observed"
                 );
                 // A new session must actually complete, not merely attempt a handshake.
@@ -315,5 +386,31 @@ mod tests {
         for ipv6 in [false, true] {
             probe(ipv6, Duration::ZERO).unwrap();
         }
+    }
+
+    #[test]
+    fn controlled_initial_handshake_loss_is_counted_without_network_send() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let (mut peer, mut transport) =
+            create_client(false, receiver.local_addr().unwrap()).unwrap();
+        peer.sockets
+            .get_mut::<tcp::Socket>(peer.tcp)
+            .connect(
+                peer.interface.context(),
+                ("10.66.66.10".parse::<std::net::Ipv4Addr>().unwrap(), 9000),
+                ("10.66.66.2".parse::<std::net::Ipv4Addr>().unwrap(), 40001),
+            )
+            .unwrap();
+        peer.poll(0);
+        transport.drop_first_handshake = true;
+        transport.pump(&mut peer).unwrap();
+        assert_eq!(transport.initiations, 1);
+        assert_eq!(transport.dropped_handshakes, 1);
+        assert_eq!(transport.encrypted_packets, 0);
+        assert_eq!(
+            receiver.recv_from(&mut [0; 256]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
     }
 }

@@ -158,11 +158,30 @@ above remain open.
   No worker is spawned. It polls timers and packet I/O every millisecond,
   caps each receive/drain batch at 64, and verifies outer peer addresses
   and inner source addresses. A drain exceeding its budget fails instead
-  of truncating pending output. Normal exchange has a five-second deadline;
-  sustained testing adds five seconds to its requested duration. Keys are
+  of truncating pending output. Normal exchange has a ten-second deadline;
+  sustained testing adds ten seconds to its requested duration. Keys are
   fixed public synthetic values. Requests/responses and initial UDP message
   counts are bounded. The executable returns operational errors with context;
   it logs no payloads or keys.
+- `experiments/wireguard-stack/src/kernel_peer.rs`: the Linux-only independent
+  peer uses `wireguard-uapi` 3.0.1 to configure and read back the disposable
+  `wg-feasibility` interface. Both the executable and namespace helper reject
+  broad UID mappings before mutation; the harness creates fresh user, network,
+  and mount namespaces. The helper owns interface creation and independently
+  removes and verifies it on exit, including probe failure. Namespace teardown
+  is the final backstop. No host resolver or physical interface is changed.
+  Configuration readback verifies the public key, peer, listen port, and exact
+  allowed addresses before traffic. Blocking netlink calls rely on the outer
+  process deadline; this is not a finalized kernel ACK/ownership contract.
+  Each exchange retains two socket worker handles, uses bounded polling and
+  read/write waits, and joins both workers on success or failure. TCP replies
+  follow request EOF; UDP preserves empty and unequal datagrams. Initial
+  handshake loss is deliberate in the short IPv4 case. A 100 ms packet/timer
+  drain after completion flushes delayed TCP acknowledgements before fixture
+  session replacement. Normal harness runs have a 20-second outer deadline;
+  independent-peer rekey runs have 180 seconds. Worker deadlines add ten
+  seconds to the requested traffic duration. Errors preserve initial and
+  cleanup failures without dumping key-bearing netlink objects.
 
 The harness's external timeout and disposable namespace lifetime bound
 failed packet experiments independently of their cleanup. There is no TUN,

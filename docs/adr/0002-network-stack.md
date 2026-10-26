@@ -69,7 +69,8 @@ Sources and executable usage:
   `Tunn::new`, `encapsulate`, `decapsulate` (including empty-input draining),
   `update_timers`, and `stats` are exercised in
   `experiments/wireguard-stack/src/main.rs`. Default features are disabled;
-  no kernel WireGuard interface or BoringTun device backend is used.
+  the candidate uses no BoringTun device backend. The optional independent
+  peer fixture below configures a kernel WireGuard interface.
 
 The wrapper's nonempty UDP and TCP response-after-FIN/shutdown checks work
 with both inner address families. Its UDP writer silently discards empty
@@ -126,12 +127,39 @@ records concrete signatures, ownership, and remaining decisions.
 
 Active smoltcp sockets exchange TCP/UDP over real IPv4 loopback UDP between
 two BoringTun peers, with IPv4/IPv6 inner traffic, empty datagrams, and
-half-close. The optional sustained probe checks timer-driven rekey. These
-experiments are portable Rust code, but observations so far are Linux ARM64
-only; no macOS or independent peer claim follows. No throughput/CPU/RSS
+half-close. An explicit kernel-peer scope now tests the same Rust client
+against Linux's independent WireGuard implementation. Only its disposable
+test namespace contains a kernel WireGuard interface; the candidate backend
+remains BoringTun plus an active userspace stack. The kernel peer checks
+actual TCP/UDP payloads, addresses, and empty datagrams in both families.
+Long mode verifies continuing traffic and recent completed rekey on both
+implementations. No userspace-library-only comparison is substituted for
+that scope.
+
+The Linux-only fixture dependency is `wireguard-uapi` 3.0.1 (MIT), used for
+`WgSocket::connect/set_device/get_device` and `set::Device/Peer/AllowedIp`.
+Its blocking netlink operations rely on the harness's process deadline, and
+its setter does not expose a complete ACK contract. The probe compensates
+with state readback and real traffic; neither is a production route-driver
+contract. Older transitive netlink/builder packages remain isolated in this
+test dependency and require reconsideration before any production use.
+No dependency advisory exception or unrelated upgrade is introduced.
+
+The client allows ten seconds for setup/retry, matching the canonical
+connection budget, and explicitly proves recovery after dropping one
+initiation. [Linux's handshake admission](https://github.com/torvalds/linux/blob/v6.12/drivers/net/wireguard/noise.c)
+includes per-peer timestamp and initiation-rate checks. The fixture keeps
+driving packet/timer output for 100 ms after application EOF before replacing
+a session, preserving delayed TCP acknowledgements. This controlled
+loopback drain is not a general network shutdown guarantee.
+
+The optional sustained probes check timer-driven rekey. These
+core packet experiments are portable Rust code; the kernel fixture is
+Linux-only. Observations so far are Linux ARM64
+only; no native macOS claim follows. No throughput/CPU/RSS
 performance budget is established. Library maintenance review, MSRV/platform
 validation, larger/varied workloads, fragmentation/ICMP, aggregate resource
-stress, WireGuard cancellation/outages, and independent kernel-peer tests
+stress, WireGuard cancellation/outages, and production supervisor integration
 remain open. Packet-level admission, cancellation, and stalled-reader
 observations do not close their kernel/application acceptance gates.
 

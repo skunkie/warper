@@ -16,7 +16,7 @@ gates remain open.
 | Phase | Status | Evidence / next unmet gate |
 | --- | --- | --- |
 | Development infrastructure | Available | `scripts/check.sh` runs licensing, workflow/composite lint, shell lint, and harness tests; CI enables Rust jobs once workspace prerequisites exist |
-| 0: Baseline and feasibility | In progress | Isolated probes under `experiments/` produce evidence under `target/evidence/phase-0/`. Direct smoltcp 0.14 preserves UDP and bounded packet behavior; a TCP adapter now admits dynamic/shared destinations into bounded asynchronous streams with queue rollback, retained-buffer permits, deadlines, cancellation, and reset errors. Active sockets work through loopback BoringTun peers; wrapper comparison remains rejected. Next: independent WireGuard peer, general UDP admission, production scheduling/contracts, kernel TUN and outage/MTU evidence |
+| 0: Baseline and feasibility | In progress | Isolated probes under `experiments/` produce evidence under `target/evidence/phase-0/`. Direct smoltcp 0.14 preserves UDP and bounded packet behavior; a TCP adapter admits dynamic/shared destinations into bounded asynchronous streams with queue rollback, retained-buffer permits, deadlines, cancellation, and reset errors. Active sockets work through BoringTun and an independent Linux kernel WireGuard peer, including both inner families, empty datagrams, FIN, handshake-loss retry, and completed rekey. Kernel fixture evidence is indexed in `target/evidence/phase-0/kernel/README.md`; wrapper comparison remains rejected. Next: general UDP admission, production scheduling/contracts, kernel TUN and outage/MTU evidence |
 | Contract gate before production dependencies | Pending Phase 0 | Complete `implementation-contracts.md` with selected APIs and source links |
 | 1: Headless Linux service slice | Not started | Depends on feasibility, initial contracts, authorized control, and client-independent lifecycle |
 | 2: Linux DNS and routing | Not started | Depends on fixed-CIDR lifecycle; NET-10/NET-11 cover grace/endpoint publication, and NET-12 requires global retained-state admission/renewal/exhaustion evidence |
@@ -31,7 +31,9 @@ the complete Phase 0 exit criteria. No native macOS evidence exists.
 expectations; executable production parser/CLI registration remains Phase 1.
 TUN device provisioning is denied here even inside disposable namespaces;
 its kernel gate remains unverified. This does not block independent
-userspace peer and adapter experiments.
+peer and adapter experiments. Linux kernel WireGuard interface creation and
+retirement work in disposable namespaces independently of the unavailable
+TUN device; this does not establish host TUN interception.
 
 ## Gate Evidence
 

@@ -21,6 +21,7 @@ netstack-smoltcp = "=0.2.4"
 # Direct candidate and controlled peers; the wrapper retains its own 0.12 stack.
 smoltcp = { version = "=0.14.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }
 tokio = { version = "=1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }
+wireguard-uapi = { version = "=3.0.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
