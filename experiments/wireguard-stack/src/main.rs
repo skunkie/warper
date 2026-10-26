@@ -4,10 +4,15 @@
 
 //! Active smoltcp sockets through two BoringTun peers over loopback UDP.
 
+#[path = "../../fragment_fixture.rs"]
+mod fragment_fixture;
+mod fragment_probe;
 mod outage;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
 mod path_mtu;
+#[path = "../../reassembly.rs"]
+mod reassembly;
 
 #[cfg(target_os = "linux")]
 mod kernel_peer;
@@ -36,6 +41,7 @@ enum TransportFailure {
     StagingLimit,
     StagingAccounting,
     DrainLimit,
+    InnerDestination,
 }
 
 impl fmt::Display for TransportFailure {
@@ -57,6 +63,8 @@ struct Transport {
     remote: SocketAddr,
     allowed_source: IpAddr,
     path_budget: path_mtu::PathBudget,
+    reassembly: reassembly::Reassembler,
+    now: Duration,
     initiations: usize,
     encrypted_packets: usize,
     drop_first_handshake: bool,
@@ -97,7 +105,7 @@ impl Transport {
                     IpAddr::V4(source) == self.allowed_source,
                     "unapproved inner IPv4 source"
                 );
-                peer.device.inject(packet.to_vec())?;
+                self.inject_inner(packet, peer)?;
                 Ok(true)
             }
             TunnResult::WriteToTunnelV6(packet, source) => {
@@ -105,13 +113,15 @@ impl Transport {
                     IpAddr::V6(source) == self.allowed_source,
                     "unapproved inner IPv6 source"
                 );
-                peer.device.inject(packet.to_vec())?;
+                self.inject_inner(packet, peer)?;
                 Ok(true)
             }
         }
     }
 
-    fn pump(&mut self, peer: &mut Peer) -> Result<()> {
+    fn pump(&mut self, peer: &mut Peer, now: Duration) -> Result<()> {
+        self.reassembly.advance(now)?;
+        self.now = now;
         let mut output = [0; MTU + 256];
         while !peer.device.outgoing.is_empty() {
             if self.staged_packets >= PACKET_CAPACITY {
@@ -159,6 +169,24 @@ impl Transport {
         Ok(())
     }
 
+    fn inject_inner(&mut self, packet: &[u8], peer: &mut Peer) -> Result<()> {
+        let destination = Tunn::dst_address(packet).ok_or(TransportFailure::InnerDestination)?;
+        if !peer
+            .interface
+            .ip_addrs()
+            .iter()
+            .any(|address| address.address() == destination.into())
+        {
+            return Err(TransportFailure::InnerDestination.into());
+        }
+        match self.reassembly.accept(packet, self.now)? {
+            reassembly::Outcome::Pass => peer.device.inject(packet.to_vec())?,
+            reassembly::Outcome::Pending => {}
+            reassembly::Outcome::Complete(packet) => peer.device.inject(packet)?,
+        }
+        Ok(())
+    }
+
     fn receive_result(&mut self, result: TunnResult<'_>, peer: &mut Peer) -> Result<bool> {
         if is_application_data(&result) {
             self.staged_packets = self
@@ -167,6 +195,12 @@ impl Transport {
                 .ok_or(TransportFailure::StagingAccounting)?;
         }
         self.send_result(result, peer)
+    }
+}
+
+impl Drop for Transport {
+    fn drop(&mut self) {
+        self.reassembly.cancel();
     }
 }
 
@@ -200,6 +234,10 @@ fn main() -> Result<()> {
         outage::run_probe(ipv6)?;
         println!(
             "PASS WireGuard outage: bounded staging, recovery, deadlines and cancellation, IPv6={ipv6}"
+        );
+        fragment_probe::run_probe(ipv6)?;
+        println!(
+            "PASS encrypted fragment input: both orders, UDP round trip, expiry and cleanup, IPv6={ipv6}"
         );
     }
     if !arguments.is_empty() {
@@ -245,6 +283,8 @@ fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
         socket: server_socket,
         allowed_source: client_address,
         path_budget: path_mtu::PathBudget::new(1500, false)?,
+        reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
+        now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
         drop_first_handshake: false,
@@ -287,6 +327,8 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         remote,
         allowed_source: server_address,
         path_budget,
+        reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
+        now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
         drop_first_handshake: false,
@@ -343,10 +385,10 @@ fn run_client(
         );
         let elapsed_ms = i64::try_from(start.elapsed().as_millis())?;
         client.poll(elapsed_ms);
-        client_transport.pump(client)?;
+        client_transport.pump(client, start.elapsed())?;
         if let Some((server, transport)) = server.as_mut() {
             server.poll(elapsed_ms);
-            transport.pump(server)?;
+            transport.pump(server, start.elapsed())?;
         }
 
         let socket = client.sockets.get_mut::<tcp::Socket>(client.tcp);
@@ -497,7 +539,7 @@ mod tests {
             .unwrap();
         peer.poll(0);
         transport.drop_first_handshake = true;
-        transport.pump(&mut peer).unwrap();
+        transport.pump(&mut peer, Duration::ZERO).unwrap();
         assert_eq!(transport.initiations, 1);
         assert_eq!(transport.dropped_handshakes, 1);
         assert_eq!(transport.encrypted_packets, 0);
@@ -521,9 +563,18 @@ mod tests {
             )
             .unwrap();
         client.peer.poll(0);
-        client.transport.pump(&mut client.peer).unwrap();
-        server.transport.pump(&mut server.peer).unwrap();
-        let error = client.transport.pump(&mut client.peer).unwrap_err();
+        client
+            .transport
+            .pump(&mut client.peer, Duration::ZERO)
+            .unwrap();
+        server
+            .transport
+            .pump(&mut server.peer, Duration::ZERO)
+            .unwrap();
+        let error = client
+            .transport
+            .pump(&mut client.peer, Duration::ZERO)
+            .unwrap_err();
         assert_eq!(
             error.downcast_ref::<path_mtu::Error>(),
             Some(&path_mtu::Error::PacketTooLarge)

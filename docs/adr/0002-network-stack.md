@@ -299,3 +299,12 @@ dependency versions, assertions, redacted traffic summaries, cancellation,
 cleanup, IPv4/IPv6, and rekey results. Record native macOS evidence separately.
 Revisit on a failed required capability, dependency API change, unsupported
 platform behavior, or unacceptable maintenance cost.
+
+The bounded input implementation is now shared by host interception and active
+WireGuard transport. After peer authentication and inner source/destination
+validation, decrypted fragments enter independent per-transport assembly slots.
+Encrypted probes cover both families/orders/directions, expiry without input,
+duplicate-inner-fragment rejection, and outer socket release with partial state.
+No dependency or stack feature change is required. This narrows the inner
+fragment-input gap; outer fragmentation, dynamic PMTU, and production peer-error
+isolation remain open. See the [decrypted input contract](../implementation-contracts.md#13-experimental-decrypted-fragment-input).

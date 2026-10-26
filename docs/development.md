@@ -414,3 +414,12 @@ automation must call this reusable CI suite for the exact tagged revision,
 validate versions and executable targets, and publish checksums. Limit write
 permissions to publishing jobs and provide a manual build-only dry run.
 Planning-only releases and successful placeholder deployments are excluded.
+
+The default WireGuard packet probe also runs `fragment_probe.rs`. The shared
+`experiments/reassembly.rs` boundary normalizes decrypted inner fragments
+before active-stack admission, following authenticated source and local
+inner-destination checks. Both inner families, arrival orders, and directions
+preserve maximum UDP payloads. Partial state expires on a transport pump even
+without incoming packets; overlaps fail explicitly, and endpoint destruction
+releases sockets with incomplete state retained. This does not establish outer
+fragment handling, dynamic PMTU, or kernel-peer fragment acceptance.

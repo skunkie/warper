@@ -607,8 +607,9 @@ Completed packets retain source/destination/protocol, have normalized IP
 length/fragment headers, and undergo the existing transport checksum and
 policy validation. This does not implement PMTU or outgoing fragmentation.
 
-Sources are `reassembly.rs`, `reassembly_tests.rs`, and `fragment_probe.rs`
-under `experiments/host-stack/src/`. Concrete entry points are:
+The shared implementation is `experiments/reassembly.rs`; host adapter tests
+and probes remain under `experiments/host-stack/src/`. Controlled packet
+splitting lives in `experiments/fragment_fixture.rs`. Concrete entry points are:
 
 ```text
 Reassembler::new(Limits) -> Result<Reassembler, Error>
@@ -649,3 +650,29 @@ bounded turn advances every adapter's monotonic clock. This prevents
 first-after-idle packets inheriting stale creation times. Queued shutdown
 still precedes admission, and cleanup counts/discards staged input. Separate
 protocol quotas, backend ownership, and guarded egress remain unchanged.
+
+## 13. Experimental Decrypted Fragment Input
+
+Status: active WireGuard-side Phase 0 candidate. The same bounded
+`experiments/reassembly.rs` boundary is applied after peer authentication and
+inner source/destination validation, before plaintext enters the active IP
+stack. Each transport owns independent assembly slots and a monotonic clock;
+partial packets are never injected into TCP/UDP sockets. Pump calls advance
+expiry even without incoming ciphertext. Transport destruction cancels partial
+state together with its tunnel and socket; fatal fragment errors retain their
+typed source through the existing active owner. This does not change PMTU,
+outgoing fragmentation, roaming, or production error policy.
+
+`Transport::pump(&mut Peer, Duration)` advances the injected monotonic clock
+before handling decrypted packets. Source validation uses the authenticated
+peer's configured inner address; destination must match a local stack address
+before any fragment slot is reserved. Unfragmented packets follow the same
+checks. Fragment errors are fatal in this experiment; production peer-error
+isolation remains unspecified and must be finalized before reuse.
+
+The default WireGuard probe exercises both fragment orders and both directions
+for maximum-size UDP datagrams, preserving tuple and payload boundaries. It
+also expires partial input without traffic, rejects an authenticated duplicate
+inner fragment, and releases outer sockets with partial/tombstone state still
+retained. These fixtures encrypt every fragment separately; they do not test
+fragmentation of outer UDP packets or kernel-peer fragment handling.

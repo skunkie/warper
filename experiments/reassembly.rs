@@ -369,7 +369,3 @@ fn rebuild(header: &[u8], protocol: u8, payload: &[u8]) -> Vec<u8> {
     }
     bytes
 }
-
-#[cfg(test)]
-#[path = "reassembly_tests.rs"]
-mod tests;

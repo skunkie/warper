@@ -7,11 +7,16 @@
 mod accepted_probe;
 mod adapter;
 mod direct;
+#[path = "../../fragment_fixture.rs"]
+mod fragment_fixture;
 mod fragment_probe;
 mod mtu_probe;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+#[path = "../../reassembly.rs"]
 mod reassembly;
+#[cfg(test)]
+mod reassembly_tests;
 mod runtime;
 mod runtime_probe;
 mod udp_adapter;

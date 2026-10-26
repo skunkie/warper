@@ -115,7 +115,7 @@ impl Session {
         }
         let endpoint = self.endpoint.as_mut().ok_or(Reason::Cancelled)?;
         endpoint.peer.poll(now.as_millis() as i64);
-        if let Err(source) = endpoint.transport.pump(&mut endpoint.peer) {
+        if let Err(source) = endpoint.transport.pump(&mut endpoint.peer, now) {
             let reason = if matches!(
                 source.downcast_ref::<TransportFailure>(),
                 Some(TransportFailure::StagingLimit)
@@ -195,7 +195,7 @@ fn destination(ipv6: bool) -> Result<SocketAddr> {
 
 fn server_step(server: &mut Endpoint, now: Duration) -> Result<()> {
     server.peer.poll(i64::try_from(now.as_millis())?);
-    server.transport.pump(&mut server.peer)
+    server.transport.pump(&mut server.peer, now)
 }
 
 fn connect(session: &mut Session, server: &mut Endpoint, ipv6: bool) -> Result<()> {
@@ -624,5 +624,61 @@ mod tests {
         let address = endpoint_address(&mut client).unwrap();
         drop(client);
         UdpSocket::bind(address).unwrap();
+    }
+
+    #[test]
+    fn partial_fragment_cancellation_and_fatal_overlap_release_the_session() {
+        use crate::fragment_probe::{address, fragments, warm_up};
+        for ipv6 in [false, true] {
+            for cancel in [false, true] {
+                let (mut endpoint, mut server) = crate::create_pair(ipv6).unwrap();
+                let now = warm_up(&mut endpoint, &mut server).unwrap();
+                let outer = endpoint.transport.socket.local_addr().unwrap();
+                let packets =
+                    fragments(&mut server, address(&endpoint), &[0x53; 200], now, 46).unwrap();
+                let mut client = Session::new(
+                    endpoint,
+                    Budget {
+                        setup: Duration::from_secs(5),
+                        lifetime: Duration::from_secs(10),
+                    },
+                )
+                .unwrap();
+                server.peer.device.outgoing.push_back(packets[0].clone());
+                server.transport.pump(&mut server.peer, now).unwrap();
+                client.step(now).unwrap();
+                assert!(
+                    client
+                        .endpoint
+                        .as_ref()
+                        .unwrap()
+                        .transport
+                        .reassembly
+                        .next_deadline()
+                        .is_some()
+                );
+                let expected = if cancel {
+                    client.cancel();
+                    Reason::Cancelled
+                } else {
+                    server.peer.device.outgoing.push_back(packets[0].clone());
+                    server.transport.pump(&mut server.peer, now).unwrap();
+                    let failure = client.step(now).unwrap_err();
+                    assert_eq!(failure.reason, Reason::Transport);
+                    assert_eq!(
+                        failure
+                            .source
+                            .as_ref()
+                            .unwrap()
+                            .downcast_ref::<crate::reassembly::Error>(),
+                        Some(&crate::reassembly::Error::Overlap)
+                    );
+                    Reason::Transport
+                };
+                assert!(client.endpoint.is_none());
+                assert_eq!(client.step(now).unwrap_err().reason, expected);
+                UdpSocket::bind(outer).unwrap();
+            }
+        }
     }
 }

@@ -4,13 +4,15 @@
 
 //! Fragment ownership, boundaries, and runtime admission regressions.
 
-use super::*;
 use crate::{
     fragment_probe::split,
-    packet_peer::Peer,
+    packet_peer::{MTU, Peer},
+    reassembly::*,
     udp_adapter::{self, UdpAdapter},
 };
 use smoltcp::socket::udp;
+use smoltcp::wire::{IpProtocol, Ipv4Packet, Ipv6FragmentHeader, Ipv6Packet};
+use std::{net::IpAddr, time::Duration};
 
 fn sample(ipv6: bool) -> Vec<u8> {
     let source = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
