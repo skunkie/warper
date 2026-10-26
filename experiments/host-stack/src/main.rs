@@ -4,6 +4,7 @@
 
 //! Packet-level candidate checks; these do not establish kernel TUN acceptance.
 
+mod direct;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
 
@@ -22,7 +23,21 @@ const RESPONSE: &[u8] = b"synthetic-response-after-fin";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    ensure!(std::env::args().len() == 1, "usage: host-stack");
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.is_empty() {
+        for ipv6 in [false, true] {
+            direct::run_probe(ipv6)?;
+            println!(
+                "PASS direct smoltcp: two destinations, empty UDP, 64 KiB TCP/FIN, IPv6={ipv6}"
+            );
+            direct::verify_admission_and_cancellation(ipv6)?;
+            println!("PASS direct smoltcp: occupied-slot rejection and cancellation, IPv6={ipv6}");
+            direct::verify_stalled_reader(ipv6)?;
+            println!("PASS direct smoltcp: stalled-reader backpressure, IPv6={ipv6}");
+        }
+        return Ok(());
+    }
+    ensure!(arguments == ["--wrapper"], "usage: host-stack [--wrapper]");
     let mut failures = 0;
     for ipv6 in [false, true] {
         for empty in [false, true] {

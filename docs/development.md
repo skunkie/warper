@@ -135,7 +135,7 @@ cargo fetch --locked
 cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
-cargo run --locked -p wireguard-stack -- --rekey
+./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
 ```
 
 Tests require permission to bind loopback UDP sockets. On Linux, the harness
@@ -147,13 +147,27 @@ network state. The timeout supervises the probe process group; `unshare`
 reaps its child and destroys the namespace independently of probe cleanup.
 Do not run against the live host network to work around isolation failures.
 
-The host probe injects controlled IPv4/IPv6 packets into
-`netstack-smoltcp`, checks original TCP/UDP addresses, nonempty/empty UDP
-replies, and request FIN followed by response and TCP shutdown. Its exit is
-nonzero when a candidate violates semantics; this is evidence of a failed
-candidate, not an infrastructure test to suppress. Unit tests cover the
-working paths and bounded peer-device admission. The full executable also
-exercises empty UDP replies, which the candidate currently drops.
+The default host probe injects controlled IPv4/IPv6 packets into direct
+smoltcp 0.14 AnyIP interception. Two preconfigured destinations have separate
+controlled echo handlers and fixed TCP/UDP socket slots. It verifies
+original addresses, empty/unequal UDP replies, concurrent 64 KiB full-duplex
+TCP exchanges with responses after request FIN, occupied-slot rejection,
+stalled-reader backpressure, and idempotent cancellation. Buffers and
+packet queues are bounded; its clock and packet steps are controlled.
+It does not yet expose a general asynchronous accepted-stream API or
+admit arbitrary discovered destinations.
+
+The wrapper comparison remains available explicitly:
+
+```sh
+cargo run --locked -p host-stack -- --wrapper
+```
+
+It checks the same basic address/datagram/FIN semantics through
+`netstack-smoltcp` 0.2.4. Its exit is nonzero because the wrapper drops empty
+UDP replies. Keep this failure as candidate evidence; do not suppress it
+or change the packet expectation. The direct candidate is a separate
+explicit experiment, with no fallback between candidates.
 
 The WireGuard probe actively connects smoltcp TCP/UDP sockets through two
 BoringTun peers and real loopback UDP, using published synthetic keys and
@@ -175,18 +189,20 @@ The required gate entry points are also available:
 
 They run the packet experiment but **return nonzero while the full gate is
 incomplete**, even if the packet experiment passes. Kernel TUN/utun traffic,
-two distinct backend instances, independent WireGuard interoperability,
-outage/cancellation/cleanup injection, and MTU/ICMP acceptance are still
+two distinct protocol backend instances, independent WireGuard interoperability,
+backend outage/crash cleanup, and MTU/ICMP acceptance are still
 unimplemented or unverified. Kernel tests will require a disposable
 TUN-capable Linux environment; native macOS gates require a separate runner.
 The [network-stack ADR](adr/0002-network-stack.md) remains proposed.
 
 Each harness run writes environment/revision information, the lockfile,
 build/probe output, exit status, and explicit unrun gates into a unique
-directory under `target/evidence/phase-0/`. Its timeout is 20 seconds and
-does not run the separate long-lived rekey case. The evidence README records
-additional commands and their scope. Full acceptance must extend the
-harness before the gate can pass.
+directory under `target/evidence/phase-0/`. Its timeout is 20 seconds for
+ordinary packet probes and 150 seconds for the explicit WireGuard
+`--packet-only --rekey` case. The latter runs the same disposable namespaces
+and records rekey status separately. The evidence README records commands
+and their scope. Full acceptance must extend the harness before the gate
+can pass.
 
 Raw logs, packet summaries, environment metadata, and comparison results
 belong under ignored `target/evidence/` or CI artifacts, with synthetic peers

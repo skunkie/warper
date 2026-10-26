@@ -132,6 +132,26 @@ above remain open.
   total deadline. TCP input is capped at 1024 bytes and compared with a
   fixed synthetic request; output accumulation has an explicit bound.
   The wrapper's hidden unbounded queues remain unresolved.
+- `experiments/host-stack/src/direct.rs`: `DirectHost` is the separate
+  direct smoltcp 0.14 candidate. It owns exactly four socket storage slots,
+  two handler records, and one bounded packet device. Each handler has one
+  TCP socket (8192 bytes per direction) and one UDP socket (8192 bytes and
+  eight metadata slots per direction). Total socket payload capacity is
+  64 KiB, plus metadata, packet queues, and stack/container bookkeeping.
+  A handler's source record is fixed-size; no accepted-flow queue or task
+  is allocated on SYN. A second connection to an occupied destination is
+  rejected by the stack without replacing the admitted owner.
+  UDP replies retain `UdpMetadata::local_address`, including empty payloads.
+  Echo reads obey available send-ring space. `cancel()` aborts/closes all
+  sockets, drops packet queues, and rejects subsequent `inject` calls with
+  `io::ErrorKind::Interrupted`; dropping the owner releases socket storage.
+  The experiment handles two preconfigured destinations, not arbitrary
+  discovery. `run_probe(bool)`, `verify_admission_and_cancellation(bool)`,
+  and `verify_stalled_reader(bool)` exercise both families with a controlled
+  clock. Full exchange/admission is capped at ten simulated seconds;
+  the stalled-reader case drives five seconds without application reads.
+  There is no asynchronous accepted-stream API, backend transport, or
+  production scheduler here. Their contracts remain open.
 - `experiments/wireguard-stack/src/main.rs`: `probe(bool, Duration)` owns
   two peers, two nonblocking loopback UDP sockets, and two BoringTun states.
   No worker is spawned. It polls timers and packet I/O every millisecond,

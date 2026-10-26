@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe_exit=0, scope="--packet-only", build_exit=0):
+    def run_harness(self, *, probe_exit=0, scope="--packet-only", build_exit=0, rekey=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -29,7 +29,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
             "git": 'if [[ "$1" == rev-parse ]]; then echo fixture-revision; fi\n',
             # Only the namespace launcher is replaced. The real timeout still
             # supervises a real child; these tests do not claim network isolation.
-            "unshare": 'exec "${@: -1}"\n',
+            "unshare": 'while [[ "$1" != bash ]]; do shift; done\nexec "$@"\n',
             "ip": "exit 0\n",
         }
         for name, source in commands.items():
@@ -38,12 +38,14 @@ class FeasibilityHarnessTests(unittest.TestCase):
             path.chmod(0o700)
         executable = root / "target/debug/wireguard-stack"
         executable.parent.mkdir(parents=True)
-        executable.write_text(f"#!/bin/sh\necho fixture-probe\nexit {probe_exit}\n")
+        executable.write_text(f'#!/bin/sh\necho fixture-probe "$@"\nexit {probe_exit}\n')
         executable.chmod(0o700)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
         arguments = ["bash", str(harness), "wireguard-stack"]
         if scope:
             arguments.append(scope)
+        if rekey:
+            arguments.append("--rekey")
         result = subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=10)
         evidence = list((root / "target/evidence/phase-0").glob("wireguard-stack.*"))
         self.assertEqual(len(evidence), 1, result.stderr)
@@ -73,6 +75,14 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual((evidence / "result.txt").read_text(), "FAIL build\n")
         self.assertFalse((evidence / "probe.log").exists())
+
+    def test_rekey_argument_reaches_probe_and_result_records_its_status(self):
+        result, evidence = self.run_harness(rekey=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fixture-probe --rekey", (evidence / "probe.log").read_text())
+        outcome = (evidence / "result.txt").read_text()
+        self.assertIn("rekey_probe_exit=0", outcome)
+        self.assertNotIn("NOT RUN long-lived rekey", outcome)
 
 
 if __name__ == "__main__":

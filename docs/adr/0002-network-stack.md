@@ -38,11 +38,11 @@ implementation contracts have compile-checked usage.
 
 ### Experimental evidence and remaining selection work
 
-The workspace pins `netstack-smoltcp` 0.2.4 (MIT OR Apache-2.0), `smoltcp`
-0.12.0 (0BSD), and BoringTun 0.7.1 (BSD-3-Clause). Smoltcp 0.12 is deliberate
-for this comparison: it matches the wrapper's dependency. It is not a
-decision to use that older stack in production. Evaluate released smoltcp
-0.14 and upstream fixes before choosing an adapter or maintaining a fork.
+The workspace pins `netstack-smoltcp` 0.2.4 (MIT OR Apache-2.0), direct
+`smoltcp` 0.14.0 (0BSD, upstream MSRV 1.91), and BoringTun 0.7.1
+(BSD-3-Clause). The wrapper transitively retains smoltcp 0.12.0; this
+duplicate is deliberate for candidate comparison. Direct host interception
+and the controlled peers now use released smoltcp 0.14, without a fork.
 `deny.toml` permits the actual 0BSD dependency license; nothing is relicensed.
 
 Sources and executable usage:
@@ -50,15 +50,21 @@ Sources and executable usage:
 - [Wrapper 0.2.4 source](https://docs.rs/crate/netstack-smoltcp/0.2.4/source/src/):
   `StackBuilder::build`, `Stack` as packet sink/stream, `TcpListener` as
   `(TcpStream, source, destination)`, and UDP split read/write message
-  operations are exercised by `experiments/host-stack/src/main.rs`.
+  operations are exercised by `experiments/host-stack/src/main.rs` with
+  `cargo run --locked -p host-stack -- --wrapper`.
   Enable TCP/UDP explicitly, use MTU 1280, channel depths 8, and TCP windows
   8192 bytes. The wrapper transitively enables smoltcp `std`, `log`,
   `medium-ip`, IPv4/IPv6, and TCP/UDP/ICMP sockets.
-- [Smoltcp 0.12 sockets](https://docs.rs/smoltcp/0.12.0/smoltcp/socket/index.html):
+- [Smoltcp 0.14 sockets](https://docs.rs/smoltcp/0.14.0/smoltcp/socket/index.html):
   `Interface::context`, `tcp::Socket::connect/listen/close`, and UDP
   `send_slice/recv` create actual active flows. Both probes use the bounded
   `Device` in `experiments/packet_peer.rs`; direct features are `std`,
   `medium-ip`, `proto-ipv4`, `proto-ipv6`, `socket-tcp`, and `socket-udp`.
+  The direct host candidate in `experiments/host-stack/src/direct.rs` uses
+  `Interface::set_any_ip`, explicit default routes through its local
+  interface addresses, fixed `SocketStorage`, and UDP `local_address`
+  metadata. Those routes belong only to the userspace interface; no kernel
+  route is modified.
 - [BoringTun 0.7.1 tunnel API](https://docs.rs/boringtun/0.7.1/boringtun/noise/struct.Tunn.html):
   `Tunn::new`, `encapsulate`, `decapsulate` (including empty-input draining),
   `update_timers`, and `stats` are exercised in
@@ -67,7 +73,7 @@ Sources and executable usage:
 
 The wrapper's nonempty UDP and TCP response-after-FIN/shutdown checks work
 with both inner address families. Its UDP writer silently discards empty
-datagrams; the full host probe reproduces this as a deadline failure. It
+datagrams; the explicit wrapper probe reproduces this as a deadline failure. It
 therefore fails required datagram semantics and is not accepted unchanged.
 Its TCP implementation also contains unbounded accepted-stream, socket
 creation, and packet channels and creates sockets on SYN, so bounded public
@@ -82,14 +88,36 @@ tested. This is an unresolved resource/supervision issue, not evidence that
 its transport semantics fail. `tun2proxy` is not used as an embedding proxy
 bridge. No local fork or extra-hop bridge has been introduced.
 
+The default host probe evaluates direct smoltcp 0.14 instead. Two fixed
+destination-specific handlers each own one TCP slot and one UDP socket.
+Concurrent 64 KiB streaming echoes use distinct payloads and append distinct
+handler trailers after request FIN, establishing full-duplex transfer,
+original addresses, and deterministic handler dispatch. Empty and unequal
+UDP datagrams retain their boundaries and source metadata. An occupied
+TCP slot rejects another source without displacing its established owner.
+Stalling application reads fills the fixed receive window and stops sender
+admission at the combined window/buffer bound. Cancellation is explicit and
+idempotent, aborts/closes sockets, discards queued packets, and refuses new
+input. The tests use a controlled clock and bounded packet steps.
+
+This closes the immediate empty-datagram experiment gap without depending
+on the wrapper's internal workers or queues. It does not select a production
+adapter: destinations and slots are fixed before the run, handlers are
+in-process controlled echoes, and there is no general asynchronous
+accepted-stream interface or dynamic destination admission yet. General
+admission, UDP overload accounting, ownership handoff, and supervised
+production scheduling still need executable contracts and traffic evidence.
+
 Active smoltcp sockets exchange TCP/UDP over real IPv4 loopback UDP between
 two BoringTun peers, with IPv4/IPv6 inner traffic, empty datagrams, and
 half-close. The optional sustained probe checks timer-driven rekey. These
 experiments are portable Rust code, but observations so far are Linux ARM64
 only; no macOS or independent peer claim follows. No throughput/CPU/RSS
 performance budget is established. Library maintenance review, MSRV/platform
-validation, larger transfers, fragmentation/ICMP, resource exhaustion,
-cancelled/stalled traffic, and independent kernel-peer tests remain open.
+validation, larger/varied workloads, fragmentation/ICMP, aggregate resource
+stress, WireGuard cancellation/outages, and independent kernel-peer tests
+remain open. Packet-level admission, cancellation, and stalled-reader
+observations do not close their kernel/application acceptance gates.
 
 Prototype ownership and limits are recorded in the
 [contract progress](../implementation-contracts.md#6-experimental-boundaries).
