@@ -9,11 +9,18 @@ use std::{net::SocketAddr, thread, time::Duration};
 use anyhow::{Context, Result, ensure};
 use smoltcp::socket::udp;
 
-use crate::{Endpoint, create_pair, fragment_fixture::split, reassembly};
+use crate::{Endpoint, create_pair_with_outer, fragment_fixture::split, reassembly};
 
 pub fn run_probe(ipv6: bool) -> Result<()> {
+    for outer_ipv6 in [false, true] {
+        run_with_outer(ipv6, outer_ipv6)?;
+    }
+    Ok(())
+}
+
+fn run_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<()> {
     for order in [[0, 1], [1, 0]] {
-        let (mut client, mut server) = create_pair(ipv6)?;
+        let (mut client, mut server) = create_pair_with_outer(ipv6, outer_ipv6)?;
         let now = warm_up(&mut client, &mut server)?;
         let payload = vec![0x53; if ipv6 { 1232 } else { 1252 }];
         exchange(&mut client, &mut server, &payload, order, now, 42)?;
@@ -31,7 +38,7 @@ pub fn run_probe(ipv6: bool) -> Result<()> {
         }
         release_pair(client, server)?;
     }
-    expiry_and_overlap(ipv6)?;
+    expiry_and_overlap(ipv6, outer_ipv6)?;
     Ok(())
 }
 
@@ -144,8 +151,8 @@ fn exchange(
     Ok(())
 }
 
-fn expiry_and_overlap(ipv6: bool) -> Result<()> {
-    let (mut client, mut server) = create_pair(ipv6)?;
+fn expiry_and_overlap(ipv6: bool, outer_ipv6: bool) -> Result<()> {
+    let (mut client, mut server) = create_pair_with_outer(ipv6, outer_ipv6)?;
     let now = warm_up(&mut client, &mut server)?;
     let packets = fragments(&mut client, address(&server), &[0x53; 200], now, 44)?;
     transmit(&mut client, &mut server, &packets[0], now)?;
@@ -200,7 +207,7 @@ mod tests {
     #[test]
     fn foreign_inner_destination_cannot_reserve_fragment_state() {
         for ipv6 in [false, true] {
-            let (mut client, mut server) = create_pair(ipv6).unwrap();
+            let (mut client, mut server) = crate::create_pair(ipv6).unwrap();
             let now = warm_up(&mut client, &mut server).unwrap();
             let destination = if ipv6 {
                 "[fd66:66::11]:9000"

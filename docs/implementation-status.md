@@ -55,6 +55,11 @@ overlap tombstones, atomic fragments, expiry, and transport checksum gating
 after authenticated WireGuard decryption and inner-address checks, with
 encrypted UDP fragment round trips, expiry, overlap rejection, and socket
 release (`target/evidence/phase-0/wireguard-fragments/README.md`).
+Real loopback IPv6 outer UDP transport now complements IPv4 transport. Packet
+probes cover all four inner/outer combinations; the independent kernel peer
+covers matching families and sustained rekey over IPv6 outer transport
+(`target/evidence/phase-0/outer-ipv6/README.md`). The encrypted-size guard
+accounts for the actual outer family before socket send.
 Dynamic PMTU/error propagation,
 outgoing fragmentation, larger datagrams, and extension-header strategy
 remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

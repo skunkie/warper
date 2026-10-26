@@ -696,3 +696,20 @@ handshake retries and TCP recovery; workers are stopped and joined on every
 result. The separate sustained rekey workload retains its periodic heartbeats.
 This establishes controlled outbound loss recovery against an independent peer,
 not full network outage detection, service crash recovery, or roaming.
+
+## 15. Experimental WireGuard Outer Address Families
+
+Pair fixtures select the outer address family independently of the inner
+family. IPv4 endpoints bind loopback IPv4; IPv6 endpoints bind loopback IPv6,
+without dual-stack or cross-family fallback. The client derives its local
+socket family and declared path-header budget from the remote socket address.
+The server applies the same selection. Both outer families use actual UDP
+sockets and preserve exact peer-address checks.
+
+Default packet probes cover all four inner/outer combinations for TCP, UDP,
+FIN and encrypted inner fragment input. Linux kernel-peer probes pair IPv4
+inner/outer and IPv6 inner/outer with the controlled outbound-loss workload;
+the kernel-peer's additional sustained rekey workload uses IPv6 outer
+transport. These
+loopback probes establish family interoperability, not physical-path bypass,
+outer fragmentation, dynamic PMTU discovery, or production endpoint roaming.

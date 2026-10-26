@@ -264,7 +264,8 @@ fixed inner addresses. It checks empty and unequal UDP datagrams, metadata,
 and a TCP response after FIN in both inner families. `--rekey` additionally
 runs IPv4 traffic for at least 135 seconds, checks a second handshake
 initiation, a recently completed handshake, and continued replies. The
-outer transport is IPv4 loopback. This peer uses the same implementation;
+default packet matrix uses both IPv4 and IPv6 outer loopback; the same-library
+long rekey case retains IPv4 outer transport. This peer uses the same implementation;
 it does not prove interoperability with an independent WireGuard peer.
 Polling every millisecond is experimental and is not a production scheduling
 or performance claim. Run long-lived rekey inside a disposable environment.
@@ -434,3 +435,13 @@ if replayed. Worker results are joined before success, and the namespace
 harness removes and verifies the interface independently. `--rekey` still
 adds a separate sustained workload with periodic heartbeats. This is limited
 outbound-loss evidence, not general outage detection or crash recovery.
+
+Default WireGuard packet probes now run all four inner/outer family
+combinations over actual IPv4/IPv6 loopback UDP sockets. Encrypted fragment
+round trips, expiry and overlap handling also cover both outer families.
+Kernel-peer probes use IPv4 inner/outer and IPv6 inner/outer for the bounded
+loss workload, then `--rekey` adds sustained IPv4 inner traffic over IPv6 outer
+UDP. Endpoint family determines local socket family and declared header
+budget; unsupported IPv6 socket setup fails explicitly. The unit workload
+checks actual ciphertext delivery at the IPv4/IPv6 outer-size boundary.
+These loopback tests do not establish physical routing or dynamic PMTU.

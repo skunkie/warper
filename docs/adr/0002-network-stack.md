@@ -171,8 +171,9 @@ records precise API, ownership, and packet handoff semantics. This runtime
 owns experimental queues/adapters, without kernel I/O, backend workers,
 readiness barriers, or a production graceful-drain/recovery contract.
 
-Active smoltcp sockets exchange TCP/UDP over real IPv4 loopback UDP between
-two BoringTun peers, with IPv4/IPv6 inner traffic, empty datagrams, and
+Active smoltcp sockets exchange TCP/UDP over real IPv4/IPv6 loopback UDP
+between two BoringTun peers, with all four inner/outer combinations, empty
+datagrams, and
 half-close. An explicit kernel-peer scope now tests the same Rust client
 against Linux's independent WireGuard implementation. Only its disposable
 test namespace contains a kernel WireGuard interface; the candidate backend
@@ -316,3 +317,13 @@ FIN; a separate lost UDP datagram is never resubmitted. Exact kernel-worker
 payload/count assertions and joined cleanup support this narrow recovery
 claim. This adds independent-peer evidence to the same-library failure probes;
 full outage detection, roaming, and service recovery remain unproven.
+
+Outer transport is now selected independently of inner addresses. Actual IPv4
+and IPv6 loopback UDP sockets carry all four inner/outer combinations through
+the active-stack and encrypted-fragment probes. The independent kernel peer
+uses matching inner/outer families for loss recovery and IPv6 outer transport
+for sustained rekey. The client binds the remote endpoint's address family;
+the server applies the same outer-header budget. A real encrypted 1472-byte
+datagram fits a 1500-byte IPv4 outer path but is rejected for IPv6 before send;
+larger encrypted data is rejected for both families. This verifies declared
+budgets and interoperability, not dynamic path discovery or physical bypass.

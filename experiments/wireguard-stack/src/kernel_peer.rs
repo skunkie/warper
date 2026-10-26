@@ -20,7 +20,9 @@ use anyhow::{Context, Result, ensure};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use wireguard_uapi::{DeviceInterface, WgSocket, set};
 
-use super::{REKEY_DURATION, REQUEST, RESPONSE, create_client, run_client_with_outage};
+use super::{
+    REKEY_DURATION, REQUEST, RESPONSE, create_client, loopback_address, run_client_with_outage,
+};
 
 const INTERFACE: &str = "wg-feasibility";
 const WORKER_POLL: Duration = Duration::from_millis(2);
@@ -157,17 +159,22 @@ pub fn run(rekey: bool) -> Result<()> {
         allowed == expected,
         "kernel WireGuard allowed-address readback mismatch"
     );
-    let endpoint = SocketAddr::from(([127, 0, 0, 1], configured.listen_port));
     for ipv6 in [false, true] {
+        let mut endpoint = loopback_address(ipv6);
+        endpoint.set_port(configured.listen_port);
         exchange(ipv6, Duration::ZERO, endpoint)?;
         verify_handshake(&mut netlink, false)?;
-        println!("PASS independent Linux kernel peer: TCP/UDP, empty datagram, FIN, IPv6={ipv6}");
+        println!(
+            "PASS independent Linux kernel peer: TCP/UDP, empty datagram, FIN, inner_ipv6={ipv6}, outer_ipv6={ipv6}"
+        );
     }
     if rekey {
+        let mut endpoint = loopback_address(true);
+        endpoint.set_port(configured.listen_port);
         exchange(false, REKEY_DURATION, endpoint)?;
         verify_handshake(&mut netlink, true)?;
         println!(
-            "PASS independent Linux kernel peer: sustained IPv4 traffic across completed rekey"
+            "PASS independent Linux kernel peer: sustained IPv4 inner traffic over IPv6 outer transport across completed rekey"
         );
     }
     Ok(())

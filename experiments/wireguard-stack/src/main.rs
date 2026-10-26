@@ -229,8 +229,12 @@ fn main() -> Result<()> {
         bail!("kernel WireGuard peer requires Linux disposable namespaces");
     }
     for ipv6 in [false, true] {
-        probe(ipv6, Duration::ZERO)?;
-        println!("PASS active TCP/UDP, empty datagram, FIN, IPv6={ipv6}; loopback BoringTun peer");
+        for outer_ipv6 in [false, true] {
+            probe_with_outer(ipv6, outer_ipv6, Duration::ZERO)?;
+            println!(
+                "PASS active TCP/UDP, empty datagram, FIN, inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}; loopback BoringTun peer"
+            );
+        }
         outage::run_probe(ipv6)?;
         println!(
             "PASS WireGuard outage: bounded staging, recovery, deadlines and cancellation, IPv6={ipv6}"
@@ -248,7 +252,11 @@ fn main() -> Result<()> {
 }
 
 fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
-    let (mut client, mut server) = create_pair(ipv6)?;
+    probe_with_outer(ipv6, false, minimum_duration)
+}
+
+fn probe_with_outer(ipv6: bool, outer_ipv6: bool, minimum_duration: Duration) -> Result<()> {
+    let (mut client, mut server) = create_pair_with_outer(ipv6, outer_ipv6)?;
     run_client(
         ipv6,
         minimum_duration,
@@ -259,6 +267,10 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
 }
 
 fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
+    create_pair_with_outer(ipv6, false)
+}
+
+fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, Endpoint)> {
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
     let mut server = Peer::new(server_address, 9000)?;
@@ -266,7 +278,7 @@ fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
         .sockets
         .get_mut::<tcp::Socket>(server.tcp)
         .listen((server_address, 9000))?;
-    let server_socket = UdpSocket::bind("127.0.0.1:0")?;
+    let server_socket = UdpSocket::bind(loopback_address(outer_ipv6))?;
     server_socket.set_nonblocking(true)?;
     let (client, client_transport) = create_client(ipv6, server_socket.local_addr()?)?;
     let client_key = StaticSecret::from([0x11; 32]);
@@ -282,7 +294,7 @@ fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
         remote: client_transport.socket.local_addr()?,
         socket: server_socket,
         allowed_source: client_address,
-        path_budget: path_mtu::PathBudget::new(1500, false)?,
+        path_budget: path_mtu::PathBudget::new(1500, outer_ipv6)?,
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         now: Duration::ZERO,
         initiations: 0,
@@ -310,7 +322,7 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
     let client = Peer::new(client_address, 40000)?;
-    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    let socket = UdpSocket::bind(loopback_address(remote.is_ipv6()))?;
     socket.set_nonblocking(true)?;
     // Published synthetic test keys, never credentials for external peers.
     let server_key = StaticSecret::from([0x22; 32]);
@@ -338,6 +350,14 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         dropped_packets: 0,
     };
     Ok((client, transport))
+}
+
+fn loopback_address(ipv6: bool) -> SocketAddr {
+    if ipv6 {
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 0))
+    } else {
+        SocketAddr::from(([127, 0, 0, 1], 0))
+    }
 }
 
 fn run_client(
@@ -578,7 +598,9 @@ mod tests {
     #[test]
     fn active_sockets_exchange_ipv4_and_ipv6_through_wireguard() {
         for ipv6 in [false, true] {
-            probe(ipv6, Duration::ZERO).unwrap();
+            for outer_ipv6 in [false, true] {
+                probe_with_outer(ipv6, outer_ipv6, Duration::ZERO).unwrap();
+            }
         }
     }
 
@@ -627,44 +649,61 @@ mod tests {
     }
 
     #[test]
-    fn outer_budget_rejects_real_oversized_encrypted_data_before_socket_send() {
-        let (mut client, mut server) = create_pair(false).unwrap();
-        client.peer = Peer::with_mtu("10.66.66.2".parse().unwrap(), 40000, 1500).unwrap();
-        client
-            .peer
-            .sockets
-            .get_mut::<udp::Socket>(client.peer.udp)
-            .send_slice(
-                &[0x53; 1472],
-                "10.66.66.10:9000".parse::<SocketAddr>().unwrap(),
-            )
-            .unwrap();
-        client.peer.poll(0);
-        client
-            .transport
-            .pump(&mut client.peer, Duration::ZERO)
-            .unwrap();
-        server
-            .transport
-            .pump(&mut server.peer, Duration::ZERO)
-            .unwrap();
-        let error = client
-            .transport
-            .pump(&mut client.peer, Duration::ZERO)
-            .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<path_mtu::Error>(),
-            Some(&path_mtu::Error::PacketTooLarge)
-        );
-        let mut bytes = [0; 1600];
-        for _ in 0..2 {
-            match server.transport.socket.recv_from(&mut bytes) {
-                Ok((length, _)) => assert!(
-                    length == 32,
-                    "only the handshake keepalive may reach the peer"
-                ),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => panic!("controlled outer receiver failed: {error}"),
+    fn outer_budget_accounts_for_real_ipv4_and_ipv6_encrypted_datagrams() {
+        for outer_ipv6 in [false, true] {
+            for payload_len in [1412, 1472] {
+                let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
+                client.peer = Peer::with_mtu("10.66.66.2".parse().unwrap(), 40000, 1500).unwrap();
+                client
+                    .peer
+                    .sockets
+                    .get_mut::<udp::Socket>(client.peer.udp)
+                    .send_slice(
+                        &vec![0x53; payload_len],
+                        "10.66.66.10:9000".parse::<SocketAddr>().unwrap(),
+                    )
+                    .unwrap();
+                client.peer.poll(0);
+                client
+                    .transport
+                    .pump(&mut client.peer, Duration::ZERO)
+                    .unwrap();
+                server
+                    .transport
+                    .pump(&mut server.peer, Duration::ZERO)
+                    .unwrap();
+                let result = client.transport.pump(&mut client.peer, Duration::ZERO);
+                // 1412 UDP bytes + 28 inner headers + 32 encryption overhead
+                // fit exactly in IPv4's 1472-byte outer UDP allowance. IPv6
+                // has only 1452 bytes available at the same 1500-byte MTU.
+                let expected_delivery = !outer_ipv6 && payload_len == 1412;
+                if expected_delivery {
+                    result.unwrap();
+                } else {
+                    assert_eq!(
+                        result.unwrap_err().downcast_ref::<path_mtu::Error>(),
+                        Some(&path_mtu::Error::PacketTooLarge)
+                    );
+                }
+                let mut received_data = false;
+                let mut bytes = [0; 1600];
+                for _ in 0..PACKET_CAPACITY {
+                    match server.transport.socket.recv_from(&mut bytes) {
+                        Ok((length, _)) if length > 32 => {
+                            assert!(expected_delivery && !received_data);
+                            assert_eq!(length, 1472);
+                            assert_eq!(bytes[0], 4);
+                            received_data = true;
+                        }
+                        Ok((length, _)) => assert_eq!(
+                            length, 32,
+                            "only encrypted keepalive may accompany the data"
+                        ),
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("controlled outer receiver failed: {error}"),
+                    }
+                }
+                assert_eq!(received_data, expected_delivery);
             }
         }
     }
