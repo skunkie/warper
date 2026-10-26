@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+# Declarative expectations for Phase 1 parser/CLI tests. Not parser evidence.
+# Paths are relative to this catalog. Source anchors refer to ~/projects/warp.
+version = 1
+
+[[cases]]
+id = "canonical-ssh"
+path = "../../../examples/ssh.yaml"
+expected = "valid"
+expected_backend_id = "corporate-ssh"
+expected_routing_mode = "mixed"
+
+[[cases]]
+id = "canonical-socks5"
+path = "../../../examples/socks5.yaml"
+expected = "valid"
+expected_backend_id = "applications-socks"
+expected_routing_mode = "dynamic"
+
+[[cases]]
+id = "canonical-wireguard"
+path = "../../../examples/wireguard.yaml"
+expected = "valid"
+expected_backend_id = "private-wireguard"
+expected_routing_mode = "mixed"
+
+[[cases]]
+id = "original-socks5"
+path = "original-socks5.yaml"
+source = "internal/protocol/socks5/impl.go:Config"
+expected = "valid"
+expected_backend_id = "socks5-1"
+expected_routing_mode = "dynamic"
+
+[[cases]]
+id = "original-ssh"
+path = "original-ssh.yaml"
+source = "internal/protocol/ssh/impl.go:Config"
+expected = "valid"
+expected_backend_id = "ssh-1"
+expected_routing_mode = "static"
+expected_preflight = "HostKey"
+# Missing trust is a deliberate runtime migration failure, not offline file I/O.
+
+[[cases]]
+id = "original-wireguard"
+path = "original-wireguard.yaml"
+source = "internal/protocol/wg/impl.go:Config"
+expected = "valid"
+expected_backend_id = "wireguard-1"
+expected_routing_mode = "dynamic"
+
+[[cases]]
+id = "normalized-domains"
+path = "normalized-domains.yaml"
+expected = "valid"
+expected_domains = ["apps.example.test"]
+
+[[cases]]
+id = "unknown-field"
+path = "unknown-field.yaml"
+expected = "InvalidConfig"
+expected_field = "unexpected"
+
+[[cases]]
+id = "missing-dns"
+path = "missing-dns.yaml"
+expected = "InvalidConfig"
+expected_field = "protocols[0].socks5.dns"
+
+[[cases]]
+id = "partial-socks-credentials"
+path = "partial-socks-credentials.yaml"
+expected = "InvalidConfig"
+expected_field = "protocols[0].socks5.password"
+
+[[cases]]
+id = "invalid-cidr"
+path = "invalid-cidr.yaml"
+expected = "InvalidConfig"
+expected_field = "protocols[0].socks5.ips[0]"
+
+[[cases]]
+id = "invalid-key"
+path = "invalid-key.yaml"
+expected = "InvalidConfig"
+expected_field = "protocols[0].wireguard.private_key"
+
+[[cases]]
+id = "conflicting-routing-mode"
+path = "conflicting-routing-mode.yaml"
+expected = "InvalidConfig"
+expected_field = "protocols[0].socks5.routing_mode"
+
+[[cases]]
+id = "duplicate-key"
+path = "duplicate-key.yaml"
+expected = "InvalidConfig"
+expected_field = "tunnel.ip"
+
+[[capabilities]]
+backend = "ssh"
+tcp = true
+udp = false
+dns_transport = "tcp"
+
+[[capabilities]]
+backend = "socks5"
+tcp = true
+udp = false
+dns_transport = "tcp"
+
+[[capabilities]]
+backend = "wireguard"
+tcp = true
+udp = true
+dns_transport = "udp-with-tcp-fallback"

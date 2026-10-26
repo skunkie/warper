@@ -105,3 +105,47 @@ Before declaring this contract gate passed:
 2. Replace pending signature decisions above with source links and compile-checked usage. Create only the interfaces needed for the next working slice; update contracts before later dependent features are introduced.
 3. Record measurable limits and how cancellation/failure was exercised; include driver ACK delay, uncertain ACK, partial rollback, task termination, pending-response/grace expiry (NET-10), service-binding publication (NET-11), and global retained-state exhaustion/renewal/rollback (NET-12). The platform control contract also needs UX-05's native no-paid-account authentication evidence before macOS-dependent implementation.
 4. Verify that `docs/configuration.md`, `docs/implementation-plan.md`, the implementation, and acceptance evidence describe the same behavior. Record unresolved limitations in `docs/implementation-status.md` and leave affected gates open.
+
+## 6. Experimental Boundaries
+
+These are compile-checked experiment APIs, not finalized production
+contracts. No production module depends on them. Stack selection, the
+initial production contract gate, and the failure-injection requirements
+above remain open.
+
+- `experiments/packet_peer.rs`: `Peer::new(IpAddr, u16) -> anyhow::Result<Peer>`
+  owns one raw-IP device, interface, socket set, TCP socket, and UDP socket.
+  `Peer::poll(i64)` takes elapsed milliseconds only within this experiment;
+  production deadlines must use typed durations. `PacketDevice::inject`
+  returns `io::ErrorKind::OutOfMemory` for packets over 1280 bytes or a full
+  64-packet ingress queue. Egress applies backpressure at 64 packets through
+  the `Device` transmit/receive tokens. Each TCP direction and UDP byte ring
+  is 8192 bytes, with eight UDP metadata slots per direction. Container and
+  library bookkeeping and kernel UDP buffers are additional allocations;
+  this is not an RSS bound.
+- `experiments/host-stack/src/main.rs`: `udp_case(bool, bool)` checks
+  source/destination tuples and replies without treating datagrams as byte
+  streams. `tcp_case(bool, bool)` owns a wrapper runner future alongside
+  the packet driver and handler. Cancellation or error drops all three;
+  no application task is detached. The driver must keep pumping packets
+  while handler shutdown waits for ACKs. Each scenario has a two-second
+  total deadline. TCP input is capped at 1024 bytes and compared with a
+  fixed synthetic request; output accumulation has an explicit bound.
+  The wrapper's hidden unbounded queues remain unresolved.
+- `experiments/wireguard-stack/src/main.rs`: `probe(bool, Duration)` owns
+  two peers, two nonblocking loopback UDP sockets, and two BoringTun states.
+  No worker is spawned. It polls timers and packet I/O every millisecond,
+  caps each receive/drain batch at 64, and verifies outer peer addresses
+  and inner source addresses. A drain exceeding its budget fails instead
+  of truncating pending output. Normal exchange has a five-second deadline;
+  sustained testing adds five seconds to its requested duration. Keys are
+  fixed public synthetic values. Requests/responses and initial UDP message
+  counts are bounded. The executable returns operational errors with context;
+  it logs no payloads or keys.
+
+The harness's external timeout and disposable namespace lifetime bound
+failed packet experiments independently of their cleanup. There is no TUN,
+route driver, system DNS, journal, resource reservation manager, or service
+supervisor here, so these experiments cannot establish those interfaces or
+their acceptance invariants. Explicit cancellation, uncertain ACK/rollback,
+and crash-recovery tests must still be added for the applicable boundaries.

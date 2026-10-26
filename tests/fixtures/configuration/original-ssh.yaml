@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+tunnel:
+  name: warp0
+  ip: 192.168.127.1
+  serve_dns: false
+protocols:
+  - ssh:
+      host: bastion.example.test
+      user: sample-user
+      password: synthetic-password
+      domains: [corp.example.test]
+      dns: [10.0.0.53]
+      ips: [10.0.0.0/8]

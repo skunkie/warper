@@ -269,3 +269,10 @@ separate gates.
 Complete schema examples are in `../examples/ssh.yaml`, `../examples/socks5.yaml`, and `../examples/wireguard.yaml`. They intentionally use documentation hosts and synthetic credentials/keys. They must pass offline validation once implemented; replace peer details, trust files, and keys before attempting real networking. Synthetic WireGuard keys are public test data and are not credentials for a real peer.
 
 Phase 0 must capture original-shaped valid inputs plus explicit migration-error fixtures for unknown fields, missing SSH trust at preflight, missing DNS, partial SOCKS credentials, invalid CIDRs/keys, and conflicting routing modes. Phase 1 must register the examples and fixtures in executable parser/CLI tests. Do not label the specification or examples as implemented before those tests pass.
+
+The Phase 0 catalog is `tests/fixtures/configuration/cases.toml`. It records
+canonical examples, original-shaped synthetic inputs, normalization,
+migration/error expectations, and the required backend capability matrix.
+It is declarative test input; no production parser/CLI has validated it yet.
+Missing SSH trust is represented as a preflight failure with a nonexistent
+trust store, rather than an offline read of the developer's trust files.

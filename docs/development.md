@@ -10,7 +10,8 @@ Start with the [implementation plan](implementation-plan.md),
 [repository instructions](../AGENTS.md), and [ADR index](adr/README.md).
 The [service/client contract](service-and-client.md) defines the Tauri
 desktop, independent `warperd` service, local control, and managed bundle.
-The current repository contains contracts and development infrastructure.
+The current repository contains contracts, development infrastructure, and
+experimental Rust stack probes.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
@@ -119,9 +120,73 @@ mounts/state and a dedicated resolver/bus. Never use the user's live resolver
 or system journal. The test harness must independently clean up after the
 application, including abrupt termination and partial startup.
 
-When Phase 0 introduces `scripts/verify-feasibility.sh`, its entry points and
-peer setup must be documented here. Until it exists and passes, the
-[network-stack ADR](adr/0002-network-stack.md) remains proposed.
+### Phase 0 packet experiments
+
+The workspace contains `host-stack` and `wireguard-stack` experiments, with
+exact direct dependency pins and a shared bounded raw-IP peer device. The
+existing stage-aware CI now runs real workspace checks and native tests.
+These are experiments, not a runnable `warperd` or a finalized stack adapter.
+
+From a clean checkout, install the exact root toolchain using rustup, then:
+
+```sh
+rustup show
+cargo fetch --locked
+cargo test --locked --workspace
+./scripts/verify-feasibility.sh host-stack --packet-only
+./scripts/verify-feasibility.sh wireguard-stack --packet-only
+cargo run --locked -p wireguard-stack -- --rekey
+```
+
+Tests require permission to bind loopback UDP sockets. On Linux, the harness
+also requires Bash, Git, coreutils (`timeout`), util-linux (`unshare`),
+iproute2, and enabled unprivileged user/network/mount namespaces. It builds
+before isolation, creates disposable namespaces, and enables only their
+loopback link. It never touches resolver settings, the host bus, or persistent
+network state. The timeout supervises the probe process group; `unshare`
+reaps its child and destroys the namespace independently of probe cleanup.
+Do not run against the live host network to work around isolation failures.
+
+The host probe injects controlled IPv4/IPv6 packets into
+`netstack-smoltcp`, checks original TCP/UDP addresses, nonempty/empty UDP
+replies, and request FIN followed by response and TCP shutdown. Its exit is
+nonzero when a candidate violates semantics; this is evidence of a failed
+candidate, not an infrastructure test to suppress. Unit tests cover the
+working paths and bounded peer-device admission. The full executable also
+exercises empty UDP replies, which the candidate currently drops.
+
+The WireGuard probe actively connects smoltcp TCP/UDP sockets through two
+BoringTun peers and real loopback UDP, using published synthetic keys and
+fixed inner addresses. It checks empty and unequal UDP datagrams, metadata,
+and a TCP response after FIN in both inner families. `--rekey` additionally
+runs IPv4 traffic for at least 135 seconds, checks a second handshake
+initiation, a recently completed handshake, and continued replies. The
+outer transport is IPv4 loopback. This peer uses the same implementation;
+it does not prove interoperability with an independent WireGuard peer.
+Polling every millisecond is experimental and is not a production scheduling
+or performance claim. Run long-lived rekey inside a disposable environment.
+
+The required gate entry points are also available:
+
+```sh
+./scripts/verify-feasibility.sh host-stack
+./scripts/verify-feasibility.sh wireguard-stack
+```
+
+They run the packet experiment but **return nonzero while the full gate is
+incomplete**, even if the packet experiment passes. Kernel TUN/utun traffic,
+two distinct backend instances, independent WireGuard interoperability,
+outage/cancellation/cleanup injection, and MTU/ICMP acceptance are still
+unimplemented or unverified. Kernel tests will require a disposable
+TUN-capable Linux environment; native macOS gates require a separate runner.
+The [network-stack ADR](adr/0002-network-stack.md) remains proposed.
+
+Each harness run writes environment/revision information, the lockfile,
+build/probe output, exit status, and explicit unrun gates into a unique
+directory under `target/evidence/phase-0/`. Its timeout is 20 seconds and
+does not run the separate long-lived rekey case. The evidence README records
+additional commands and their scope. Full acceptance must extend the
+harness before the gate can pass.
 
 Raw logs, packet summaries, environment metadata, and comparison results
 belong under ignored `target/evidence/` or CI artifacts, with synthetic peers

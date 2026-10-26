@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+[workspace]
+members = ["experiments/host-stack", "experiments/wireguard-stack"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+anyhow = "=1.0.104"
+boringtun = { version = "=0.7.1", default-features = false }
+futures = { version = "=0.3.32", default-features = false, features = ["std", "async-await"] }
+netstack-smoltcp = "=0.2.4"
+# Match the wrapper's stack while investigating it; this is not stack selection.
+smoltcp = { version = "=0.12.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }
+tokio = { version = "=1.54.1", features = ["io-util", "macros", "rt", "time"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

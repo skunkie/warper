@@ -7,21 +7,28 @@ SPDX-License-Identifier: MIT
 # Implementation Status
 
 The repository contains contracts, schema examples, ADRs, licensing metadata,
-and executable development/CI harnesses. There is no Rust workspace or
-protocol implementation yet. Required networking gates remain open.
+executable development/CI harnesses, and a minimal Rust experimental workspace.
+There is no production service or protocol adapter yet. Required networking
+gates remain open.
 
 ## Phase Ledger
 
 | Phase | Status | Evidence / next unmet gate |
 | --- | --- | --- |
 | Development infrastructure | Available | `scripts/check.sh` runs licensing, workflow/composite lint, shell lint, and harness tests; CI enables Rust jobs once workspace prerequisites exist |
-| 0: Baseline and feasibility | Not started | Create minimal compiling workspace, register compatibility fixtures, run both stack-role probes |
+| 0: Baseline and feasibility | In progress | Workspace and fixture catalog exist; isolated packet probes under `experiments/` produce evidence under `target/evidence/phase-0/`. Host candidate loses empty UDP replies; active sockets work through loopback BoringTun peers. Next: host candidate meeting datagram/resource requirements, kernel TUN traffic, independent WireGuard peer, cancellation/outage/MTU evidence |
 | Contract gate before production dependencies | Pending Phase 0 | Complete `implementation-contracts.md` with selected APIs and source links |
 | 1: Headless Linux service slice | Not started | Depends on feasibility, initial contracts, authorized control, and client-independent lifecycle |
 | 2: Linux DNS and routing | Not started | Depends on fixed-CIDR lifecycle; NET-10/NET-11 cover grace/endpoint publication, and NET-12 requires global retained-state admission/renewal/exhaustion evidence |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is already required in Phase 0 |
 | 4: macOS networking and helper | Not started | ADR 0005 and UX-05 auth subset require actual ad-hoc bundled registration/enrollment/two-way IPC without paid signing; native networking/recovery/approval evidence also required |
 | 5: Tauri desktop and release | Not started | Requires UX-01–UX-04 public packaging, full UX-05 local GUI/service/rebuild evidence, frontend checks, and production-mode exclusion tests |
+
+The [stack ADR](adr/0002-network-stack.md) remains proposed. Packet probes
+establish limited transport behavior, not NET-01/NET-05/NET-06/NET-07 or
+the complete Phase 0 exit criteria. No native macOS evidence exists.
+`tests/fixtures/configuration/cases.toml` captures parser and capability
+expectations; executable production parser/CLI registration remains Phase 1.
 
 ## Gate Evidence
 

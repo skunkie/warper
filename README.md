@@ -10,8 +10,9 @@ A planned Rust service for selective host traffic tunneling through SSH,
 SOCKS5, and WireGuard, with DNS-based route discovery and a Tauri desktop
 client. The macOS app will bundle the client and networking service.
 
-The repository currently contains the design, configuration examples, ADRs,
-and development infrastructure. A Rust runtime has not been implemented.
+The repository contains the design, configuration examples, development
+infrastructure, and Phase 0 Rust stack experiments. A production networking
+service has not been implemented; stack selection remains open.
 
 - [Implementation plan](docs/implementation-plan.md)
 - [Configuration and CLI contract](docs/configuration.md)
@@ -22,9 +23,9 @@ and development infrastructure. A Rust runtime has not been implemented.
 - [Development and checks](docs/development.md)
 - [Phase status](docs/implementation-status.md)
 
-Run `scripts/check.sh` to validate the repository's current stage. Cargo
-checks become mandatory when the root workspace is introduced; no placeholder
-crate is needed to make the planning stage pass.
+Run `scripts/check.sh` to validate the repository, including its Rust
+experiments. See the development guide for isolated packet probes and the
+remaining real-traffic feasibility gates.
 
 ## Acknowledgments and license
 

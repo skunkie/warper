@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+tunnel:
+  ip: 192.168.127.1
+protocols:
+  - wireguard:
+      private_key: synthetic-invalid-key
+      peer_public_key: "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A="
+      endpoint: wg.example.test:51820
+      address: 10.66.66.2
+      ips: [10.66.66.0/24]
