@@ -31,6 +31,7 @@ SPDX-License-Identifier: MIT
 | Global DNS forwarding | System resolver catch-all policy sending unmatched DNS to warper; more-specific external policies may still apply |
 | Host-facing stack | Userspace adapter accepting captured flows and returning packets to the host |
 | Active tunnel stack | Userspace IP stack creating outbound TCP/UDP sockets inside WireGuard |
+| Path MTU (PMTU) | Smallest link MTU along a packet's path; distinct from the configured host-facing or tunnel interface MTU |
 | Commit | Handler publication, verified kernel acknowledgement, and recorded ownership completed before releasing a dynamic positive DNS answer |
 | Recovery journal | Durable intent/ownership state used to reconcile partial mutations after startup failure, crash, or restart |
 | Stub / fake / mock | Fixed-answer trait implementation / working in-memory implementation / verifier of programmed expectations |

@@ -237,6 +237,26 @@ raw outcomes and exact environments belong in `target/evidence/phase-0/`.
 
 ## Consequences
 
+The MTU capability probe supplies executable negative evidence. Raw smoltcp
+peers generate ICMPv4/v6 port-unreachable messages and respect a configured
+1280-byte TCP link MTU. On a 1500-byte link, valid ICMP too-big feedback
+advertising 1280 does not reduce subsequent oversized TCP retries. The
+interface does not forward those errors into TCP PMTU state or provide a
+public per-established-connection MTU setter. With selected features,
+two-fragment UDP datagrams are not reassembled in either family/order.
+`host-stack --mtu-check` consequently returns typed unsupported-PMTU failure.
+This is an open required capability, not evidence for accepting the stack.
+
+The shared transport validates a declared 1500-byte loopback outer budget
+and rejects encrypted packets that exceed it before socket send. Fixed
+1280-byte inner traffic needs 1340-byte IPv4 or 1360-byte IPv6 outer paths,
+including WireGuard/UDP/IP overhead. Maximum unfragmented UDP traffic is
+tested, while general path discovery, fragment handling, and ICMP-to-flow
+propagation need an adapter/library strategy. The [MTU boundary](../implementation-contracts.md#11-experimental-mtu-and-icmp-boundary)
+records exact scope. [RFC 1191](https://www.rfc-editor.org/rfc/rfc1191.html)
+and [RFC 8201](https://www.rfc-editor.org/rfc/rfc8201.html) define relevant
+path-MTU feedback; fixed link sizing cannot establish that behavior.
+
 Until accepted, keep experimental packages isolated from production-facing
 interfaces. The adapters may differ by role; the production workspace must
 hide third-party types behind the contracts needed by its next working

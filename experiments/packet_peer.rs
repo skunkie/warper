@@ -18,15 +18,35 @@ pub const MTU: usize = 1280;
 pub const PACKET_CAPACITY: usize = 64;
 pub const BYTE_CAPACITY: usize = 8192;
 
-#[derive(Default)]
 pub struct PacketDevice {
     incoming: VecDeque<Vec<u8>>,
     pub outgoing: VecDeque<Vec<u8>>,
+    mtu: usize,
+}
+
+impl Default for PacketDevice {
+    fn default() -> Self {
+        Self {
+            incoming: VecDeque::new(),
+            outgoing: VecDeque::new(),
+            mtu: MTU,
+        }
+    }
 }
 
 impl PacketDevice {
+    pub fn with_mtu(mtu: usize) -> io::Result<Self> {
+        if !(MTU..=1500).contains(&mtu) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        Ok(Self {
+            mtu,
+            ..Self::default()
+        })
+    }
+
     pub fn inject(&mut self, packet: Vec<u8>) -> io::Result<()> {
-        if packet.len() > MTU || self.incoming.len() >= PACKET_CAPACITY {
+        if packet.len() > self.mtu || self.incoming.len() >= PACKET_CAPACITY {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         self.incoming.push_back(packet);
@@ -44,17 +64,17 @@ impl Device for PacketDevice {
         }
         self.incoming
             .pop_front()
-            .map(|packet| (RxPacket(packet), TxPacket(&mut self.outgoing)))
+            .map(|packet| (RxPacket(packet), TxPacket(&mut self.outgoing, self.mtu)))
     }
 
     fn transmit(&mut self, _: Instant) -> Option<Self::TxToken<'_>> {
-        (self.outgoing.len() < PACKET_CAPACITY).then_some(TxPacket(&mut self.outgoing))
+        (self.outgoing.len() < PACKET_CAPACITY).then_some(TxPacket(&mut self.outgoing, self.mtu))
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut capabilities = DeviceCapabilities::default();
         capabilities.medium = Medium::Ip;
-        capabilities.max_transmission_unit = MTU;
+        capabilities.max_transmission_unit = self.mtu;
         capabilities
     }
 }
@@ -67,12 +87,12 @@ impl phy::RxToken for RxPacket {
     }
 }
 
-pub struct TxPacket<'a>(&'a mut VecDeque<Vec<u8>>);
+pub struct TxPacket<'a>(&'a mut VecDeque<Vec<u8>>, usize);
 
 impl phy::TxToken for TxPacket<'_> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, length: usize, operation: F) -> R {
         // Device contract: smoltcp must respect the advertised IP MTU.
-        assert!(length <= MTU, "stack exceeded advertised MTU");
+        assert!(length <= self.1, "stack exceeded advertised MTU");
         let mut packet = vec![0; length];
         let result = operation(&mut packet);
         self.0.push_back(packet);
@@ -90,7 +110,11 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(address: IpAddr, port: u16) -> anyhow::Result<Self> {
-        let mut device = PacketDevice::default();
+        Self::with_mtu(address, port, MTU)
+    }
+
+    pub fn with_mtu(address: IpAddr, port: u16, mtu: usize) -> anyhow::Result<Self> {
+        let mut device = PacketDevice::with_mtu(mtu)?;
         let mut config = Config::new(HardwareAddress::Ip);
         config.random_seed = u64::from(port);
         let mut interface = Interface::new(config, &mut device, Instant::from_millis(0));
@@ -163,5 +187,21 @@ mod tests {
         assert!(device.transmit(Instant::from_millis(0)).is_none());
         device.outgoing.pop_front();
         assert!(device.transmit(Instant::from_millis(0)).is_some());
+    }
+
+    #[test]
+    fn controlled_mtu_bounds_are_validated_and_enforced_before_allocation() {
+        for mtu in [0, MTU - 1, 1501, usize::MAX] {
+            assert!(
+                matches!(PacketDevice::with_mtu(mtu), Err(error) if error.kind()==io::ErrorKind::InvalidInput)
+            );
+        }
+        let mut device = PacketDevice::with_mtu(1500).unwrap();
+        assert_eq!(device.capabilities().max_transmission_unit, 1500);
+        device.inject(vec![0; 1500]).unwrap();
+        assert_eq!(
+            device.inject(vec![0; 1501]).unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory
+        );
     }
 }

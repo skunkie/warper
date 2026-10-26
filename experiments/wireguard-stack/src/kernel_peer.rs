@@ -238,7 +238,7 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
         (Ok(()), report) => report?,
     };
     ensure!(
-        report.tcp == 1 && report.udp >= 3,
+        report.tcp == 1 && report.udp >= 4,
         "kernel peer did not verify the complete workload"
     );
     if require_retry {
@@ -346,6 +346,8 @@ fn udp_server(socket: UdpSocket, stop: &AtomicBool, deadline: Instant) -> Result
             payload.is_empty()
                 || payload == [0x31]
                 || payload == [0x72; 257]
+                || (payload.len() == if source.is_ipv6() { 1232 } else { 1252 }
+                    && payload.iter().all(|byte| *byte == 0x53))
                 || payload == b"heartbeat",
             "kernel UDP payload did not match synthetic workload"
         );

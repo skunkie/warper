@@ -7,6 +7,7 @@
 mod accepted_probe;
 mod adapter;
 mod direct;
+mod mtu_probe;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
 mod runtime;
@@ -30,6 +31,9 @@ const RESPONSE: &[u8] = b"synthetic-response-after-fin";
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments == ["--mtu-check"] {
+        return mtu_probe::run_probe();
+    }
     if arguments.is_empty() {
         for ipv6 in [false, true] {
             direct::run_probe(ipv6)?;
@@ -57,7 +61,10 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
-    ensure!(arguments == ["--wrapper"], "usage: host-stack [--wrapper]");
+    ensure!(
+        arguments == ["--wrapper"],
+        "usage: host-stack [--wrapper|--mtu-check]"
+    );
     let mut failures = 0;
     for ipv6 in [false, true] {
         for empty in [false, true] {

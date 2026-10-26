@@ -7,6 +7,7 @@
 mod outage;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+mod path_mtu;
 
 #[cfg(target_os = "linux")]
 mod kernel_peer;
@@ -55,6 +56,7 @@ struct Transport {
     socket: UdpSocket,
     remote: SocketAddr,
     allowed_source: IpAddr,
+    path_budget: path_mtu::PathBudget,
     initiations: usize,
     encrypted_packets: usize,
     drop_first_handshake: bool,
@@ -70,6 +72,7 @@ impl Transport {
             TunnResult::Done => Ok(false),
             TunnResult::Err(error) => bail!("WireGuard operation failed: {error:?}"),
             TunnResult::WriteToNetwork(packet) => {
+                self.path_budget.check_datagram(packet.len())?;
                 if packet.first() == Some(&1) {
                     self.initiations += 1;
                     if self.drop_first_handshake {
@@ -241,6 +244,7 @@ fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
         remote: client_transport.socket.local_addr()?,
         socket: server_socket,
         allowed_source: client_address,
+        path_budget: path_mtu::PathBudget::new(1500, false)?,
         initiations: 0,
         encrypted_packets: 0,
         drop_first_handshake: false,
@@ -262,6 +266,7 @@ fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
 }
 
 fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
+    let path_budget = path_mtu::PathBudget::new(1500, remote.is_ipv6())?;
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
     let client = Peer::new(client_address, 40000)?;
@@ -281,6 +286,7 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         socket,
         remote,
         allowed_source: server_address,
+        path_budget,
         initiations: 0,
         encrypted_packets: 0,
         drop_first_handshake: false,
@@ -306,7 +312,12 @@ fn run_client(
         (server_address, 9000),
         (client_address, 40001),
     )?;
-    let payloads = [vec![], vec![0x31], vec![0x72; 257]];
+    let payloads = [
+        vec![],
+        vec![0x31],
+        vec![0x72; 257],
+        vec![0x53; if ipv6 { 1232 } else { 1252 }],
+    ];
     for payload in &payloads {
         client
             .sockets
@@ -494,5 +505,39 @@ mod tests {
             receiver.recv_from(&mut [0; 256]).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
+    }
+
+    #[test]
+    fn outer_budget_rejects_real_oversized_encrypted_data_before_socket_send() {
+        let (mut client, mut server) = create_pair(false).unwrap();
+        client.peer = Peer::with_mtu("10.66.66.2".parse().unwrap(), 40000, 1500).unwrap();
+        client
+            .peer
+            .sockets
+            .get_mut::<udp::Socket>(client.peer.udp)
+            .send_slice(
+                &[0x53; 1472],
+                "10.66.66.10:9000".parse::<SocketAddr>().unwrap(),
+            )
+            .unwrap();
+        client.peer.poll(0);
+        client.transport.pump(&mut client.peer).unwrap();
+        server.transport.pump(&mut server.peer).unwrap();
+        let error = client.transport.pump(&mut client.peer).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<path_mtu::Error>(),
+            Some(&path_mtu::Error::PacketTooLarge)
+        );
+        let mut bytes = [0; 1600];
+        for _ in 0..2 {
+            match server.transport.socket.recv_from(&mut bytes) {
+                Ok((length, _)) => assert!(
+                    length == 32,
+                    "only the handshake keepalive may reach the peer"
+                ),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("controlled outer receiver failed: {error}"),
+            }
+        }
     }
 }

@@ -117,7 +117,8 @@ above remain open.
   owns one raw-IP device, interface, socket set, TCP socket, and UDP socket.
   `Peer::poll(i64)` takes elapsed milliseconds only within this experiment;
   production deadlines must use typed durations. `PacketDevice::inject`
-  returns `io::ErrorKind::OutOfMemory` for packets over 1280 bytes or a full
+  returns `io::ErrorKind::OutOfMemory` for packets over its declared MTU
+  (default 1280; controlled MTU fixtures allow 1280–1500) or a full
   64-packet ingress queue. Egress applies backpressure at 64 packets through
   the `Device` transmit/receive tokens. Each TCP direction and UDP byte ring
   is 8192 bytes, with eight UDP metadata slots per direction. Container and
@@ -539,3 +540,48 @@ backpressure require separate decisions. Full-queue tests observe 64 actual
 encrypted datagrams at the peer socket, not 64 application deliveries through
 its smaller UDP ring. Kernel-peer interoperability/rekey and same-library
 outage scopes remain separate evidence.
+
+## 11. Experimental MTU and ICMP Boundary
+
+Status: fixed-envelope checks exist; dynamic PMTU and fragment reassembly
+are unsupported and the explicit `host-stack --mtu-check` gate fails.
+`mtu_probe.rs` drives actual smoltcp TCP sockets with a controlled clock.
+The shared `Peer::with_mtu` constructor accepts only 1280–1500 bytes for
+these experiments, preserving the default 1280 and bounded packet counts.
+This is fixture configuration, not a change to YAML MTU validation.
+
+Both families demonstrate fixed 1280-byte segmentation and valid ICMP
+port-unreachable responses from the raw stack. A separate 1500-byte link
+emits real TCP data above 1280. A controlled ICMPv4 fragmentation-required
+or ICMPv6 Packet Too Big message advertises 1280 and quotes that packet's
+exact header and transport bytes. The fixture validates message type/code,
+next-hop MTU, quote, and checksum; it preserves original quoted lengths
+rather than rewriting a truncated quote to fit a high-level parser. IPv6
+errors stay within 1280 bytes. Subsequent timer-driven retries still exceed
+the advertised path size. The pinned stack does not adjust TCP sizing from
+this feedback and exposes no public established-connection MTU setter.
+
+Fragment probes split a valid UDP datagram into two actual IPv4/IPv6
+fragments and inject both orders. No UDP payload is reassembled with the
+selected features, while the unfragmented control reaches its UDP socket.
+These limitations must be resolved through a supported adapter/library
+strategy before the MTU/ICMP gate or stack ADR can be accepted. ICMP
+generation by a raw peer does not prove error propagation through the host
+runtime or active backend API. Kernel TUN, route/path changes, and native
+platform behavior remain unverified.
+
+`wireguard-stack/src/path_mtu.rs` separately validates a declared outer
+budget before transport use and rejects oversized encrypted datagrams before
+socket send. The loopback fixture declares 1500 bytes, not a discovered or
+verified physical PMTU. Fixed 1280-byte inner packets require at least 1340
+bytes for IPv4 outer transport or 1360 for IPv6: IP and UDP headers plus
+32-byte WireGuard data overhead. The bound reserves 16-byte alignment,
+although pinned BoringTun currently emits unpadded data. Budgets above 65535
+are invalid; insufficient paths are typed `PathTooSmall`, and oversized
+output is `PacketTooLarge`, without fallback or fragmentation. Supporting
+smaller physical paths requires an explicit separate strategy.
+
+WireGuard peers now exchange maximum unfragmented UDP payloads (1252 IPv4,
+1232 IPv6) as well as empty/unequal messages. An oversized real encrypted
+packet test proves rejection before outer send. These prove fixed packet
+size bounds, not general PMTU discovery or fragmentation support.

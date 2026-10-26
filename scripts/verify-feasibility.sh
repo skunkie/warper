@@ -7,18 +7,22 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--kernel-peer] [--rekey]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--kernel-peer|--mtu-check] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --kernel-peer ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --kernel-peer && "$scope" != --mtu-check ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
 if [[ "$scope" == --kernel-peer && "$probe" != wireguard-stack ]]; then
     echo "--kernel-peer requires wireguard-stack" >&2
+    exit 2
+fi
+if [[ "$scope" == --mtu-check && "$probe" != host-stack ]]; then
+    echo "--mtu-check requires host-stack" >&2
     exit 2
 fi
 if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate ) ]]; then
@@ -27,6 +31,7 @@ if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$s
 fi
 probe_arguments=()
 isolation_mode=packet
+if [[ "$scope" == --mtu-check ]]; then probe_arguments+=(--mtu-check); fi
 if [[ "$scope" == --kernel-peer ]]; then
     probe_arguments+=(--kernel-peer)
     isolation_mode=kernel
@@ -85,6 +90,7 @@ timeout --signal=TERM --kill-after=2s "${timeout_seconds}s" \
 cat "$run_directory/probe.log"
 {
     echo "probe_exit=$status"
+    if [[ "$scope" == --mtu-check ]]; then echo "mtu_probe_exit=$status"; fi
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
     echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
     if [[ "$scope" == --kernel-peer ]]; then

@@ -41,6 +41,13 @@ and outer socket release (`target/evidence/phase-0/outage/README.md`). These
 same-library fixture observations do not close service/backend outage or
 crash recovery acceptance, independent-kernel outage, or MTU/ICMP gates.
 
+The explicit host MTU gate now reproduces oversized TCP retransmission after
+valid ICMP too-big feedback and missing fragment reassembly in both families
+(`target/evidence/phase-0/mtu/README.md`). Fixed 1280-byte segmentation,
+ICMP port-unreachable generation, and WireGuard envelope limits are tested.
+Dynamic PMTU/error propagation and fragmentation strategy remain unresolved;
+the MTU gate returns nonzero and stack ADR 0002 stays proposed.
+
 ## Gate Evidence
 
 Update this ledger when a phase or prerequisite changes status. Link the

@@ -134,6 +134,7 @@ rustup show
 cargo fetch --locked
 cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
+./scripts/verify-feasibility.sh host-stack --mtu-check
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-peer
@@ -153,6 +154,16 @@ probe's cleanup. The helper checks for a single-UID mapped user namespace
 before network mutation, removes its kernel interface after success/failure,
 and verifies removal using the link inventory.
 Do not run against the live host network to work around isolation failures.
+
+The explicit host `--mtu-check` scope currently returns nonzero with a typed
+unsupported-PMTU diagnostic. It verifies fixed 1280-byte TCP segmentation,
+ICMPv4/v6 port-unreachable responses, and valid too-big feedback quoting an
+actual oversized TCP packet, then observes the subsequent oversized retry.
+It also checks that fragmented UDP is not reassembled in either fragment
+order, with an unfragmented positive control. This records a candidate gap;
+it does not turn missing PMTU or fragmentation support into success.
+`cargo run --locked -p host-stack -- --mtu-check` runs the same probe without
+the namespace harness. Other host probes keep their narrower scope.
 
 The default host probe injects controlled IPv4/IPv6 packets into direct
 smoltcp 0.14 AnyIP interception. Two preconfigured destinations have separate
@@ -285,6 +296,13 @@ the pinned Linux-only `wireguard-uapi` library, followed by readback of the
 public key, peer count, allowed IPs, and listening port. Key-bearing messages
 and device snapshots are never logged. This kernel interface is a test peer,
 not part of the production userspace WireGuard backend.
+
+WireGuard packet probes also check maximum unfragmented inner UDP payloads.
+`path_mtu.rs` bounds encrypted output using a declared 1500-byte loopback
+path budget and the actual outer address family before socket send. The
+fixed 1280-byte inner MTU needs at least 1340 bytes over IPv4 outer transport
+or 1360 over IPv6. This is an envelope check, not physical PMTU discovery;
+insufficient budgets and oversized encrypted output return typed errors.
 
 Controlled standard-library TCP/UDP servers check addresses and synthetic
 payloads, preserve empty datagrams, and return TCP response bytes after
