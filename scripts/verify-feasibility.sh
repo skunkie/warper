@@ -37,10 +37,11 @@ if [[ "$scope" == --kernel-peer ]]; then
     isolation_mode=kernel
 fi
 timeout_seconds=20
+if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=50; fi
 if [[ "$rekey" == --rekey ]]; then
     probe_arguments+=(--rekey)
     timeout_seconds=150
-    if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=180; fi
+    if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=200; fi
 fi
 for tool in cargo rustc git timeout unshare ip bash python3 cat; do
     if ! command -v "$tool" >/dev/null 2>&1; then

@@ -60,8 +60,12 @@ probes cover all four inner/outer combinations; the independent kernel peer
 covers matching families and sustained rekey over IPv6 outer transport
 (`target/evidence/phase-0/outer-ipv6/README.md`). The encrypted-size guard
 accounts for the actual outer family before socket send.
-Dynamic PMTU/error propagation,
-outgoing fragmentation, larger datagrams, and extension-header strategy
+A single reserved UDP operation can now surface validated ICMP port-unreachable
+feedback after WireGuard decryption, including real errors from the independent
+kernel peer in both families. Minimum quotes, malformed/unrelated feedback,
+one-time delivery, cancellation and owner expiry are checked
+(`target/evidence/phase-0/udp-feedback/README.md`). General error propagation,
+dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header strategy
 remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 
 ## Gate Evidence

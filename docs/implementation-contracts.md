@@ -713,3 +713,31 @@ the kernel-peer's additional sustained rekey workload uses IPv6 outer
 transport. These
 loopback probes establish family interoperability, not physical-path bypass,
 outer fragmentation, dynamic PMTU discovery, or production endpoint roaming.
+
+## 16. Experimental Reserved UDP Error Feedback
+
+Status: a single-operation feasibility boundary, not a production backend API.
+A transport may reserve one emitted unfragmented UDP packet for error matching.
+Reservation retains only addresses, IPv4 identification when applicable, and
+its eight-byte UDP header, never payload. A second reservation returns typed
+Busy without replacing the first. The operation owner supplies its deadline
+and destroys the transport on cancellation/expiry; no unbounded error queue or
+packet history is retained. Default exchanges do not reserve operations.
+
+After authenticated source/local-destination validation, plaintext ICMPv4
+port-unreachable or ICMPv6 destination-unreachable/code 4 is matched against
+that reservation. Validate full outer IP/ICMP lengths/checksums and the quoted
+IP header, protocol, addresses, UDP header/declared length, and IPv4 identity.
+Quotes may be truncated after the complete UDP header without rewriting the
+original IP length. Ignore unrelated/malformed ICMP bodies inside valid IP
+envelopes without consuming the reservation; malformed IP envelopes retain
+the experiment's existing packet-failure policy. A match consumes it once and returns typed PortUnreachable through
+the existing fatal experimental owner; application payload is never replayed.
+
+Only plain unfragmented IPv4/IPv6 headers are accepted by this candidate.
+Router-originated errors, other ICMP categories, PMTU adjustment, concurrent
+UDP operations, host-side error synthesis and production peer-error isolation
+remain unresolved. Peer authentication authenticates the tunnel sender, not
+any quoted packet's ultimate origin. Matching minimum quotes cannot distinguish
+identical datagrams; deadlines/ownership limit stale-operation exposure and do
+not establish cryptographic anti-spoofing.

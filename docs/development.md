@@ -363,7 +363,8 @@ TUN-capable environment for that gate.
 Each harness run writes environment/revision information, the lockfile,
 build/probe output, exit status, and explicit unrun gates into a unique
 directory under `target/evidence/phase-0/`. Its timeout is 20 seconds for
-ordinary probes, 150 seconds for `--packet-only --rekey`, and 180 seconds
+ordinary packet probes, 50 seconds for kernel-peer probes, 150 seconds for
+`--packet-only --rekey`, and 200 seconds
 for `--kernel-peer --rekey`, including bounded handshake recovery and fixture
 drain. The latter modes record rekey status separately. The evidence README
 records commands and their scope. Full acceptance must extend the harness
@@ -445,3 +446,14 @@ UDP. Endpoint family determines local socket family and declared header
 budget; unsupported IPv6 socket setup fails explicitly. The unit workload
 checks actual ciphertext delivery at the IPv4/IPv6 outer-size boundary.
 These loopback tests do not establish physical routing or dynamic PMTU.
+
+WireGuard packet probes also reserve one emitted UDP operation and send it to
+a controlled closed port. `udp_feedback.rs` matches authenticated plaintext
+ICMPv4/ICMPv6 port-unreachable quotes and returns a typed error. Matching stores
+addresses, optional IPv4 identity and eight UDP header bytes; payload is not
+retained. Tests cover minimum quotes, checksums, malformed and unrelated data,
+second-reservation rejection, one-time delivery, cancellation and owner expiry.
+The independent kernel scope repeats the closed-port probe in both families.
+Its four bounded exchanges account for the longer 50-second harness deadline;
+200 seconds covers those exchanges plus optional 135-second rekey. Dynamic
+PMTU, concurrent UDP error delivery and host-side error synthesis remain open.

@@ -13,6 +13,8 @@ mod packet_peer;
 mod path_mtu;
 #[path = "../../reassembly.rs"]
 mod reassembly;
+mod udp_feedback;
+mod udp_feedback_probe;
 
 #[cfg(target_os = "linux")]
 mod kernel_peer;
@@ -64,6 +66,7 @@ struct Transport {
     allowed_source: IpAddr,
     path_budget: path_mtu::PathBudget,
     reassembly: reassembly::Reassembler,
+    udp_feedback: Option<udp_feedback::Reservation>,
     now: Duration,
     initiations: usize,
     encrypted_packets: usize,
@@ -169,6 +172,14 @@ impl Transport {
         Ok(())
     }
 
+    fn watch_udp(&mut self, packet: &[u8]) -> Result<()> {
+        if self.udp_feedback.is_some() {
+            return Err(udp_feedback::Error::Busy.into());
+        }
+        self.udp_feedback = Some(udp_feedback::Reservation::new(packet)?);
+        Ok(())
+    }
+
     fn inject_inner(&mut self, packet: &[u8], peer: &mut Peer) -> Result<()> {
         let destination = Tunn::dst_address(packet).ok_or(TransportFailure::InnerDestination)?;
         if !peer
@@ -178,6 +189,14 @@ impl Transport {
             .any(|address| address.address() == destination.into())
         {
             return Err(TransportFailure::InnerDestination.into());
+        }
+        if self
+            .udp_feedback
+            .as_ref()
+            .is_some_and(|reservation| reservation.matches(packet))
+        {
+            self.udp_feedback = None;
+            return Err(udp_feedback::Error::PortUnreachable.into());
         }
         match self.reassembly.accept(packet, self.now)? {
             reassembly::Outcome::Pass => peer.device.inject(packet.to_vec())?,
@@ -239,6 +258,8 @@ fn main() -> Result<()> {
         println!(
             "PASS WireGuard outage: bounded staging, recovery, deadlines and cancellation, IPv6={ipv6}"
         );
+        udp_feedback_probe::run_probe(ipv6)?;
+        println!("PASS reserved UDP port-unreachable propagation, IPv6={ipv6}");
         fragment_probe::run_probe(ipv6)?;
         println!(
             "PASS encrypted fragment input: both orders, UDP round trip, expiry and cleanup, IPv6={ipv6}"
@@ -296,6 +317,7 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         allowed_source: client_address,
         path_budget: path_mtu::PathBudget::new(1500, outer_ipv6)?,
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
+        udp_feedback: None,
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
@@ -340,6 +362,7 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         allowed_source: server_address,
         path_budget,
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
+        udp_feedback: None,
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,

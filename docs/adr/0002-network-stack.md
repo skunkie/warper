@@ -327,3 +327,17 @@ the server applies the same outer-header budget. A real encrypted 1472-byte
 datagram fits a 1500-byte IPv4 outer path but is rejected for IPv6 before send;
 larger encrypted data is rejected for both families. This verifies declared
 budgets and interoperability, not dynamic path discovery or physical bypass.
+
+An experimental single-operation reservation now matches port-unreachable
+errors after authenticated WireGuard decryption. It stores only IP addresses,
+IPv4 identification where applicable, and the eight-byte UDP header. A typed
+error consumes the reservation once; unrelated or corrupt feedback leaves it
+intact. The operation owner controls deadlines and destroys it on cancellation
+or expiry. Both inner families run through actual same-library and independent
+kernel-generated errors. Minimum quotes preserve original IP lengths, following
+[RFC 792](https://www.rfc-editor.org/rfc/rfc792.html) and
+[RFC 4443](https://datatracker.ietf.org/doc/html/rfc4443#section-3.1).
+This is restricted UDP error evidence, not general ICMP/PMTU support. Concurrent
+operations, router-originated errors, host-side synthesis and error isolation
+still need contracts. Identical datagrams cannot be distinguished from minimum
+quotes; peer authentication does not prove a quoted packet's ultimate origin.

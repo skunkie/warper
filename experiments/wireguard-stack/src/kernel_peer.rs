@@ -164,6 +164,8 @@ pub fn run(rekey: bool) -> Result<()> {
         endpoint.set_port(configured.listen_port);
         exchange(ipv6, Duration::ZERO, endpoint)?;
         verify_handshake(&mut netlink, false)?;
+        super::udp_feedback_probe::run_kernel(ipv6, endpoint)?;
+        println!("PASS independent kernel UDP port-unreachable propagation, IPv6={ipv6}");
         println!(
             "PASS independent Linux kernel peer: TCP/UDP, empty datagram, FIN, inner_ipv6={ipv6}, outer_ipv6={ipv6}"
         );

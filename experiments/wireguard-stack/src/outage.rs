@@ -681,4 +681,68 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn reserved_udp_errors_and_cancellation_release_the_owner() {
+        for ipv6 in [false, true] {
+            for action in ["feedback", "cancel", "expire"] {
+                let (mut client, mut server) = fixture(ipv6).unwrap();
+                let address = endpoint_address(&mut client).unwrap();
+                let mut target = destination(ipv6).unwrap();
+                target.set_port(9001);
+                let endpoint = client.endpoint().unwrap();
+                endpoint
+                    .peer
+                    .sockets
+                    .get_mut::<udp::Socket>(endpoint.peer.udp)
+                    .send_slice(&[0x53; 257], target)
+                    .unwrap();
+                endpoint.peer.poll(0);
+                let packet = endpoint.peer.device.outgoing.front().unwrap().clone();
+                endpoint.transport.watch_udp(&packet).unwrap();
+                assert_eq!(
+                    endpoint
+                        .transport
+                        .watch_udp(&packet)
+                        .unwrap_err()
+                        .downcast_ref::<crate::udp_feedback::Error>(),
+                    Some(&crate::udp_feedback::Error::Busy)
+                );
+                if action == "cancel" {
+                    client.cancel();
+                    assert_eq!(
+                        client.step(Duration::ZERO).unwrap_err().reason,
+                        Reason::Cancelled
+                    );
+                } else if action == "expire" {
+                    assert_eq!(
+                        client.step(Duration::from_secs(10)).unwrap_err().reason,
+                        Reason::LifetimeTimeout
+                    );
+                } else {
+                    let wall = Instant::now();
+                    let failure = loop {
+                        assert!(wall.elapsed() < Duration::from_secs(2));
+                        let now = wall.elapsed();
+                        if let Err(failure) = client.step(now) {
+                            break failure;
+                        }
+                        server_step(&mut server, now).unwrap();
+                        thread::sleep(Duration::from_millis(1));
+                    };
+                    assert_eq!(failure.reason, Reason::Transport);
+                    assert_eq!(
+                        failure
+                            .source
+                            .as_ref()
+                            .unwrap()
+                            .downcast_ref::<crate::udp_feedback::Error>(),
+                        Some(&crate::udp_feedback::Error::PortUnreachable)
+                    );
+                }
+                assert!(client.endpoint.is_none());
+                UdpSocket::bind(address).unwrap();
+            }
+        }
+    }
 }
