@@ -100,13 +100,29 @@ admission at the combined window/buffer bound. Cancellation is explicit and
 idempotent, aborts/closes sockets, discards queued packets, and refuses new
 input. The tests use a controlled clock and bounded packet steps.
 
-This closes the immediate empty-datagram experiment gap without depending
-on the wrapper's internal workers or queues. It does not select a production
-adapter: destinations and slots are fixed before the run, handlers are
-in-process controlled echoes, and there is no general asynchronous
-accepted-stream interface or dynamic destination admission yet. General
-admission, UDP overload accounting, ownership handoff, and supervised
-production scheduling still need executable contracts and traffic evidence.
+This fixed-destination comparison closes the immediate empty-datagram gap
+without depending on the wrapper's internal workers or queues. A separate
+TCP-only candidate in `experiments/host-stack/src/adapter.rs` now admits
+selected destinations on validated SYNs and returns asynchronous accepted
+streams. It preserves original tuples, per-run flow identifiers, and the
+backend chosen at admission. Two sources sharing a destination occupy
+distinct slots; duplicate SYNs retain their slot and identifier.
+
+The adapter reserves lifetime-buffer and accept-queue capacity before socket
+publication. An incomplete handshake has a setup deadline; accepted-stream
+publication waits for handshake completion. Idle/max-age deadlines, reset,
+application drop, and driver cancellation have explicit outcomes. Closed
+streams retain their buffer charge until both driver and consumer drop
+them, independently of reusable socket slots. Tests cover queue rollback,
+both half-close orders, slow readers, and typed timeout/reset/cancellation
+errors. `accepted_probe.rs` retains and joins controlled handler tasks.
+
+This is an experimental TCP boundary, not a selected production adapter.
+Dynamic UDP associations, runtime wake/timer scheduling, aggregate
+integration stress, and kernel TUN traffic remain unproven. Backend indices
+and limits are synthetic prototype inputs, not implemented YAML/service
+contracts. The [accepted TCP boundary](../implementation-contracts.md#7-experimental-accepted-tcp-boundary)
+records concrete signatures, ownership, and remaining decisions.
 
 Active smoltcp sockets exchange TCP/UDP over real IPv4 loopback UDP between
 two BoringTun peers, with IPv4/IPv6 inner traffic, empty datagrams, and

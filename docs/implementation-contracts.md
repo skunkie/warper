@@ -150,8 +150,9 @@ above remain open.
   and `verify_stalled_reader(bool)` exercise both families with a controlled
   clock. Full exchange/admission is capped at ten simulated seconds;
   the stalled-reader case drives five seconds without application reads.
-  There is no asynchronous accepted-stream API, backend transport, or
-  production scheduler here. Their contracts remain open.
+  This fixed-destination comparison has no asynchronous accepted-stream API.
+  The separate TCP candidate below extends that boundary; backend transports
+  and production scheduling remain open.
 - `experiments/wireguard-stack/src/main.rs`: `probe(bool, Duration)` owns
   two peers, two nonblocking loopback UDP sockets, and two BoringTun states.
   No worker is spawned. It polls timers and packet I/O every millisecond,
@@ -169,3 +170,99 @@ route driver, system DNS, journal, resource reservation manager, or service
 supervisor here, so these experiments cannot establish those interfaces or
 their acceptance invariants. Explicit cancellation, uncertain ACK/rollback,
 and crash-recovery tests must still be added for the applicable boundaries.
+
+## 7. Experimental Accepted TCP Boundary
+
+Status: executable Phase 0 candidate, not the finalized production contract.
+Sources are `experiments/host-stack/src/adapter.rs`, adjacent
+`adapter_tests.rs`, and `accepted_probe.rs`. Third-party stack types are
+private. No production package depends on this candidate.
+
+`FlowMetadata` contains `FlowId(u64)`, source/destination `SocketAddr`, and
+`BackendId(u8)`. Backend indices are synthetic prototype identities, not
+the stable string IDs of YAML. `AcceptedFlow` owns that metadata and an
+`AcceptedStream` implementing Tokio `AsyncRead + AsyncWrite + Send + Unpin`.
+Both driver and accepted flow are compile-checked as `Send`. The concrete
+entry points, exercised by source tests, are:
+
+```text
+HostAdapter::new(Limits, fn(SocketAddr) -> Option<BackendId>)
+    -> Result<(HostAdapter, mpsc::Receiver<AcceptedFlow>), AdmissionError>
+HostAdapter::inject(&mut self, &[u8]) -> Result<FlowId, AdmissionError>
+HostAdapter::poll_io(&mut self, &mut Context<'_>, Duration)
+    -> Result<(), AdmissionError>
+HostAdapter::take_packet(&mut self) -> Option<Vec<u8>>
+HostAdapter::active_flows(&self) -> usize
+HostAdapter::statistics(&self) -> &Statistics
+HostAdapter::cancel(&mut self)
+```
+
+### Admission and Publication
+
+Input is limited to the 1280-byte MTU. Library IP/TCP parsers validate
+lengths, checksums, ports, and supported headers before admission. The
+candidate rejects UDP/IPv6 extension transports with `UnsupportedProtocol`;
+fragmented/malformed IPv4 is rejected by the configured library parser.
+A non-SYN packet without an owner is `UnknownFlow`. An unmatched
+destination is `UnselectedDestination`, with no direct transport. Existing
+tuples retain their backend and ID; duplicate SYNs do not allocate a stream
+or reset the setup deadline.
+
+A new tuple reserves a socket slot, lifetime buffer permit, and owned
+accept-queue permit before mutation. Packet-queue failure aborts the new
+listener and releases reservations without disturbing other flows. Only
+handshake completion publishes `AcceptedFlow`; the channel is not an
+unbounded SYN queue. Setup expiry drops the unpublished stream and queue
+permit. IDs increase; exhaustion rejects admission instead of wrapping.
+The adapter never retries application bytes after partial admission/reset.
+
+### Ownership, Bounds, and Deadlines
+
+The driver owns an interface, packet device, fixed socket storage, and fixed
+slot metadata. Defaults are two flows and two accept-queue permits; both
+must be positive, queue capacity cannot exceed flow count, and the prototype
+caps flows at sixteen. Each TCP socket has 8192 bytes per direction. Each
+flow also owns a Tokio duplex connection with 8192 bytes per direction.
+An owned semaphore permit is shared by driver and application lifetime
+state and released only after both drop. Thus at most `limits.flows`
+duplex lifetimes exist, including retired streams held by consumers.
+A consumer retaining a timed-out stream can block new admission; it cannot
+cause unbounded retired buffers. Default socket/duplex payload capacity
+totals 64 KiB. Packet queues (64 packets per direction), metadata, fixed
+channel/container allocation, allocator overhead, and stack bookkeeping
+are additional; this is not a process RSS limit.
+
+Storage sizes are fixed at construction. Bridging handles at most 1024
+bytes per direction per flow per poll and honors free send-ring space.
+Full duplex rings backpressure stack reads and the receive window; reads
+reopen that window. Bounded counters replace completion history. No
+synchronous mutex is held across asynchronous work.
+
+The caller supplies monotonic elapsed `Duration`; backward/unrepresentable
+time is `InvalidTime`. Default setup/idle/absolute-age budgets are 10, 300,
+and 86400 seconds, respectively. Limits are injectable for timer tests;
+invalid/unrepresentable limits fail construction. Expiry at the deadline
+aborts the socket and drops driver state, while consumer-held buffers
+remain charged. No application task is needed for timer-only tests.
+
+### EOF, Errors, and Supervision
+
+Half-close works in either order; read EOF preserves the opposite write
+direction. Normal completion leaves buffered application output readable.
+Transport reset is `io::ErrorKind::ConnectionReset`, deadline expiry is
+`TimedOut`, and driver cancellation/drop is `Interrupted`, rather than
+clean EOF. The shared reason is published before dropping the duplex
+driver, waking blocked readers/writers. Repeated cancellation is safe,
+closes acceptance, aborts sockets, discards packets, and rejects input.
+Dropping an application before network EOF retires that flow; normal
+EOF/shutdown allows buffered response data to drain.
+
+The adapter spawns no task. The probe owns at most two controlled handler
+tasks in a `JoinSet`, checks their results, and on failure cancels the
+driver then aborts/joins remaining handlers while preserving the initial
+error and cleanup diagnostics. The probe has a five-second wall deadline
+and bounded controlled packet steps. A production runner must still prove
+readiness/waker/timer scheduling, driver-failure propagation, task ownership,
+and bounded service shutdown. These manually polled experiments do not
+establish runtime supervision, general UDP acceptance, or route, DNS,
+physical-transport, and native-platform mutation boundaries.

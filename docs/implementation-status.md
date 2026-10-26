@@ -16,7 +16,7 @@ gates remain open.
 | Phase | Status | Evidence / next unmet gate |
 | --- | --- | --- |
 | Development infrastructure | Available | `scripts/check.sh` runs licensing, workflow/composite lint, shell lint, and harness tests; CI enables Rust jobs once workspace prerequisites exist |
-| 0: Baseline and feasibility | In progress | Workspace and fixture catalog exist; isolated probes under `experiments/` produce evidence under `target/evidence/phase-0/`. Direct smoltcp 0.14 preserves empty UDP, two-handler dispatch, bounded slots/windows, cancellation, and stalled-reader backpressure; the wrapper comparison still fails empty replies. Active sockets work through loopback BoringTun peers. Next: general accepted-flow/admission contracts, kernel TUN traffic, independent WireGuard peer, outage/MTU evidence |
+| 0: Baseline and feasibility | In progress | Isolated probes under `experiments/` produce evidence under `target/evidence/phase-0/`. Direct smoltcp 0.14 preserves UDP and bounded packet behavior; a TCP adapter now admits dynamic/shared destinations into bounded asynchronous streams with queue rollback, retained-buffer permits, deadlines, cancellation, and reset errors. Active sockets work through loopback BoringTun peers; wrapper comparison remains rejected. Next: independent WireGuard peer, general UDP admission, production scheduling/contracts, kernel TUN and outage/MTU evidence |
 | Contract gate before production dependencies | Pending Phase 0 | Complete `implementation-contracts.md` with selected APIs and source links |
 | 1: Headless Linux service slice | Not started | Depends on feasibility, initial contracts, authorized control, and client-independent lifecycle |
 | 2: Linux DNS and routing | Not started | Depends on fixed-CIDR lifecycle; NET-10/NET-11 cover grace/endpoint publication, and NET-12 requires global retained-state admission/renewal/exhaustion evidence |
@@ -29,6 +29,9 @@ establish limited transport behavior, not NET-01/NET-05/NET-06/NET-07 or
 the complete Phase 0 exit criteria. No native macOS evidence exists.
 `tests/fixtures/configuration/cases.toml` captures parser and capability
 expectations; executable production parser/CLI registration remains Phase 1.
+TUN device provisioning is denied here even inside disposable namespaces;
+its kernel gate remains unverified. This does not block independent
+userspace peer and adapter experiments.
 
 ## Gate Evidence
 

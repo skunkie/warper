@@ -157,6 +157,21 @@ packet queues are bounded; its clock and packet steps are controlled.
 It does not yet expose a general asynchronous accepted-stream API or
 admit arbitrary discovered destinations.
 
+The host executable additionally runs a separate asynchronous TCP adapter
+probe. It admits policy-selected destinations from validated SYNs rather
+than preinstalling a listener per destination, and verifies two sources
+sharing a destination as well as distinct destinations. Connections stream
+64 KiB through Tokio `AsyncRead`/`AsyncWrite`, preserve metadata, and finish
+request FIN followed by backend response FIN. Unit tests add the reverse
+half-close order, setup/idle/max-age boundaries, invalid input, queue
+rollback, retained closed-stream budgets, slow-reader backpressure,
+cancellation wakeups, and reset errors. Handler tasks are retained and
+joined; the adapter owns no background tasks. Its driver is explicitly
+polled with a controlled clock. This TCP candidate returns a typed unsupported
+error for UDP; the fixed-destination UDP probe remains separate. There is
+no production service, general UDP adapter, or completed runtime scheduling
+contract yet.
+
 The wrapper comparison remains available explicitly:
 
 ```sh
@@ -194,6 +209,13 @@ backend outage/crash cleanup, and MTU/ICMP acceptance are still
 unimplemented or unverified. Kernel tests will require a disposable
 TUN-capable Linux environment; native macOS gates require a separate runner.
 The [network-stack ADR](adr/0002-network-stack.md) remains proposed.
+
+The current development environment exposes a kernel TUN driver but has
+no `/dev/net/tun` and denies creation of a temporary device node even in a
+private tmpfs/user/network/mount namespace. Record the denied capability as
+unverified TUN acceptance; do not change the live host to work around it.
+Continue independent peer/adapter work while arranging a disposable
+TUN-capable environment for that gate.
 
 Each harness run writes environment/revision information, the lockfile,
 build/probe output, exit status, and explicit unrun gates into a unique

@@ -4,6 +4,8 @@
 
 //! Packet-level candidate checks; these do not establish kernel TUN acceptance.
 
+mod accepted_probe;
+mod adapter;
 mod direct;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
@@ -34,6 +36,11 @@ async fn main() -> Result<()> {
             println!("PASS direct smoltcp: occupied-slot rejection and cancellation, IPv6={ipv6}");
             direct::verify_stalled_reader(ipv6)?;
             println!("PASS direct smoltcp: stalled-reader backpressure, IPv6={ipv6}");
+            accepted_probe::run_probe(ipv6, false).await?;
+            accepted_probe::run_probe(ipv6, true).await?;
+            println!(
+                "PASS asynchronous TCP: dynamic destinations, shared destination, metadata and half-close, IPv6={ipv6}"
+            );
         }
         return Ok(());
     }
