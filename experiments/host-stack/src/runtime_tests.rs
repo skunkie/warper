@@ -30,6 +30,44 @@ async fn idle_runner_waits_without_periodic_polling_and_shutdown_is_joined() {
     assert_eq!(report.timer_wakes, 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn first_packet_after_long_idle_uses_current_admission_time() {
+    let (runtime, mut channels) = runtime(2);
+    let runner = tokio::spawn(runtime.run());
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(100)).await;
+    channels.ingress.try_inject(&udp_packet(40000)).unwrap();
+    let mut association = channels.udp.recv().await.unwrap();
+    assert_eq!(association.recv().await.unwrap().payload(), b"sample");
+    association.try_reply(b"reply").unwrap();
+    assert!(channels.packets.recv().await.is_some());
+    channels.shutdown.send(()).unwrap();
+    let report = runner.await.unwrap().unwrap();
+    assert_eq!(report.udp_timed_out, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn incomplete_fragments_publish_no_handler_and_expire_without_further_input() {
+    let (runtime, mut channels) = runtime(2);
+    let runner = tokio::spawn(runtime.run());
+    let fragments = crate::fragment_probe::split(&udp_packet(40000), 42, 8).unwrap();
+    channels.ingress.try_inject(&fragments[0]).unwrap();
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(channels.udp.try_recv().is_err());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    channels.shutdown.send(()).unwrap();
+    let report = runner.await.unwrap().unwrap();
+    assert_eq!(report.fragment_timeouts, 1);
+    assert_eq!(report.reassembled, 0);
+    assert_eq!(report.admitted, 0);
+    assert!(channels.udp.recv().await.is_none());
+}
+
 #[test]
 fn ingress_reserves_capacity_before_copying_and_rejects_oversized_input() {
     let (_runtime, channels) = runtime(1);

@@ -543,8 +543,8 @@ outage scopes remain separate evidence.
 
 ## 11. Experimental MTU and ICMP Boundary
 
-Status: fixed-envelope checks exist; dynamic PMTU and fragment reassembly
-are unsupported and the explicit `host-stack --mtu-check` gate fails.
+Status: fixed-envelope checks and bounded pre-admission fragment input exist;
+dynamic PMTU is unsupported and `host-stack --mtu-check` still fails.
 `mtu_probe.rs` drives actual smoltcp TCP sockets with a controlled clock.
 The shared `Peer::with_mtu` constructor accepts only 1280–1500 bytes for
 these experiments, preserving the default 1280 and bounded packet counts.
@@ -564,8 +564,9 @@ this feedback and exposes no public established-connection MTU setter.
 Fragment probes split a valid UDP datagram into two actual IPv4/IPv6
 fragments and inject both orders. No UDP payload is reassembled with the
 selected features, while the unfragmented control reaches its UDP socket.
-These limitations must be resolved through a supported adapter/library
-strategy before the MTU/ICMP gate or stack ADR can be accepted. ICMP
+Section 12 supplies a bounded fragment-input adapter without changing those
+raw-stack features. PMTU and the remaining fragmentation strategy must be
+resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
 generation by a raw peer does not prove error propagation through the host
 runtime or active backend API. Kernel TUN, route/path changes, and native
 platform behavior remain unverified.
@@ -585,3 +586,66 @@ WireGuard peers now exchange maximum unfragmented UDP payloads (1252 IPv4,
 1232 IPv6) as well as empty/unequal messages. An oversized real encrypted
 packet test proves rejection before outer send. These prove fixed packet
 size bounds, not general PMTU discovery or fragmentation support.
+
+## 12. Experimental Bounded Fragment Input
+
+Status: host-side Phase 0 candidate. Fragment input is normalized before
+TCP/UDP admission; no handler, backend, or flow is published for an incomplete
+datagram. The candidate uses released smoltcp header parsers and its public
+bounded `storage::Assembler`, with fixed payload storage and overlap policy
+owned by the adapter. No upstream fork or global fragmentation feature is
+introduced. Larger packets and extension-header chains remain unsupported.
+
+Defaults are two independent assembly slots, 1280 bytes per reassembled IP
+packet, and a one-second nonrenewing deadline. Overlap, inconsistent final
+length, protocol mismatch, or excessive disjoint ranges discard the whole
+datagram and retain its bounded tombstone until expiry. No protected assembly
+is evicted to admit another key. IPv6 atomic fragments are processed
+independently of queued fragments with the same identification. Cancellation
+and timeout clear partial state; runtime scheduling includes assembly expiry.
+Completed packets retain source/destination/protocol, have normalized IP
+length/fragment headers, and undergo the existing transport checksum and
+policy validation. This does not implement PMTU or outgoing fragmentation.
+
+Sources are `reassembly.rs`, `reassembly_tests.rs`, and `fragment_probe.rs`
+under `experiments/host-stack/src/`. Concrete entry points are:
+
+```text
+Reassembler::new(Limits) -> Result<Reassembler, Error>
+Reassembler::accept(&mut self, &[u8], Duration) -> Result<Outcome, Error>
+Reassembler::advance(&mut self, Duration) -> Result<(), Error>
+Reassembler::next_deadline(&self) -> Option<Duration>
+Reassembler::statistics(&self) -> &Statistics
+Reassembler::cancel(&mut self)
+Outcome = Pass | Pending | Complete(Vec<u8>)
+```
+
+Constructor limits permit 1–4 slots and a positive timeout up to 60 seconds.
+Each slot owns 1280 payload bytes, 40 header bytes, fixed library range
+metadata (four disjoint ranges with pinned build configuration), key,
+deadline, and bounded state. Slots are preallocated; fragments do not grow
+payload storage. One completed packet allocates at most 1280 bytes and is
+immediately validated/admitted by the owning runtime. Statistics saturate;
+no completion history or per-fragment timer node is retained.
+
+Only plain IPv4 headers or a base IPv6 header directly followed by one
+Fragment Header are supported, for TCP/UDP unicast traffic. Nonfinal payloads
+must be nonempty multiples of eight. First fragments must contain the full
+transport header. IPv4 fragment checksums, lengths, flags, and offsets are
+validated before reservation; IPv6 reserved fields and lengths are checked.
+IPv6 identity excludes next-header protocol, so a mismatch poisons the same
+assembly instead of creating another owner. IPv4 identity includes protocol.
+Reconstructed packets pass existing transport checksum/policy validation
+before publication. No route/backend reference is acquired for partial data.
+
+Overlapping duplicates are rejected as overlaps. Discarded assemblies retain
+their slot until the original deadline, preventing later pieces from reviving
+the same datagram. IPv6 atomic fragments neither consume nor alter a queued
+slot with their identification. The runtime observes assembly timers even
+without more input, and cancels this owner on every exit/drop path.
+
+Packet receive stages at most one additional MTU-sized input until the next
+bounded turn advances every adapter's monotonic clock. This prevents
+first-after-idle packets inheriting stale creation times. Queued shutdown
+still precedes admission, and cleanup counts/discards staged input. Separate
+protocol quotas, backend ownership, and guarded egress remain unchanged.

@@ -247,6 +247,25 @@ two-fragment UDP datagrams are not reassembled in either family/order.
 `host-stack --mtu-check` consequently returns typed unsupported-PMTU failure.
 This is an open required capability, not evidence for accepting the stack.
 
+A bounded pre-admission adapter now uses released smoltcp's public
+`storage::Assembler` and header parsers for a restricted fragment-input
+subset. It owns fixed storage, expiry, and strict overlap policy, without
+enabling the library's heap-growing reassembly implementation or introducing
+a fork. Existing etherparse 0.16 defragmentation source was also inspected;
+its growable pool/ranges and overlap merging do not provide this boundary's
+policy directly. No dependency or feature change is made.
+
+The candidate supports at most 1280-byte reassembled TCP/UDP packets, with
+two slots, fixed range metadata, and nonrenewing one-second deadlines.
+Overlap/conflicts discard the assembly and retain a bounded tombstone.
+IPv6 atomic fragments are independent, following
+[RFC 5722](https://www.rfc-editor.org/rfc/rfc5722.html) and
+[RFC 6946](https://www.rfc-editor.org/rfc/rfc6946.html). Both fragment orders
+feed actual UDP admission, and live TCP data traverses the combined runtime.
+This is limited incoming reassembly, not outgoing fragmentation, larger
+datagram support, or PMTU discovery. The [fragment boundary](../implementation-contracts.md#12-experimental-bounded-fragment-input)
+records exact limits and failure policy; the stack decision remains open.
+
 The shared transport validates a declared 1500-byte loopback outer budget
 and rejects encrypted packets that exceed it before socket send. Fixed
 1280-byte inner traffic needs 1340-byte IPv4 or 1360-byte IPv6 outer paths,

@@ -46,8 +46,10 @@ pub fn run_probe() -> Result<()> {
         );
         pmtu_ignored(ipv6).context(format!("PMTU capability IPv6={ipv6}"))?;
         fragments_not_reassembled(ipv6)?;
+        crate::fragment_probe::run_probe(ipv6)?;
         println!("PASS fixed 1280-byte TCP segmentation and ICMP port-unreachable, IPv6={ipv6}");
-        println!("LIMITATION dynamic PMTU and fragment reassembly unavailable, IPv6={ipv6}");
+        println!("PASS bounded pre-admission fragment input, IPv6={ipv6}");
+        println!("LIMITATION dynamic PMTU remains unavailable, IPv6={ipv6}");
     }
     Err(UnsupportedPmtu.into())
 }

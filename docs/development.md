@@ -159,9 +159,10 @@ The explicit host `--mtu-check` scope currently returns nonzero with a typed
 unsupported-PMTU diagnostic. It verifies fixed 1280-byte TCP segmentation,
 ICMPv4/v6 port-unreachable responses, and valid too-big feedback quoting an
 actual oversized TCP packet, then observes the subsequent oversized retry.
-It also checks that fragmented UDP is not reassembled in either fragment
-order, with an unfragmented positive control. This records a candidate gap;
-it does not turn missing PMTU or fragmentation support into success.
+It records that the raw stack does not reassemble fragments with selected
+features, then verifies the bounded pre-admission fragment boundary in both
+orders. This closes only the supported fragment-input subset; dynamic PMTU
+still fails explicitly.
 `cargo run --locked -p host-stack -- --mtu-check` runs the same probe without
 the namespace harness. Other host probes keep their narrower scope.
 
@@ -233,6 +234,17 @@ guards packet egress against release after shutdown. This is a scheduling
 candidate, not the production supervisor or kernel I/O layer. Packet handoff
 and retained-handle limits are specified in the
 [combined runner boundary](implementation-contracts.md#9-experimental-combined-runner).
+
+`reassembly.rs` normalizes bounded IPv4/IPv6 fragment input before TCP/UDP
+handler admission, using smoltcp's public range assembler. Maximum
+reassembled IP size is 1280 bytes; two slots and one-second nonrenewing
+deadlines bound partial data and tombstones. Tests verify overlap rejection,
+capacity preservation, conflicting lengths/protocols, gap limits, malformed
+input, atomic IPv6 fragment independence, checksum gating, and timer cleanup.
+The combined runtime also carries fragmented TCP data. A long-idle regression
+ensures clocks advance to the packet's wake time before admission. Dynamic
+PMTU, outgoing fragmentation, larger datagrams, and extension-header chains
+remain outside this candidate.
 
 The wrapper comparison remains available explicitly:
 

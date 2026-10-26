@@ -80,7 +80,10 @@ pub async fn run_probe(ipv6: bool) -> Result<()> {
     ensure!(cleanup.is_empty(), "combined cleanup failures: {cleanup:?}");
     let report = report.context("missing joined runner report")?;
     ensure!(
-        report.emitted_tcp > 0 && report.emitted_udp == 4 && report.rejected == 0,
+        report.emitted_tcp > 0
+            && report.emitted_udp == 4
+            && report.rejected == 0
+            && report.reassembled == 1,
         "combined packet accounting changed"
     );
     ensure!(
@@ -129,6 +132,7 @@ async fn exchange(
     let origin = Instant::now();
     let (mut sent, mut received, mut udp_received, mut completed) = (0, 0, 0, 0);
     let (mut tcp_accepted, mut udp_accepted) = (false, false);
+    let mut fragmented = false;
     let (udp_delivered, udp_delivery) = tokio::sync::oneshot::channel();
     let mut udp_delivered = Some(udp_delivered);
     let mut udp_delivery = Some(udp_delivery);
@@ -139,7 +143,15 @@ async fn exchange(
             let Some(packet) = peer.device.outgoing.pop_front() else {
                 break;
             };
-            channels.ingress.try_inject(&packet)?;
+            let header = if ipv6 { 40 } else { 20 };
+            if !fragmented && packet.len() > header + 128 && packet[if ipv6 { 6 } else { 9 }] == 6 {
+                for fragment in crate::fragment_probe::split(&packet, 77, 128)? {
+                    channels.ingress.try_inject(&fragment)?;
+                }
+                fragmented = true;
+            } else {
+                channels.ingress.try_inject(&packet)?;
+            }
         }
         ensure!(
             peer.device.outgoing.is_empty(),

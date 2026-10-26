@@ -23,6 +23,7 @@ use tokio::{
 use crate::{
     adapter::{self, AcceptedFlow, AdmissionError, BackendId, HostAdapter},
     packet_peer::MTU,
+    reassembly::{self, Outcome, Reassembler},
     udp_adapter::{self, Association, UdpAdapter},
 };
 
@@ -39,6 +40,7 @@ pub enum Error {
     InvalidClock,
     Tcp(AdmissionError),
     Udp(udp_adapter::Error),
+    Reassembly(reassembly::Error),
 }
 
 impl fmt::Display for Error {
@@ -61,6 +63,8 @@ pub struct Report {
     pub udp_timed_out: u64,
     pub udp_application_closed: u64,
     pub discarded_packets: u64,
+    pub reassembled: u64,
+    pub fragment_timeouts: u64,
 }
 
 #[derive(Debug)]
@@ -149,7 +153,9 @@ impl Wake for ApplicationWake {
 pub struct Runtime {
     tcp: HostAdapter,
     udp: UdpAdapter,
+    reassembly: Reassembler,
     input: mpsc::Receiver<Vec<u8>>,
+    pending: Option<Vec<u8>>,
     output: mpsc::Sender<Vec<u8>>,
     shutdown: oneshot::Receiver<()>,
     application_wake: Arc<ApplicationWake>,
@@ -172,6 +178,8 @@ impl Runtime {
             HostAdapter::new(tcp_limits, select_backend).map_err(Error::Tcp)?;
         let (udp, accepted_udp) =
             UdpAdapter::new(udp_limits, select_backend).map_err(Error::Udp)?;
+        let reassembly =
+            Reassembler::new(reassembly::Limits::default()).map_err(Error::Reassembly)?;
         let (input, receiver) = mpsc::channel(capacity);
         let (output, packets) = mpsc::channel(capacity);
         let (shutdown, stopping) = oneshot::channel();
@@ -180,7 +188,9 @@ impl Runtime {
             Self {
                 tcp,
                 udp,
+                reassembly,
                 input: receiver,
+                pending: None,
                 output,
                 shutdown: stopping,
                 application_wake: Arc::new(ApplicationWake(Notify::new())),
@@ -204,6 +214,9 @@ impl Runtime {
     pub async fn run(mut self) -> Result<Report, Failure> {
         let outcome = self.drive().await;
         self.input.close();
+        if self.pending.take().is_some() {
+            self.report.discarded_packets = self.report.discarded_packets.saturating_add(1);
+        }
         while self.input.try_recv().is_ok() {
             self.report.discarded_packets = self.report.discarded_packets.saturating_add(1);
         }
@@ -212,8 +225,11 @@ impl Runtime {
         self.report.tcp_timed_out = self.tcp.statistics().timed_out;
         self.report.udp_timed_out = self.udp.statistics().timed_out;
         self.report.udp_application_closed = self.udp.statistics().application_closed;
+        self.report.reassembled = self.reassembly.statistics().completed;
+        self.report.fragment_timeouts = self.reassembly.statistics().timed_out;
         self.tcp.cancel();
         self.udp.cancel();
+        self.reassembly.cancel();
         self.stopped.store(true, Ordering::Release);
         let report = std::mem::take(&mut self.report);
         match outcome {
@@ -234,10 +250,17 @@ impl Runtime {
                 Err(oneshot::error::TryRecvError::Empty) => {}
             }
             let now = origin.elapsed();
+            self.reassembly.advance(now).map_err(Error::Reassembly)?;
             {
                 let mut cx = Context::from_waker(&waker);
                 self.tcp.poll_io(&mut cx, now).map_err(Error::Tcp)?;
                 self.udp.poll_io(&mut cx, now).map_err(Error::Udp)?;
+            }
+            // Input may have waited through a long idle period. Admit only
+            // after every adapter clock has advanced to the wake timestamp.
+            if let Some(packet) = self.pending.take() {
+                self.admit(&packet, now)?;
+                self.application_wake.0.notify_one();
             }
             self.report.turns = self.report.turns.saturating_add(1);
             self.drain_output();
@@ -247,6 +270,7 @@ impl Runtime {
                 .next_deadline(!blocked)
                 .into_iter()
                 .chain(self.udp.next_deadline(!blocked))
+                .chain(self.reassembly.next_deadline())
                 .min();
             let deadline = next
                 .map(|elapsed| origin.checked_add(elapsed).ok_or(Error::InvalidClock))
@@ -260,7 +284,7 @@ impl Runtime {
                     drop(permit.map_err(|_| Error::EgressClosed)?);
                 }
                 packet = self.input.recv() => {
-                    self.admit(&packet.ok_or(Error::IngressClosed)?)?;
+                    self.pending = Some(packet.ok_or(Error::IngressClosed)?);
                 }
                 _ = self.application_wake.0.notified() => {}
                 _ = async {
@@ -300,7 +324,25 @@ impl Runtime {
         }
     }
 
-    fn admit(&mut self, packet: &[u8]) -> Result<(), Error> {
+    fn admit(&mut self, packet: &[u8], now: std::time::Duration) -> Result<(), Error> {
+        let complete;
+        let packet = match self.reassembly.accept(packet, now) {
+            Ok(Outcome::Pass) => packet,
+            Ok(Outcome::Pending) => return Ok(()),
+            Ok(Outcome::Complete(bytes)) => {
+                complete = bytes;
+                complete.as_slice()
+            }
+            Err(
+                error @ (reassembly::Error::Cancelled
+                | reassembly::Error::InvalidTime
+                | reassembly::Error::InvalidLimits),
+            ) => return Err(Error::Reassembly(error)),
+            Err(_) => {
+                self.report.rejected = self.report.rejected.saturating_add(1);
+                return Ok(());
+            }
+        };
         let protocol = match packet.first().map(|byte| byte >> 4) {
             Some(4) if packet.len() >= 20 => packet[9],
             Some(6) if packet.len() >= 40 => packet[6],
@@ -342,6 +384,7 @@ impl Drop for Runtime {
         // Also covers cancellation by the caller dropping/aborting this future.
         self.tcp.cancel();
         self.udp.cancel();
+        self.reassembly.cancel();
     }
 }
 

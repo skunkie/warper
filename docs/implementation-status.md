@@ -45,8 +45,11 @@ The explicit host MTU gate now reproduces oversized TCP retransmission after
 valid ICMP too-big feedback and missing fragment reassembly in both families
 (`target/evidence/phase-0/mtu/README.md`). Fixed 1280-byte segmentation,
 ICMP port-unreachable generation, and WireGuard envelope limits are tested.
-Dynamic PMTU/error propagation and fragmentation strategy remain unresolved;
-the MTU gate returns nonzero and stack ADR 0002 stays proposed.
+Bounded pre-admission IPv4/IPv6 fragment input now handles both orders,
+overlap tombstones, atomic fragments, expiry, and transport checksum gating
+(`target/evidence/phase-0/reassembly/README.md`). Dynamic PMTU/error propagation,
+outgoing fragmentation, larger datagrams, and extension-header strategy
+remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 
 ## Gate Evidence
 

@@ -7,9 +7,11 @@
 mod accepted_probe;
 mod adapter;
 mod direct;
+mod fragment_probe;
 mod mtu_probe;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+mod reassembly;
 mod runtime;
 mod runtime_probe;
 mod udp_adapter;
@@ -51,6 +53,10 @@ async fn main() -> Result<()> {
             );
             udp_probe::run_probe(ipv6, false).await?;
             udp_probe::run_probe(ipv6, true).await?;
+            fragment_probe::run_probe(ipv6)?;
+            println!(
+                "PASS bounded fragment input: both orders, MTU boundary, UDP metadata and cancellation, IPv6={ipv6}"
+            );
             println!(
                 "PASS bounded UDP associations: dynamic/shared destinations, metadata, empty datagrams and MTU boundary, IPv6={ipv6}"
             );
