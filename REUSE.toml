@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+version = 1
+
+# Cargo generates its lockfile; keep its license metadata outside that file.
+[[annotations]]
+path = "Cargo.lock"
+SPDX-FileCopyrightText = "2026 skunkie"
+SPDX-License-Identifier = "MIT"

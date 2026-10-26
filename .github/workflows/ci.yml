@@ -1,0 +1,168 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stage:
+    name: Repository stage
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.project.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect the Cargo project
+        id: project
+        shell: bash
+        run: scripts/check-repository-stage.sh >> "$GITHUB_OUTPUT"
+
+  licensing:
+    name: REUSE lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
+
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install ShellCheck
+        shell: bash
+        run: |
+          archive="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${archive}"
+          echo "${SHELLCHECK_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/shellcheck-${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+      - name: Install actionlint
+        shell: bash
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}" actionlint
+      - name: Lint workflows and shell scripts
+        shell: bash
+        run: |
+          test "$(shellcheck --version | sed -n 's/^version: //p')" = "${SHELLCHECK_VERSION#v}"
+          "${RUNNER_TEMP}/actionlint" -color
+          ACTIONLINT="${RUNNER_TEMP}/actionlint" python3 -B -m unittest discover -s scripts
+          python3 -B scripts/lint_actions.py --actionlint "${RUNNER_TEMP}/actionlint"
+          shellcheck scripts/*.sh
+
+  quality:
+    name: Rust quality
+    needs: stage
+    if: needs.stage.outputs.rust == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          components: clippy, rustfmt
+          build-warnings: warn
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint all workspace targets
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Check public API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+
+  dependencies:
+    name: Dependency policy
+    needs: stage
+    if: needs.stage.outputs.rust == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+      CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          build-warnings: warn
+      - name: Install cargo-deny
+        shell: bash
+        run: |
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL --retry 3 --retry-all-errors -o "${RUNNER_TEMP}/${name}.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  ${RUNNER_TEMP}/${name}.tar.gz" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${name}.tar.gz" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/${name}" >> "$GITHUB_PATH"
+      - name: Check licenses, advisories, bans, and sources
+        run: cargo-deny --locked check
+
+  native:
+    name: Native build and tests (${{ matrix.target }})
+    needs: stage
+    if: needs.stage.outputs.rust == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-26.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          target: ${{ matrix.target }}
+          build-warnings: warn
+          cache-key: ${{ matrix.target }}
+      - uses: ./.github/actions/validate-native
+        with:
+          target: ${{ matrix.target }}

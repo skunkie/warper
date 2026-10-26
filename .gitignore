@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+/target/
+__pycache__/
+*.pyc
+.DS_Store

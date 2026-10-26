@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+name: Validate native Rust artifacts
+description: Test the selected native target and build optimized workspace artifacts.
+inputs:
+  target:
+    description: Rust target triple executable by this runner.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Test default features
+      shell: bash
+      env:
+        NATIVE_TARGET: ${{ inputs.target }}
+      run: cargo test --locked --workspace --target "$NATIVE_TARGET"
+    - name: Test all features
+      shell: bash
+      env:
+        NATIVE_TARGET: ${{ inputs.target }}
+      run: cargo test --locked --workspace --all-features --target "$NATIVE_TARGET"
+    - name: Build optimized workspace artifacts
+      shell: bash
+      env:
+        NATIVE_TARGET: ${{ inputs.target }}
+      run: cargo build --locked --release --workspace --target "$NATIVE_TARGET"
+    - name: Exercise CLI entry points when the CLI package exists
+      shell: bash
+      env:
+        NATIVE_TARGET: ${{ inputs.target }}
+      run: |
+        if [[ -f crates/warper-cli/Cargo.toml ]]; then
+          cargo run --locked --release --target "$NATIVE_TARGET" -p warper-cli --bin warper -- --help
+          cargo run --locked --release --target "$NATIVE_TARGET" -p warper-cli --bin warper -- --version
+        else
+          echo "The current phase has no CLI package; workspace tests cover its existing targets."
+        fi

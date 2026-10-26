@@ -1,0 +1,234 @@
+<!--
+SPDX-FileCopyrightText: 2026 skunkie
+
+SPDX-License-Identifier: MIT
+-->
+
+# Service and Desktop Client
+
+Status: product and architecture contract; the service, control API, and
+Tauri application are not implemented yet. [ADR 0004](adr/0004-desktop-service.md)
+records the decision. The desktop client replaces the planned terminal UI.
+
+## 1. Product Model
+
+One installed application provides two independent processes: an ordinary-
+user Tauri 2 client and a privileged Rust networking service. The service
+owns TUN devices, backend connections, DNS/routing transactions, metrics,
+recovery, and reconnects. The client sends typed commands and observes state.
+An optional terminal window is not required for normal use.
+
+The original application's purpose and supported tunnel protocols remain
+the compatibility target. RFCs define wire behavior; they do not define UI,
+route precedence, route grace, or local authorization policy. SSH trust,
+strict validation, deterministic routing, IPv6 fixes, and the service-binding
+policy remain documented intentional differences. Do not market the result
+as identical behavior solely because libraries implement RFCs.
+
+The first release has one managed configuration per host network namespace,
+containing all configured backends. Multiple profiles and per-user tunnels
+are later work; the desktop must explain that Connect/Disconnect affects
+the host's selective routing, not only the application's own traffic.
+
+```mermaid
+flowchart LR
+    UI[Tauri desktop: ordinary user] --> Bridge[Typed Rust client bridge]
+    CLI[Optional command-line client] --> Bridge
+    Bridge --> IPC[Authenticated local control API]
+    IPC --> Service[Privileged networking service]
+    Service --> Network[TUN, backends, DNS and routes]
+```
+
+## 2. First Launch and Daily UX
+
+1. On macOS, open the app from its installed location. Explain the networking
+   service's purpose and register it through native Service Management.
+   Show approval-pending, denied, missing, and ready states separately; open
+   the relevant System Settings page when the user chooses to grant approval.
+   Never request an administrator password in a web form.
+2. Import an existing `~/.warp.yaml` or create a configuration through guided
+   forms. Preserve an advanced YAML view. Resolve file references in the
+   ordinary-user native client, validate without changing networking, and
+   display actionable errors and SSH trust requirements before Connect.
+3. Install an approved managed snapshot and enroll its authorized owner
+   through a platform administrative authorization flow. Registration alone
+   does not authorize arbitrary IPC callers or arbitrary configuration paths.
+4. Default to disconnected with Connect visible. Service availability and
+   tunnel connectivity are different statuses. Starting the GUI never
+   silently connects or changes boot policy.
+5. Connect requests a supervised session; show its actual phase, backend
+   health, and routing/DNS readiness. Disconnect explicitly tears it down.
+   Closing a window or choosing Quit closes the client and leaves the
+   service/session running. A separate Disconnect action is always available.
+6. Offer Connect at startup as an explicit preference, default off. Explain
+   its scope separately from opening the desktop at login. Reopening the
+   GUI attaches to the current session instead of creating a second TUN.
+
+The main view shows connection state and actions, backend health, traffic,
+and the latest actionable error. Routes, connections, and redacted logs are
+secondary views. Configuration forms explain unsupported UDP, DNS conflicts,
+and service-binding target restrictions in plain language. An Explain action
+shows configuration/current-snapshot decisions without initiating DNS or
+traffic. Do not imply a full-device kill switch.
+
+Configuration changes are validated as a candidate before installation.
+Initially, installing a new networking configuration requires a disconnected
+session; return a clear Busy result while active instead of silently
+restarting tunnels. Saved UI preferences are per-user and unprivileged.
+Full live networking reconfiguration remains outside initial scope.
+
+## 3. Process, Lifecycle, and State Ownership
+
+- `warperd` is a foreground Rust service supervised by systemd on Linux and
+  launchd on macOS. Do not double-fork. The GUI is a separate Tauri executable;
+  the optional `warper` CLI uses the same control protocol.
+- The service alone holds the network-instance lock and recovery journal.
+  No GUI/CLI process independently cleans up or starts a competing network
+  engine. Foreground developer operation of `warperd` uses the same lock.
+- Control readiness means the local API can report state. Session readiness
+  means the selected backends, packet handlers, exemptions, capture routes,
+  and DNS publication passed their separate readiness barrier. Recovery may
+  be visible through the API, but Connect is blocked until it succeeds.
+- Distinguish missing service, approval required, idle, connecting, connected,
+  degraded, disconnecting, error, and recovery required in the UI. Transport
+  loss makes observations stale; it never produces a false Connected state.
+- The service serializes desired connection state and configuration
+  generations. Repeated Connect/Disconnect requests are idempotent. A client
+  timeout/disconnection cancels observation, not an accepted operation.
+  Disconnect supersedes pending connection/reconnect work through explicit
+  cancellation and cleanup.
+- Persist desired connection state with boot identity. After a service crash
+  in the same boot, reconcile stale resources before restoring that intent.
+  A fresh boot starts disconnected unless `service.autoconnect` is enabled.
+  An explicit Disconnect remains effective across same-boot service restarts.
+- Backend outages and network/sleep-wake changes use bounded reconnects and
+  existing ownership/exemption rules. Unavailable selected backends never
+  cause direct fallback. The GUI may restart independently without changing
+  networking.
+- A service stop/shutdown drains and cleans up under its deadline. Client
+  process signals affect only that client. Refuse offline recovery while the
+  service owns the lock; route authorized recovery through the service when
+  available, or require the stopped-service recovery command.
+
+## 4. Local Control and Privilege Boundary
+
+Use a shared typed logical API with a native transport adapter: XPC on macOS
+and a protected Unix-domain socket on Linux. Prove macOS peer authentication
+and registration in an executable native spike before relying on it. No
+TCP/HTTP management listener is enabled in the initial release.
+
+The service authenticates OS-provided peer identity; macOS release clients
+must also satisfy the designated code-signing identity/allowed client roles.
+Do not trust caller-supplied UID, PID, executable path, or a claimed bundle
+ID. Enrollment of the managed owner and installation of configuration need
+verified administrative authorization. Once enrolled, that owner can
+observe state and request Connect/Disconnect without running the GUI as root.
+Other users receive no tunnel metadata or control access by default.
+
+The API must cover status/snapshots, paginated routes/flows/logs, subscriptions,
+Connect/Disconnect operations, operation status, Explain, and authorized
+configuration installation/recovery. Specify version negotiation, bounded
+messages/clients/requests/event queues, deadlines, operation IDs, and
+configuration generations before implementing the service API.
+
+The native client imports a normalized configuration and explicitly selected
+credential/trust material using its own user access. The privileged endpoint
+accepts validated data and managed credential references, never arbitrary
+file-read paths, shell commands, executable names, or environment overrides.
+The service atomically stores approved data in a protected managed directory.
+Editing the original home file does not change the running service, and a
+daemon started at boot never searches root's home or relies on `SUDO_USER`.
+
+Expose only narrow Tauri commands to local bundled UI assets. Do not expose
+generic IPC forwarding, shell execution, unrestricted filesystem access, or
+remote content with native privileges. Use explicit capabilities and CSP;
+render observed domains/logs as untrusted text. Keep credentials out of
+snapshots, events, errors, logs, and frontend persistence. Prefer native
+credential import rather than returning secret files to JavaScript.
+
+Slow subscribers cannot block forwarding or mutation processing. Bound their
+queues; disconnect or explicitly require resynchronization on loss. A client
+reconnects by obtaining a fresh snapshot/cursor, not by treating cached UI
+state as authoritative. An incompatible service/client version produces an
+actionable update message before mutations.
+
+## 5. macOS Distribution
+
+Target macOS 13 or later for the modern helper API. Ship the desktop and
+`warperd` in one application bundle, optionally delivered as a DMG:
+
+```text
+warper.app/
+└── Contents/
+    ├── MacOS/                 # Tauri desktop executable
+    ├── Resources/             # Bundled assets and packaged warperd helper
+    └── Library/LaunchDaemons/
+        └── <service-label>.plist
+```
+
+Use a fixed reviewed service identifier. The daemon plist uses a bundle-
+relative `BundleProgram`; the native client registers it with
+`SMAppService.daemon(plistName:)`. Tauri custom bundle files/resources package
+the artifacts; registration and OS approval provide service activation.
+Launching an ordinary Tauri sidecar is not privilege elevation or persistent
+service installation. Do not use a frontend shell plugin to launch it as root.
+
+The release must sign embedded executable code and the enclosing bundle with
+the appropriate Developer ID identity, notarize the distribution, and verify
+the installed helper/GUI identities. Avoid broad entitlements. Keep the app
+in its supported installed location before registration; test first launch,
+denial/revocation, relocation, update, removal, and reboot on a clean Mac.
+Development/ad-hoc builds do not establish release-installation acceptance.
+
+Local development does not require a paid Developer ID or notarization. On
+Apple Silicon, use at least an ad-hoc signature, commonly produced by the
+build tools. Follow [ADR 0005](adr/0005-macos-development-authentication.md):
+administratively enroll exact validated build hashes/roles and an owner UID
+in a protected development installation. Enforce actual peer identity in both
+directions; changed builds require explicit re-enrollment. The production
+helper has no development-auth fallback. Prove this no-paid-account path
+through UX-05 rather than treating a paid-signed native test as a substitute.
+A standalone local launchd harness does not prove bundled registration.
+
+Bundle updates must coordinate GUI/helper versions and active sessions. For
+the initial release, an explicit update may require Disconnect, cleanup,
+helper replacement/re-registration, and reconnect. Do not silently replace
+privileged code while claiming existing sessions continue. Provide Remove
+networking service to disconnect/clean up and unregister; explain what saved
+configuration remains or is deleted. Merely moving the GUI to Trash is not
+an application-controlled cleanup transaction.
+
+Linux packages install the same core service through systemd and ship the
+desktop separately as part of the installation. Native dependencies, policy,
+owner enrollment, and uninstall behavior require their own packaging tests.
+
+## 6. Implementation Gates
+
+Keep networking stack probes first. Before production control integration,
+close the API/authorization contracts with local transport tests. Before
+depending on the macOS bundle design, add a minimal native helper-registration
+spike that verifies approval, owner enrollment, authenticated messages, and
+unregistration on macOS 13+; record unavailable signing/VM evidence honestly.
+Its authentication portion must pass UX-05 with ad-hoc-signed packaged builds
+and no Apple-issued developer identity. A certificate-signed run alone cannot
+close that gate. Rebuild/re-enrollment and rejected-peer cases are required.
+That native gate precedes macOS-dependent integration, while Linux service
+and networking feasibility work can continue independently.
+
+When the desktop code is introduced, pin its package manager and dependencies,
+commit the lockfile, and add frontend unit tests, type checking, lint, and
+production builds plus Tauri native/package checks. Select the renderer and
+test tools explicitly then; they must not change the service/control boundary.
+No placeholder frontend or successful dummy installer is required now.
+
+NET-09 and UX-01 through UX-05 in the [acceptance contract](acceptance.md)
+cover client independence, authorization, state/operations, and bundled
+installation. These gates remain pending until executable evidence exists.
+
+References: [Tauri app bundles](https://v2.tauri.app/distribute/macos-application-bundle/),
+[capabilities](https://v2.tauri.app/security/capabilities/),
+[macOS signing](https://v2.tauri.app/distribute/sign/macos/),
+[Apple helper bundle layout](https://developer.apple.com/documentation/servicemanagement/updating-helper-executables-from-earlier-versions-of-macos),
+and [SMAppService](https://developer.apple.com/documentation/servicemanagement/smappservice).
+For development signing, see [Apple Silicon executable signing](https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-universal-apps-release-notes)
+and [code identity requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).

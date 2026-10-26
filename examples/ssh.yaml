@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+# Schema example: replace the documentation host and provision credentials/trust.
+tunnel:
+  ip: 192.168.127.1
+  serve_dns: false
+protocols:
+  - id: corporate-ssh
+    ssh:
+      host: bastion.example.com
+      port: 22
+      user: example-user
+      private_key_file: ~/.ssh/id_ed25519
+      known_hosts: ~/.ssh/known_hosts
+      domains:
+        - corp.example.com
+      dns:
+        - 10.0.0.53
+      ips:
+        - 10.0.0.0/8
+      routing_mode: mixed

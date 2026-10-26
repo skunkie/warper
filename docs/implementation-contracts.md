@@ -1,0 +1,107 @@
+<!--
+SPDX-FileCopyrightText: 2026 skunkie
+
+SPDX-License-Identifier: MIT
+-->
+
+# Post-Feasibility Implementation Contracts
+
+Status: acceptance checklist; concrete Rust signatures and selected library APIs are pending Phase 0. Complete this document against the selected stack before Phase 1 production modules depend on those interfaces. Prototype APIs may change while investigating feasibility.
+
+## 1. Required Contract Deliverables
+
+For every boundary below, record the exact Rust types/signatures and source paths, supported platform/family combinations, ownership and lifetime rules, cancellation behavior, deadlines, resource accounting, and error variants. Define adapter-independent interfaces in core; keep third-party types inside adapters. A diagram or prose alone does not satisfy the gate: add compile-checked examples or contract tests using real implementations where available and a fault-injecting driver for failure states.
+
+| Boundary | Decisions that must be locked |
+| --- | --- |
+| Accepted flow | Flow ID; source/destination socket addresses; TCP or UDP kind; inbound metadata; admission result; release-on-drop rules |
+| TCP dial/relay | Async stream/trait-object representation; `Send` requirements; split/half-close behavior; setup cancellation; no payload replay; partial-write handling |
+| UDP association | Datagram value/ownership; source/destination metadata; maximum size; queueing/drop policy; control-session ownership; idle expiry |
+| Backend | Stable ID; available capabilities/families; health; readiness; TCP/UDP open calls; request context; startup/reconnect/shutdown; per-backend limits |
+| DNS transport | Request/response ownership; framing; total request deadline; retry policy; valid negatives; CNAME/HTTPS/SVCB dependencies, hints, and endpoint provenance; truncated-response fallback; selected backend identity |
+| Stack adapter | Host-facing accept vs active outbound dial roles; MTU; poll/readiness/timer integration; response injection; supported ICMP/fragmentation behavior |
+| Physical egress | Endpoint resolution/refresh; route/socket exemption mechanism; network-change notification; validation before switching endpoints |
+| Route manager/driver | Serialized transaction commands; operation IDs; ACK result; snapshots; pending-response/grace/flow references; ownership markers; rollback/recovery reconciliation |
+| Supervisor | Task tree; fatal/nonfatal task errors; readiness barriers; cancellation tree; join ownership; bounded drain; terminal restoration and cleanup error reporting |
+| Metrics/logs | Snapshot consistency; units; byte-counting boundaries; bounded buffers; loss counters; no backpressure into packet handling |
+| Local control API | Shared redacted DTOs; XPC/Unix adapters; real peer identity and owner/admin authorization; version negotiation; bounded queues; operation IDs/configuration generations; snapshot/event resynchronization |
+| Desktop native bridge | Narrow Tauri commands/capabilities; bundled local assets and CSP; native credential import without frontend secret persistence; service registration/approval lifecycle |
+| Managed configuration | Authorized owner enrollment; normalized import without privileged path reads; protected atomic snapshot/credential storage; disconnected-session installation and fresh-boot startup policy |
+
+## 2. Task and Resource Ownership
+
+Name the owner of each TUN handle, stack runner, backend transport, flow task, timer, queue, journal operation, and DNS mutation. The top-level supervisor owns and joins service tasks; a flow/association owns and cancels its child work. No detached production task may outlive its service unnoticed.
+
+For each queue, document its capacity, producer/consumer, overflow action, cancellation wakeup, and accounting against `docs/configuration.md` budgets. Enumerate hidden library buffers and OS socket memory separately. State lock ordering and prohibit holding global routing/journal locks across backend I/O. Route-manager serialization may await a bounded driver operation, but must not make packet forwarding wait on a global mutex.
+
+Use a monotonic clock for request deadlines, idle expiry, leases, and bounded shutdown. Persistence records enough information to reconcile state after restart without treating a previous process's monotonic timestamps as current.
+
+Define a DNS-state admission owner with atomic reservations against the
+global lease/cache counts and retained-byte budget in the configuration
+contract. Use the canonical logical lease key, coalesce renewals, and include
+names, provenance, container capacity, expiry indexes and stale timer nodes.
+Do not infer a metadata bound from kernel route count or active DNS requests.
+Separate optional cache eviction from protected routing ownership; demonstrate
+NET-12's exhaustion/reclamation/rollback cases before claiming bounded state.
+
+## 3. Route Transaction State Machine
+
+Model each owned prefix mutation with explicit states and operation IDs:
+
+```text
+Absent -> Prepared -> MappingPublished -> KernelAcknowledged -> Committed
+                    failure/cancellation -> RollingBack -> Absent
+                                                failure -> RecoveryRequired
+Committed -> Retiring -> Absent
+                    failure -> RecoveryRequired
+```
+
+`Prepared` includes durable intent. `KernelAcknowledged` requires a verified driver result, not a queued request. `Committed` includes recorded ownership and lease publication; only then may the positive DNS answer be released. A crash or lost ACK may leave the kernel operation outcome uncertain; recovery queries current state and verifies ownership before acting. No rollback may delete resources acquired by another transaction or referenced by another lease/flow.
+
+The finalized contract must address multi-address DNS answers, concurrent duplicate requests, timeout after an operation may have reached the kernel, cancellation during journal writes, and flows arriving after route installation but before commit. If such a flow is admitted, its reference must survive failed DNS rollback; define safe retirement instead of deleting a route it uses. A timed-out request never later emits a positive answer.
+
+Before response output can become visible, the response owns a pending reference to every required route. Define the handoff operation/permit that atomically renews coverage and exchanges those references for timed leases. A queued or partially written DNS response must not lose its routes while still being delivered; cancellation releases only its own reservations. The final handoff timestamp anchors `max(remaining_dependency_ttl_ms, dns_route_grace_ms)`. DNS caching remains governed by wire TTL, with zero-TTL answers never reused. Flow admission acquires a separate reference before retirement may withdraw the route. Tests must control the clock and output readiness to exercise every boundary.
+
+For HTTPS/SVCB, record an endpoint's selected backend, owning query, effective target name, address source (hint, related Additional, or resolved address), alias/service path, and effective TTL. The dependency resolver retains the original backend; every dependency name must match that backend's winning configured domain policy. Reject a mismatch rather than learning implicit split-DNS domains. Include all exposed endpoints in one response gate and state how budgets, negative dependencies, disabled families, static coverage, and truncated UDP/TCP retries are handled. [ADR 0003](adr/0003-dns-endpoint-routing.md) defines the policy that these types must preserve.
+
+For retirement, stop admitting new references under the serialized manager, remove only owned kernel state, and withdraw the unused internal mapping after removal is acknowledged. Define what packet handling sees during retirement and how it avoids direct fallback for packets already captured.
+
+## 4. Error Taxonomy and Readiness
+
+At minimum distinguish `InvalidConfig`, `Authentication`, `HostKey`, `UnsupportedCapability`, `UnsupportedIntegration`, `Timeout`, `Cancelled`, `ResourceLimit`, `RouteConflict`, transport/I/O errors, `ServiceUnavailable`, `ApprovalRequired`, `PermissionDenied`, `VersionMismatch`, `Busy`, and `RecoveryRequired`. Concrete variant names may follow Rust naming conventions; preserve these categories in diagnostics/tests. Include backend/flow/operation IDs and redacted field paths where relevant.
+
+For each category, state whether it fails startup, rejects one request, degrades a backend, retries safely, or requires service shutdown. Trust/authentication errors are terminal until configuration changes. Never retry bytes already possibly delivered to an application peer. Keep the initial error plus cleanup failures, instead of replacing the useful cause.
+
+Define the network-session readiness barrier: backends/handlers ready,
+physical egress verified, static routes committed, then system DNS published.
+Control API availability is a separate state and can report recovery/idle.
+Successful Connect completion or a green Connected state must wait for the
+network barrier. Client exit is not network shutdown; explicit Disconnect,
+service shutdown, and owned runtime failure have their own cleanup paths.
+
+Follow the [service/client contract](service-and-client.md). Specify operation
+serialization/idempotency, observation timeout versus cancellation, same-boot
+intent restoration, fresh-boot `service.autoconnect`, version mismatch, lost
+events, and stale UI invalidation. Use OS-authenticated identity rather than
+peer-supplied UID/PID/path. No generic shell/file-read endpoint is permitted.
+The native registration/enrollment/authentication spike gates macOS-dependent
+integration without blocking independent Linux feasibility/control work.
+
+For local macOS development, implement the exact-build policy in
+[ADR 0005](adr/0005-macos-development-authentication.md): a separate explicit
+build/launch mode, administratively installed protected identity manifest,
+actual peer identifier/CDHash plus OS UID checks in both directions, and
+re-enrollment after code changes. Define how requirements are applied before
+activation, how a non-sensitive handshake prevents outgoing credential leaks,
+and how old connections/pins are invalidated. No UID-only, self-reported role,
+or paid-certificate fallback can satisfy UX-05. Production artifact tests must
+prove this mode cannot be enabled through flags, YAML, environment, or IPC.
+
+## 5. Completion Gate
+
+Before declaring this contract gate passed:
+
+1. Link `docs/adr/0002-network-stack.md` and the exact pinned dependency versions/APIs used by both stack-role probes.
+2. Replace pending signature decisions above with source links and compile-checked usage. Create only the interfaces needed for the next working slice; update contracts before later dependent features are introduced.
+3. Record measurable limits and how cancellation/failure was exercised; include driver ACK delay, uncertain ACK, partial rollback, task termination, pending-response/grace expiry (NET-10), service-binding publication (NET-11), and global retained-state exhaustion/renewal/rollback (NET-12). The platform control contract also needs UX-05's native no-paid-account authentication evidence before macOS-dependent implementation.
+4. Verify that `docs/configuration.md`, `docs/implementation-plan.md`, the implementation, and acceptance evidence describe the same behavior. Record unresolved limitations in `docs/implementation-status.md` and leave affected gates open.

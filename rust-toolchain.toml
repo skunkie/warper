@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

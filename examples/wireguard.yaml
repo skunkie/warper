@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+# Schema example: published synthetic keys; provision real peer keys before use.
+ipv6: true
+tunnel:
+  ip: 192.168.127.1
+  ipv6_address: fd7a:127::1
+  serve_dns: false
+protocols:
+  - id: private-wireguard
+    wireguard:
+      private_key: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
+      peer_public_key: "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A="
+      endpoint: wg.example.com:51820
+      address: 10.66.66.2
+      extra_addresses:
+        - fd66:66::2
+      persistent_keepalive_secs: 5
+      domains:
+        - private.example.com
+      dns:
+        - 10.66.66.1
+      ips:
+        - 10.66.66.0/24
+        - fd66:66::/64
+      routing_mode: mixed
