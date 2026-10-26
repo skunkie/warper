@@ -469,3 +469,16 @@ mutation; interface addresses, routes/lifetimes and any-IP policy are copied.
 This interface-wide experiment is not automatic PMTU discovery, a production
 migration API, or an asymmetric-path solution. Raw feedback still has no TCP
 sizing effect; the command continues to return typed unsupported-PMTU failure.
+
+`pmtu_feedback.rs` now connects that sizing action to one reserved outstanding
+TCP data segment. The matcher retains addresses, IP identity/length and the
+first eight TCP bytes with a nonrenewing deadline. Valid ICMPv4
+fragmentation-required or ICMPv6 Packet Too Big feedback supplies the new MTU;
+all four IPv4/IPv6 and 1280/1400-byte cases complete the retained transfer.
+Only ACKs accepted by the reserved flow's TCP owner may retire the segment;
+partial ACKs retain it, full ACKs account for FIN and sequence wrap. Unsupported
+small/legacy-zero MTUs are typed errors. Corrupt or unrelated quotes cannot
+resize; busy device queues preserve the reservation for retry within its
+original deadline. Successful interface replacement consumes it once. This
+still leaves production path attribution, multiple/asymmetric flows, outer
+WireGuard PMTU and physical-path handling open; `--mtu-check` remains nonzero.

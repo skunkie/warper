@@ -13,6 +13,7 @@ mod fragment_probe;
 mod mtu_probe;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+mod pmtu_feedback;
 #[path = "../../reassembly.rs"]
 mod reassembly;
 #[cfg(test)]

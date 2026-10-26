@@ -359,3 +359,18 @@ Production entropy/state transfer, multiple/asymmetric paths, queued UDP,
 feedback validation, per-path budgets/expiry and WireGuard propagation still
 need contracts and evidence. The raw ICMP negative control remains, the MTU
 gate remains nonzero, and this ADR stays proposed.
+
+The sizing action is now driven by a bounded TCP too-big matcher rather than a
+literal target MTU. One outstanding segment is reserved using addresses,
+original IP length/IPv4 identity and TCP ports/sequence, with a nonrenewing
+deadline. Validated ICMP quotes may contain only the minimum eight transport
+bytes. Accepted full ACKs retire reservations using the library's modular TCP
+sequence arithmetic, including FIN; expiry/cancellation also retire them.
+Supported advertised reductions (1280 and 1400) complete the retained transfer
+in both families. Busy packet queues refuse mutation without consuming the
+reservation, allowing an in-deadline retry. Small/legacy-zero MTUs are explicitly
+unsupported. This adds single-operation feedback-to-sizing evidence, without
+changing the raw-stack negative control or accepting production path attribution,
+per-path state, concurrent/asymmetric flows, physical transport or WireGuard
+outer PMTU. RFC 1191/8201 feedback and production interface-state policy still
+need broader evidence before this ADR or the MTU gate can close.

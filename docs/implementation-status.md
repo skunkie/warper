@@ -69,8 +69,12 @@ now replaces the interface while retaining established TCP sockets: partially
 acknowledged bytes complete after reduction from 1500 to 1280, including FIN
 and a response, with no application resubmission. Queued packets block device
 reconfiguration; addresses, routes and any-IP policy survive
-(`target/evidence/phase-0/interface-mtu/README.md`). Feedback attribution and
-production state-transfer policy are still missing. General error propagation,
+(`target/evidence/phase-0/interface-mtu/README.md`). A single reserved outstanding
+TCP segment now matches validated too-big feedback and applies its advertised
+1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
+quotes and queue-busy retry are covered
+(`target/evidence/phase-0/matched-pmtu/README.md`). Production path attribution
+and state-transfer policy are still missing. General error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 

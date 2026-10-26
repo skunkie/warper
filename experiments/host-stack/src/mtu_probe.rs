@@ -7,12 +7,13 @@
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
 use smoltcp::{
     iface::{Config, Interface, PollIngressSingleResult},
-    phy::ChecksumCapabilities,
+    phy::{ChecksumCapabilities, Device},
     socket::{tcp, udp},
     time::Instant,
     wire::{
@@ -47,8 +48,10 @@ pub fn run_probe() -> Result<()> {
             "PMTU fixture did not exercise an oversized TCP segment"
         );
         pmtu_ignored(ipv6).context(format!("PMTU capability IPv6={ipv6}"))?;
-        interface_mtu_reduction(ipv6)?;
-        println!("PASS retained TCP sockets across interface MTU reduction, IPv6={ipv6}");
+        for advertised_mtu in [MTU, 1400] {
+            interface_mtu_reduction(ipv6, advertised_mtu)?;
+        }
+        println!("PASS matched too-big feedback resizes retained TCP sockets, IPv6={ipv6}");
         fragments_not_reassembled(ipv6)?;
         crate::fragment_probe::run_probe(ipv6)?;
         println!("PASS fixed 1280-byte TCP segmentation and ICMP port-unreachable, IPv6={ipv6}");
@@ -100,7 +103,7 @@ fn exchange(client: &mut Peer, server: &mut Peer, now: i64) -> Result<()> {
     Ok(())
 }
 
-fn tcp_sample(ipv6: bool, mtu: usize) -> Result<Vec<u8>> {
+pub(super) fn tcp_sample(ipv6: bool, mtu: usize) -> Result<Vec<u8>> {
     let (mut client, _server) = peers(ipv6, mtu)?;
     client.device.outgoing.clear();
     client
@@ -154,7 +157,7 @@ fn pmtu_ignored(ipv6: bool) -> Result<()> {
     anyhow::bail!("pinned stack behavior changed: no oversized retry after valid Packet Too Big")
 }
 
-fn interface_mtu_reduction(ipv6: bool) -> Result<()> {
+fn interface_mtu_reduction(ipv6: bool, advertised_mtu: usize) -> Result<()> {
     let (mut client, mut server) = peers(ipv6, 1500)?;
     for now in 20..30 {
         exchange(&mut client, &mut server, now)?;
@@ -206,7 +209,12 @@ fn interface_mtu_reduction(ipv6: bool) -> Result<()> {
     let dropped_packets = client.device.outgoing.len() + 1;
     client.device.outgoing.clear();
     let prefix_bytes = received.len();
+    let mut accepted_ack = None;
     while let Some(ack) = server.device.outgoing.pop_front() {
+        let tcp = TcpPacket::new_checked(&ack[header_len..])?;
+        if tcp.ack() {
+            accepted_ack = Some(tcp.ack_number().0 as u32);
+        }
         client.device.inject(ack)?;
     }
     drain_ingress(&mut client, 32)?;
@@ -215,11 +223,31 @@ fn interface_mtu_reduction(ipv6: bool) -> Result<()> {
         remaining > 0 && remaining < payload.len(),
         "partial ACK did not advance retained send state"
     );
-    // The existing helper checks exact quotes/checksums. Raw stack processing
-    // still ignores this feedback; this probe tests the explicit sizing action.
-    client.device.inject(too_big(&lost, ipv6)?)?;
-    drain_ingress(&mut client, 33)?;
-    rebuild_interface(&mut client, MTU, 34)?;
+    let feedback = too_big_with_mtu(&lost, ipv6, advertised_mtu)?;
+    let mut tracker = crate::pmtu_feedback::Tracker::default();
+    tracker.reserve(&lost, Duration::from_millis(32), Duration::from_secs(1))?;
+    tracker.acknowledge(
+        accepted_ack.context("missing accepted prefix ACK")?,
+        Duration::from_millis(33),
+    )?;
+    ensure!(
+        apply_feedback(
+            &mut client,
+            &mut tracker,
+            &feedback,
+            Duration::from_millis(34)
+        )?,
+        "valid too-big feedback did not resize the interface"
+    );
+    ensure!(
+        tracker.next_deadline().is_none(),
+        "successful reduction retained its reservation"
+    );
+    tracker.cancel();
+    ensure!(
+        client.device.capabilities().max_transmission_unit == advertised_mtu,
+        "feedback did not set its advertised MTU"
+    );
     ensure!(client.sockets.get::<tcp::Socket>(client.tcp).send_queue() == remaining);
     let mut replied = false;
     let mut response = Vec::with_capacity(response_payload.len());
@@ -229,7 +257,7 @@ fn interface_mtu_reduction(ipv6: bool) -> Result<()> {
         client.poll(now);
         while let Some(packet) = client.device.outgoing.pop_front() {
             ensure!(
-                packet.len() <= MTU,
+                packet.len() <= advertised_mtu,
                 "resized sender emitted oversized TCP packet"
             );
             let header_len = if ipv6 { 40 } else { 20 };
@@ -265,7 +293,7 @@ fn interface_mtu_reduction(ipv6: bool) -> Result<()> {
                 "resize changed the connection tuple"
             );
             println!(
-                "MTU reduction: IPv6={ipv6}, acknowledged_prefix_bytes={prefix_bytes}, delivered_bytes={}, dropped_packets={dropped_packets}, resized_packets={emitted_packets}, controlled_recovery_ms={}",
+                "MTU reduction: IPv6={ipv6}, advertised_mtu={advertised_mtu}, acknowledged_prefix_bytes={prefix_bytes}, delivered_bytes={}, dropped_packets={dropped_packets}, resized_packets={emitted_packets}, controlled_recovery_ms={}",
                 received.len() + response.len(),
                 now - 34
             );
@@ -311,6 +339,23 @@ fn drain_ingress(peer: &mut Peer, now: i64) -> Result<()> {
     anyhow::bail!("ingress drain exceeded bounded device capacity")
 }
 
+fn apply_feedback(
+    peer: &mut Peer,
+    tracker: &mut crate::pmtu_feedback::Tracker,
+    packet: &[u8],
+    now: Duration,
+) -> Result<bool> {
+    let Some(mtu) = tracker.reduction(packet, now)? else {
+        return Ok(false);
+    };
+    if mtu >= peer.device.capabilities().max_transmission_unit {
+        return Ok(false);
+    }
+    rebuild_interface(peer, mtu, i64::try_from(now.as_millis())?)?;
+    tracker.commit();
+    Ok(true)
+}
+
 fn rebuild_interface(peer: &mut Peer, mtu: usize, now: i64) -> Result<()> {
     let addresses = peer.interface.ip_addrs().to_vec();
     let any_ip = peer.interface.any_ip();
@@ -338,9 +383,14 @@ fn rebuild_interface(peer: &mut Peer, mtu: usize, now: i64) -> Result<()> {
     Ok(())
 }
 
-fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
+pub(super) fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
+    too_big_with_mtu(quote, ipv6, MTU)
+}
+
+fn too_big_with_mtu(quote: &[u8], ipv6: bool, mtu: usize) -> Result<Vec<u8>> {
+    ensure!((MTU..=1500).contains(&mtu), "unsupported fixture MTU");
     ensure!(
-        quote.len() > MTU,
+        quote.len() > mtu,
         "PTB fixture requires a genuinely oversized quote"
     );
     let checksums = ChecksumCapabilities::default();
@@ -349,7 +399,7 @@ fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
         let ip = Ipv6Packet::new_checked(quote)?;
         let header = Ipv6Repr::parse(&ip)?;
         let repr = Icmpv6Repr::PktTooBig {
-            mtu: MTU as u32,
+            mtu: mtu as u32,
             header,
             data: &ip.payload()[..1192],
         };
@@ -381,7 +431,7 @@ fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
         ensure!(
             u8::from(icmp.msg_type()) == 2
                 && icmp.msg_code() == 0
-                && icmp.pkt_too_big_mtu() == 1280
+                && icmp.pkt_too_big_mtu() == mtu as u32
                 && icmp.payload() == &quote[..1232]
                 && icmp.verify_checksum(&ip.src_addr(), &ip.dst_addr()),
             "PTB fixture checksum, MTU, or exact quote changed"
@@ -417,7 +467,7 @@ fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
         bytes[28..].copy_from_slice(&quote[..28]);
         // The pinned ICMPv4 representation omits RFC 1191's next-hop MTU.
         // Set that non-cryptographic wire field, then use the library checksum.
-        bytes[26..28].copy_from_slice(&(MTU as u16).to_be_bytes());
+        bytes[26..28].copy_from_slice(&(mtu as u16).to_be_bytes());
         Icmpv4Packet::new_unchecked(&mut bytes[20..]).fill_checksum();
         let ip = Ipv4Packet::new_checked(&bytes[..])?;
         let icmp = Icmpv4Packet::new_checked(ip.payload())?;
@@ -426,7 +476,7 @@ fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
                 && icmp.msg_code() == 4
                 && icmp.data() == &quote[..28]
                 && icmp.verify_checksum()
-                && u16::from_be_bytes([bytes[26], bytes[27]]) == 1280,
+                && u16::from_be_bytes([bytes[26], bytes[27]]) == mtu as u16,
             "IPv4 too-big checksum, MTU, or exact quote changed"
         );
         Ok(bytes)
@@ -575,7 +625,9 @@ mod tests {
     #[test]
     fn retained_tcp_transfer_completes_after_interface_mtu_reduction() {
         for ipv6 in [false, true] {
-            interface_mtu_reduction(ipv6).unwrap();
+            for advertised_mtu in [MTU, 1400] {
+                interface_mtu_reduction(ipv6, advertised_mtu).unwrap();
+            }
         }
     }
 
@@ -643,6 +695,77 @@ mod tests {
                 assert_eq!(entries[0].preferred_until, route.preferred_until);
                 assert_eq!(entries[0].expires_at, route.expires_at);
             });
+        }
+    }
+
+    #[test]
+    fn matched_feedback_queue_refusal_preserves_reservation_for_retry() {
+        use smoltcp::phy::RxToken;
+        for ipv6 in [false, true] {
+            let packet = tcp_sample(ipv6, 1500).unwrap();
+            let feedback = too_big(&packet, ipv6).unwrap();
+            let (source, _) = addresses(ipv6).unwrap();
+            let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+            let mut tracker = crate::pmtu_feedback::Tracker::default();
+            tracker
+                .reserve(&packet, Duration::ZERO, Duration::from_secs(1))
+                .unwrap();
+            let mut corrupt = feedback.clone();
+            corrupt[if ipv6 { 42 } else { 22 }] ^= 1;
+            assert!(
+                !apply_feedback(&mut peer, &mut tracker, &corrupt, Duration::from_millis(1))
+                    .unwrap()
+            );
+            assert_eq!(peer.device.capabilities().max_transmission_unit, 1500);
+            peer.device.inject(vec![0x53; 1500]).unwrap();
+            let error =
+                apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(2))
+                    .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
+            assert_eq!(peer.device.capabilities().max_transmission_unit, 1500);
+            let (pending, _) = peer.device.receive(Instant::from_millis(2)).unwrap();
+            pending.consume(|bytes| assert_eq!(bytes, &[0x53; 1500]));
+            assert!(
+                apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(3))
+                    .unwrap()
+            );
+            assert_eq!(peer.device.capabilities().max_transmission_unit, MTU);
+            assert!(tracker.next_deadline().is_none());
+            assert!(
+                !apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(4))
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn matched_feedback_never_grows_the_current_interface_and_expires_without_mutation() {
+        for ipv6 in [false, true] {
+            let packet = tcp_sample(ipv6, 1500).unwrap();
+            let feedback = too_big(&packet, ipv6).unwrap();
+            let (source, _) = addresses(ipv6).unwrap();
+            let mut peer = Peer::new(source, 40000).unwrap();
+            let mut tracker = crate::pmtu_feedback::Tracker::default();
+            tracker
+                .reserve(&packet, Duration::ZERO, Duration::from_secs(1))
+                .unwrap();
+            assert!(
+                !apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(1))
+                    .unwrap()
+            );
+            assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
+            let error = apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_secs(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::pmtu_feedback::Error>(),
+                Some(&crate::pmtu_feedback::Error::Expired)
+            );
+            assert_eq!(peer.device.capabilities().max_transmission_unit, MTU);
+            assert!(tracker.next_deadline().is_none());
         }
     }
 
