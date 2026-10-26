@@ -341,3 +341,21 @@ This is restricted UDP error evidence, not general ICMP/PMTU support. Concurrent
 operations, router-originated errors, host-side synthesis and error isolation
 still need contracts. Identical datagrams cannot be distinguished from minimum
 quotes; peer authentication does not prove a quoted packet's ultimate origin.
+
+A sizing-control experiment now demonstrates a possible route around the
+missing public TCP MTU setter without a fork. `Interface::new` captures device
+capabilities; ordinary egress does not refresh that cached context. Replacing
+only the raw-IP interface at the smaller MTU while retaining the original
+`SocketSet` preserves a partially acknowledged TCP transfer, including a
+smaller retry of the lost sequence, exact byte delivery, FIN and response in
+both families. Device reconfiguration requires empty packet queues and keeps
+pending data on refusal. The experiment copies addresses, routes/lifetimes
+and any-IP policy, under the selected features' limited interface state.
+
+This is an executable alternative to new TCP packet rewriting or a stack
+fork, not an accepted production approach. Reduction affects the whole
+interface and receive limit, and the fixture re-seeds interface randomness.
+Production entropy/state transfer, multiple/asymmetric paths, queued UDP,
+feedback validation, per-path budgets/expiry and WireGuard propagation still
+need contracts and evidence. The raw ICMP negative control remains, the MTU
+gate remains nonzero, and this ADR stays proposed.

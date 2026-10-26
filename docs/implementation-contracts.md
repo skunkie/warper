@@ -741,3 +741,34 @@ remain unresolved. Peer authentication authenticates the tunnel sender, not
 any quoted packet's ultimate origin. Matching minimum quotes cannot distinguish
 identical datagrams; deadlines/ownership limit stale-operation exposure and do
 not establish cryptographic anti-spoofing.
+
+## 17. Experimental Interface MTU Reduction
+
+Status: a sizing-control feasibility probe, not complete PMTU discovery.
+The pinned stack stores device capabilities in `Interface`; updating a device
+alone does not refresh the cached TCP sizing context. A raw-IP experiment
+therefore replaces only `Interface` after reducing an empty device's MTU,
+retaining the original `SocketSet`, socket handles, endpoints, TCP buffers,
+sequence/acknowledgement state, and timers. It copies interface addresses,
+routes and any-IP policy and uses the current controlled monotonic time.
+Selected features have no neighbor, SLAAC, multicast or fragmentation state
+to transfer. The fixture re-seeds interface randomness; production entropy and
+state-transfer policy remain unproven. Reduction is interface-wide and also
+lowers the device receive limit; multiple flows and asymmetric paths are not
+established. This is not a generic interface migration API.
+
+Device reconfiguration accepts only the existing 1280–1500-byte fixture range
+and rejects nonempty input/output queues before mutation. It does not evict
+queued packets. The controlled path deliberately drops oversized TCP output
+before reconfiguration; TCP owns retransmission of unacknowledged data. No
+application write is repeated and no UDP queue is discarded by this operation.
+
+The probe starts an established 1500-byte TCP connection, delivers and
+acknowledges part of one application write, drops later oversized output,
+then reduces the interface to 1280. It must deliver the complete original
+byte sequence exactly once, preserve endpoints and FIN/half-close, and keep
+all subsequent packets within 1280. Existing raw ICMP behavior remains a
+negative control. Feedback validation/attribution, per-path state and expiry,
+UDP errors for queued output, smaller physical paths, and WireGuard integration
+remain separate work; the MTU gate still returns unsupported and ADR 0002
+remains proposed.

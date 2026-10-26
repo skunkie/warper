@@ -36,13 +36,20 @@ impl Default for PacketDevice {
 
 impl PacketDevice {
     pub fn with_mtu(mtu: usize) -> io::Result<Self> {
+        let mut device = Self::default();
+        device.configure_mtu(mtu)?;
+        Ok(device)
+    }
+
+    pub fn configure_mtu(&mut self, mtu: usize) -> io::Result<()> {
         if !(MTU..=1500).contains(&mtu) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Ok(Self {
-            mtu,
-            ..Self::default()
-        })
+        if !self.incoming.is_empty() || !self.outgoing.is_empty() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        self.mtu = mtu;
+        Ok(())
     }
 
     pub fn inject(&mut self, packet: Vec<u8>) -> io::Result<()> {
@@ -201,6 +208,39 @@ mod tests {
         device.inject(vec![0; 1500]).unwrap();
         assert_eq!(
             device.inject(vec![0; 1501]).unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+    }
+
+    #[test]
+    fn mtu_reconfiguration_preserves_queued_packets_and_validates_before_mutation() {
+        let mut device = PacketDevice::with_mtu(1500).unwrap();
+        device.inject(vec![0x53; 1500]).unwrap();
+        assert_eq!(
+            device.configure_mtu(MTU - 1).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            device.configure_mtu(MTU).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(device.capabilities().max_transmission_unit, 1500);
+        let (packet, _) = device.receive(Instant::from_millis(0)).unwrap();
+        phy::RxToken::consume(packet, |bytes| assert_eq!(bytes, &[0x53; 1500]));
+        phy::TxToken::consume(
+            device.transmit(Instant::from_millis(0)).unwrap(),
+            1500,
+            |bytes| bytes.fill(0x61),
+        );
+        assert_eq!(
+            device.configure_mtu(MTU).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(device.outgoing.pop_front().unwrap(), vec![0x61; 1500]);
+        device.configure_mtu(MTU).unwrap();
+        assert_eq!(device.capabilities().max_transmission_unit, MTU);
+        assert_eq!(
+            device.inject(vec![0; MTU + 1]).unwrap_err().kind(),
             io::ErrorKind::OutOfMemory
         );
     }

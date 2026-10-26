@@ -64,9 +64,15 @@ A single reserved UDP operation can now surface validated ICMP port-unreachable
 feedback after WireGuard decryption, including real errors from the independent
 kernel peer in both families. Minimum quotes, malformed/unrelated feedback,
 one-time delivery, cancellation and owner expiry are checked
-(`target/evidence/phase-0/udp-feedback/README.md`). General error propagation,
-dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header strategy
-remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
+(`target/evidence/phase-0/udp-feedback/README.md`). A raw-IP sizing experiment
+now replaces the interface while retaining established TCP sockets: partially
+acknowledged bytes complete after reduction from 1500 to 1280, including FIN
+and a response, with no application resubmission. Queued packets block device
+reconfiguration; addresses, routes and any-IP policy survive
+(`target/evidence/phase-0/interface-mtu/README.md`). Feedback attribution and
+production state-transfer policy are still missing. General error propagation,
+dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
+strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 
 ## Gate Evidence
 

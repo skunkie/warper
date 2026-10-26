@@ -457,3 +457,15 @@ The independent kernel scope repeats the closed-port probe in both families.
 Its four bounded exchanges account for the longer 50-second harness deadline;
 200 seconds covers those exchanges plus optional 135-second rekey. Dynamic
 PMTU, concurrent UDP error delivery and host-side error synthesis remain open.
+
+The explicit host `--mtu-check` scope now also tests a possible MTU control
+strategy using released smoltcp APIs. Device capabilities are cached by its
+interface; the probe rebuilds that interface at 1280 while retaining the
+original established socket set. It first delivers/acknowledges part of one
+8 KiB write at 1500, drops subsequent oversized output, and verifies a smaller
+retry of the lost sequence, exact delivery, FIN and a reply. No application
+write is repeated. Device reconfiguration refuses nonempty queues before
+mutation; interface addresses, routes/lifetimes and any-IP policy are copied.
+This interface-wide experiment is not automatic PMTU discovery, a production
+migration API, or an asymmetric-path solution. Raw feedback still has no TCP
+sizing effect; the command continues to return typed unsupported-PMTU failure.
