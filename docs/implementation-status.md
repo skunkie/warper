@@ -39,7 +39,11 @@ WireGuard packet-level failure probes now cover bounded handshake staging,
 transient TCP/UDP loss, setup/application-response deadlines, cancellation,
 and outer socket release (`target/evidence/phase-0/outage/README.md`). These
 same-library fixture observations do not close service/backend outage or
-crash recovery acceptance, independent-kernel outage, or MTU/ICMP gates.
+crash recovery acceptance. The independent Linux kernel peer now also verifies
+controlled outbound loss in both inner families: TCP retry/FIN and exact bytes,
+no lost-UDP replay, worker joins, and independently verified interface removal
+(`target/evidence/phase-0/kernel-outage/README.md`). Full outages, roaming,
+service recovery, and MTU/ICMP gates remain open.
 
 The explicit host MTU gate now reproduces oversized TCP retransmission after
 valid ICMP too-big feedback and missing fragment reassembly in both families

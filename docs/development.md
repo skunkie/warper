@@ -423,3 +423,14 @@ preserve maximum UDP payloads. Partial state expires on a transport pump even
 without incoming packets; overlaps fail explicitly, and endpoint destruction
 releases sockets with incomplete state retained. This does not establish outer
 fragment handling, dynamic PMTU, or kernel-peer fragment acceptance.
+
+The default isolated `wireguard-stack --kernel-peer` workload now includes
+controlled outbound loss after TCP establishment and four UDP round trips.
+One TCP request/FIN and one separate UDP message enter the ciphertext
+blackhole. After restoration, stack retransmission completes TCP; the kernel
+workers require the exact request/response and exactly five UDP messages,
+including the distinct recovery heartbeat. The lost UDP payload is rejected
+if replayed. Worker results are joined before success, and the namespace
+harness removes and verifies the interface independently. `--rekey` still
+adds a separate sustained workload with periodic heartbeats. This is limited
+outbound-loss evidence, not general outage detection or crash recovery.

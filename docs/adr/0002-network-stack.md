@@ -308,3 +308,11 @@ duplicate-inner-fragment rejection, and outer socket release with partial state.
 No dependency or stack feature change is required. This narrows the inner
 fragment-input gap; outer fragmentation, dynamic PMTU, and production peer-error
 isolation remain open. See the [decrypted input contract](../implementation-contracts.md#13-experimental-decrypted-fragment-input).
+
+The independent Linux kernel-peer workload now covers controlled outbound
+ciphertext loss after establishment in both inner families. Application TCP
+bytes are admitted once, then stack retransmission recovers the request and
+FIN; a separate lost UDP datagram is never resubmitted. Exact kernel-worker
+payload/count assertions and joined cleanup support this narrow recovery
+claim. This adds independent-peer evidence to the same-library failure probes;
+full outage detection, roaming, and service recovery remain unproven.

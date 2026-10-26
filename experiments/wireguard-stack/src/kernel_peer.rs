@@ -20,7 +20,7 @@ use anyhow::{Context, Result, ensure};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use wireguard_uapi::{DeviceInterface, WgSocket, set};
 
-use super::{REKEY_DURATION, REQUEST, RESPONSE, create_client, run_client};
+use super::{REKEY_DURATION, REQUEST, RESPONSE, create_client, run_client_with_outage};
 
 const INTERFACE: &str = "wg-feasibility";
 const WORKER_POLL: Duration = Duration::from_millis(2);
@@ -226,7 +226,15 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
     let require_retry = !ipv6 && duration.is_zero();
     transport.drop_first_handshake = require_retry;
     let mut workers = Workers::start(address, duration)?;
-    let result = run_client(ipv6, duration, &mut client, &mut transport, None);
+    let inject_outage = duration.is_zero();
+    let result = run_client_with_outage(
+        ipv6,
+        duration,
+        &mut client,
+        &mut transport,
+        None,
+        inject_outage,
+    );
     let cleanup = workers.finish();
     let report = match (result, cleanup) {
         (Err(primary), cleanup) => {
@@ -241,6 +249,19 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
         report.tcp == 1 && report.udp >= 4,
         "kernel peer did not verify the complete workload"
     );
+    if inject_outage {
+        ensure!(
+            transport.dropped_packets >= 2 && !transport.blackhole,
+            "kernel workload did not complete the controlled outage"
+        );
+        ensure!(
+            report.udp == 5,
+            "kernel peer did not receive exactly the original datagrams and recovery heartbeat"
+        );
+        println!(
+            "PASS independent kernel outage: TCP retry and FIN, lost UDP not replayed, IPv6={ipv6}"
+        );
+    }
     if require_retry {
         ensure!(
             transport.dropped_handshakes == 1 && transport.initiations >= 2,

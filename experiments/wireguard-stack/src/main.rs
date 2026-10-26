@@ -345,7 +345,25 @@ fn run_client(
     minimum_duration: Duration,
     client: &mut Peer,
     client_transport: &mut Transport,
+    server: Option<(&mut Peer, &mut Transport)>,
+) -> Result<()> {
+    run_client_with_outage(
+        ipv6,
+        minimum_duration,
+        client,
+        client_transport,
+        server,
+        false,
+    )
+}
+
+fn run_client_with_outage(
+    ipv6: bool,
+    minimum_duration: Duration,
+    client: &mut Peer,
+    client_transport: &mut Transport,
     mut server: Option<(&mut Peer, &mut Transport)>,
+    inject_outage: bool,
 ) -> Result<()> {
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
@@ -378,6 +396,8 @@ fn run_client(
     let mut udp_received = 0;
     let mut heartbeat_pending = false;
     let mut completion_started = None;
+    let mut outage_recovered = !inject_outage;
+    let mut outage_started = None;
     loop {
         ensure!(
             start.elapsed() < deadline,
@@ -392,7 +412,11 @@ fn run_client(
         }
 
         let socket = client.sockets.get_mut::<tcp::Socket>(client.tcp);
-        if !sent && socket.can_send() {
+        if !sent && socket.can_send() && (!inject_outage || udp_received == payloads.len()) {
+            if inject_outage {
+                client_transport.blackhole = true;
+                outage_started = Some(client_transport.dropped_packets);
+            }
             ensure!(
                 socket.send_slice(REQUEST)? == REQUEST.len(),
                 "partial request admission"
@@ -408,6 +432,37 @@ fn run_client(
             ensure!(response.len() <= RESPONSE.len(), "oversized TCP response");
         }
         let tcp_done = sent && !socket.may_recv();
+        if inject_outage && sent && !outage_recovered {
+            if client_transport.dropped_packets
+                == outage_started.context("missing outage reservation")?
+            {
+                // Enqueue once alongside the sole application write. The next
+                // poll emits both packets into the controlled blackhole.
+                if !client_transport.blackhole {
+                    anyhow::bail!("outage unexpectedly inactive");
+                }
+                if client.sockets.get::<udp::Socket>(client.udp).send_queue() == 0 {
+                    client
+                        .sockets
+                        .get_mut::<udp::Socket>(client.udp)
+                        .send_slice(b"lost-datagram", (server_address, 9000))?;
+                }
+            } else {
+                ensure!(
+                    client_transport.dropped_packets
+                        >= outage_started.context("missing outage reservation")? + 2,
+                    "outage did not suppress TCP and UDP"
+                );
+                client_transport.blackhole = false;
+                client
+                    .sockets
+                    .get_mut::<udp::Socket>(client.udp)
+                    .send_slice(b"heartbeat", (server_address, 9000))?;
+                heartbeat_pending = true;
+                next_heartbeat = start.elapsed() + Duration::from_secs(1);
+                outage_recovered = true;
+            }
+        }
         if let Some((server, _)) = server.as_mut() {
             let socket = server.sockets.get_mut::<tcp::Socket>(server.tcp);
             if socket.can_recv() {
@@ -459,13 +514,17 @@ fn run_client(
                 heartbeat_pending = false;
             }
         }
-        if udp_received == payloads.len() && !heartbeat_pending && start.elapsed() >= next_heartbeat
+        if !inject_outage
+            && udp_received == payloads.len()
+            && !heartbeat_pending
+            && start.elapsed() >= next_heartbeat
         {
             socket.send_slice(b"heartbeat", (server_address, 9000))?;
             heartbeat_pending = true;
             next_heartbeat = start.elapsed() + Duration::from_secs(1);
         }
         if tcp_done
+            && outage_recovered
             && udp_received == payloads.len()
             && !heartbeat_pending
             && start.elapsed() >= minimum_duration
@@ -520,6 +579,24 @@ mod tests {
     fn active_sockets_exchange_ipv4_and_ipv6_through_wireguard() {
         for ipv6 in [false, true] {
             probe(ipv6, Duration::ZERO).unwrap();
+        }
+    }
+
+    #[test]
+    fn controlled_outage_retries_tcp_without_replaying_lost_udp() {
+        for ipv6 in [false, true] {
+            let (mut client, mut server) = create_pair(ipv6).unwrap();
+            run_client_with_outage(
+                ipv6,
+                Duration::ZERO,
+                &mut client.peer,
+                &mut client.transport,
+                Some((&mut server.peer, &mut server.transport)),
+                true,
+            )
+            .unwrap();
+            assert!(client.transport.dropped_packets >= 2);
+            assert!(!client.transport.blackhole);
         }
     }
 
