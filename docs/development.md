@@ -175,9 +175,30 @@ rollback, retained closed-stream budgets, slow-reader backpressure,
 cancellation wakeups, and reset errors. Handler tasks are retained and
 joined; the adapter owns no background tasks. Its driver is explicitly
 polled with a controlled clock. This TCP candidate returns a typed unsupported
-error for UDP; the fixed-destination UDP probe remains separate. There is
-no production service, general UDP adapter, or completed runtime scheduling
-contract yet.
+error for UDP; UDP admission has its own candidate boundary.
+
+`udp_adapter.rs` separately admits UDP associations by original tuple, with
+backend selection frozen on admission. `udp_probe.rs` checks dynamic/shared
+destinations and two sources using actual smoltcp peers in both families.
+Each association preserves empty, unequal, and maximum unfragmented payloads
+(1252 IPv4 or 1232 IPv6 bytes at MTU 1280). IP/UDP validation precedes
+allocation, including an explicit zero IPv6 checksum rejection beyond the
+library parser's checks. Source port zero, non-unicast traffic, fragments,
+and IPv6 extensions are outside this reply-oriented experiment.
+
+Receive is asynchronous; reply admission returns typed queue/quota errors.
+Independent bounds cover active associations, retained handles, accepted
+queues, per-direction messages, globally retained payloads, and output
+packets. Retained datagrams keep their quota after association expiry/drop.
+Tests exercise reservation rollback, exact idle/age expiry, stale replies,
+application drop, output backpressure, cancellation/drop wakeups, malformed
+packets, and both families' MTU boundaries. Expiry withdraws owned queued
+output before an association can be replaced. The candidate spawns no task;
+the probe owns and awaits its futures, while the expiry-wakeup test joins its
+bounded task. All timer-only cases use injected time. There is no combined
+TCP/UDP runner, production service, or completed scheduling contract yet.
+See [UDP boundary](implementation-contracts.md#8-experimental-udp-association-boundary)
+for signatures and precise accounting limits.
 
 The wrapper comparison remains available explicitly:
 

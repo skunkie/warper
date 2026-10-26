@@ -119,11 +119,35 @@ both half-close orders, slow readers, and typed timeout/reset/cancellation
 errors. `accepted_probe.rs` retains and joins controlled handler tasks.
 
 This is an experimental TCP boundary, not a selected production adapter.
-Dynamic UDP associations, runtime wake/timer scheduling, aggregate
-integration stress, and kernel TUN traffic remain unproven. Backend indices
+Runtime wake/timer scheduling, aggregate integration stress, combined
+TCP/UDP ownership, and kernel TUN traffic remain unproven. Backend indices
 and limits are synthetic prototype inputs, not implemented YAML/service
 contracts. The [accepted TCP boundary](../implementation-contracts.md#7-experimental-accepted-tcp-boundary)
 records concrete signatures, ownership, and remaining decisions.
+
+The separate `udp_adapter.rs` candidate accepts dynamic UDP associations by
+original tuple, freezes backend metadata, and publishes the first message
+only after admission reservations succeed. It uses
+[smoltcp 0.14 UDP representations](https://docs.rs/smoltcp/0.14.0/smoltcp/wire/struct.UdpRepr.html)
+for validation/serialization, without binding one UDP socket per destination.
+UDP has no transport handshake or half-close; association ownership and
+deadlines belong to this adapter. A held datagram keeps its global quota
+after its association is retired, and an application-held association keeps
+its lifetime charge independently of reusable slots. Reply queues and output
+packets are bounded, and expiry withdraws owned output before replacement.
+
+Controlled active-stack peers verify empty, unequal, and maximum
+unfragmented datagrams, original addresses, and dynamic/shared destinations
+in both families. Unit tests exercise queue/quota rollback, retired ownership,
+idle/absolute age, input/output saturation, and cancellation/drop wakeups.
+The adapter rejects zero IPv6 UDP checksums explicitly because the library
+verifier accepts them; omitted IPv4 checksums remain supported. Non-unicast
+traffic, zero source ports, fragments, and IPv6 extensions are unsupported
+in this reply-oriented candidate. It does not yet establish reassembly,
+ICMP errors, combined scheduling/fairness, kernel ingress, or supervised
+backend integration. The [UDP boundary](../implementation-contracts.md#8-experimental-udp-association-boundary)
+records the candidate API and its limits. Neither prototype selects a
+production stack or closes the full host-facing gate.
 
 Active smoltcp sockets exchange TCP/UDP over real IPv4 loopback UDP between
 two BoringTun peers, with IPv4/IPv6 inner traffic, empty datagrams, and

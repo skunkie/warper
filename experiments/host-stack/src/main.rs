@@ -9,6 +9,8 @@ mod adapter;
 mod direct;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+mod udp_adapter;
+mod udp_probe;
 
 use std::{cell::Cell, net::SocketAddr, time::Duration};
 
@@ -40,6 +42,11 @@ async fn main() -> Result<()> {
             accepted_probe::run_probe(ipv6, true).await?;
             println!(
                 "PASS asynchronous TCP: dynamic destinations, shared destination, metadata and half-close, IPv6={ipv6}"
+            );
+            udp_probe::run_probe(ipv6, false).await?;
+            udp_probe::run_probe(ipv6, true).await?;
+            println!(
+                "PASS bounded UDP associations: dynamic/shared destinations, metadata, empty datagrams and MTU boundary, IPv6={ipv6}"
             );
         }
         return Ok(());

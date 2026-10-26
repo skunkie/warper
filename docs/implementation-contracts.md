@@ -285,3 +285,102 @@ readiness/waker/timer scheduling, driver-failure propagation, task ownership,
 and bounded service shutdown. These manually polled experiments do not
 establish runtime supervision, general UDP acceptance, or route, DNS,
 physical-transport, and native-platform mutation boundaries.
+
+## 8. Experimental UDP Association Boundary
+
+Status: executable Phase 0 candidate in `udp_adapter.rs` and `udp_probe.rs`
+under `experiments/host-stack/src/`; no production package depends on it.
+The candidate accepts validated unfragmented UDP packets, publishes original
+tuple/backend metadata, and returns asynchronous datagram receive plus bounded
+nonblocking reply admission. Backend selection occurs once per association.
+Empty datagrams remain messages. Replies can target only the admitted source,
+with the original destination as their source. Unsupported protocols, malformed
+packets, unselected destinations, and resource exhaustion fail explicitly;
+there is no direct transport.
+
+Association slots, accepted queue, per-direction message queues, and a global
+datagram quota are independently bounded. A lifetime permit remains charged
+until driver and application release the association. A datagram permit stays
+with its owned payload until the consumer drops it, including after expiry.
+No new tuple is published until its first message and all reservations exist.
+Rejected admissions do not refresh deadlines, displace another tuple, or
+consume an ID. Idle and absolute-age deadlines use a caller-supplied monotonic
+clock. Cancellation/drop closes channels, wakes waiting receivers, discards
+owned output, and makes retained handles report cancellation. Retirement
+removes pending output for that association; stale handles cannot send on a
+replacement association. The prototype spawns no task and makes no readiness,
+fragmentation/ICMP, TUN, or production backend claim.
+
+### API and Validation
+
+```text
+UdpAdapter::new(Limits, fn(SocketAddr) -> Option<BackendId>)
+    -> Result<(UdpAdapter, mpsc::Receiver<Association>), Error>
+UdpAdapter::inject(&mut self, &[u8]) -> Result<FlowId, Error>
+UdpAdapter::poll(&mut self, Duration) -> Result<(), Error>
+UdpAdapter::take_packet(&mut self) -> Option<Vec<u8>>
+UdpAdapter::active_associations(&self) -> usize
+UdpAdapter::statistics(&self) -> &Statistics
+UdpAdapter::cancel(&mut self)
+Association::metadata(&self) -> FlowMetadata
+Association::recv(&mut self) -> impl Future<Output = Result<Datagram, Error>>
+Association::try_reply(&self, &[u8]) -> Result<(), Error>
+Datagram::payload(&self) -> &[u8]
+```
+
+The prototype reuses the TCP experiment's metadata types; identifiers are
+monotonic within each driver, not service-global identities. Driver,
+association, and datagram are compile-checked as `Send`. Original tuple and
+backend are immutable through the public API. Reply admission copies only
+after queue and global quota reservation. `QueueFull` backpressures the caller;
+`ResourceLimit` includes retained-message and retired-handle charges.
+
+Smoltcp 0.14 IP/UDP parsers verify packet lengths and checksums. Fragmented
+IPv4 and non-UDP IPv6 next headers, including extension/fragment headers,
+return `UnsupportedProtocol`. The adapter explicitly rejects zero IPv6 UDP
+checksums because the library verifier accepts them; omitted IPv4 checksums
+remain permitted. Only unicast addresses, nonzero source/destination ports,
+and an exact UDP length within the IP payload are admitted. Source port zero
+is intentionally rejected because this reply-oriented boundary cannot return
+traffic to it. There is no fragment reassembly or ICMP generation. Replies
+are serialized with library representations and checksums, hop limit 64,
+and at most 1252 IPv4 or 1232 IPv6 payload bytes at MTU 1280.
+
+### Accounting and Retirement
+
+Defaults are two associations, two accepted handles, four datagrams per
+direction per association, sixteen globally retained datagrams, a 30-second
+idle timeout, and a 300-second maximum age. Constructor bounds are sixteen
+associations, 64 messages per direction, and 256 retained datagrams; all
+limits must be positive and acceptance cannot exceed association capacity.
+Durations cannot be zero or exceed the experiment's signed-millisecond range.
+
+`Datagram` exposes only a borrowed payload, without clone/extraction. Its
+owned semaphore permit remains charged even when the application holds it
+after dropping an expired association. Reply permits transfer into the
+bounded output queue (64 packets maximum) until handoff. Thus default retained
+payload/packet storage is at most sixteen allocations of 1280 bytes, plus
+one transient serialization allocation of at most 1280 bytes. Channel blocks,
+fixed metadata, Arc/semaphore/container/allocator overhead, and caller-owned
+output packets are additional; this is not a process RSS bound. Lifetime
+permits bound retired associations and their channels independently of active
+slots. Retaining handles/messages may prevent new admission; protected owners
+are never evicted to make room.
+
+Each poll examines each slot once and consumes at most one reply per slot,
+only with output capacity available. Successful ingress and reply conversion
+refresh idle time; rejected input does not. Absolute age never renews. Expiry
+at the exact deadline precedes reply processing, removes owned queued output,
+and reports `TimedOut` before closing the input sender. Application drop
+retires that tuple on the next poll. Cancellation is idempotent and reports
+`Cancelled`; later cancellation cannot overwrite an already retired reason.
+Both expiry and cancellation wake pending receive futures. No clean EOF is
+substituted for a terminal error. Caller polling still owns progress, expiry,
+and cancellation observation; production wakeups, timer scheduling, fairness,
+and backend task supervision remain open.
+
+Statistics are saturating counters without completion history. `received`
+counts admitted input messages, `replied` counts serialized output admission,
+and `rejected` counts failed `inject` calls. Output admission does not prove
+wire delivery; retirement can still withdraw it. Application-side reply
+errors are returned to the caller without creating a driver history entry.

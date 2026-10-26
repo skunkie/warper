@@ -15,6 +15,7 @@ SPDX-License-Identifier: MIT
 | Session readiness | Backends, packet handlers, exemptions, routes, and DNS have passed the network startup barrier |
 | Backend | One configured SSH, SOCKS5, or WireGuard instance with an ID and explicit transport/address-family capabilities |
 | Captured flow | Host TCP connection or UDP association accepted from the TUN with original source/destination metadata |
+| UDP association | Bounded ownership of UDP datagrams sharing an original source/destination tuple and selected backend; expiry ends that ownership without implying a wire-level connection |
 | Capture route | Owned kernel route that directs destination packets to the TUN; distinct from backend-selection policy |
 | Route lease | Time-bounded routing ownership derived from a released DNS address; its retention covers dependency TTL or connection grace, independently of DNS cache freshness |
 | Logical lease key | Backend, normalized DNS question/type/class, and endpoint IP identifying one budgeted routing lease; renewals of that key coalesce |
