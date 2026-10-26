@@ -4,6 +4,7 @@
 
 //! Active smoltcp sockets through two BoringTun peers over loopback UDP.
 
+mod outage;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
 
@@ -11,7 +12,7 @@ mod packet_peer;
 mod kernel_peer;
 
 use std::{
-    io,
+    fmt, io,
     net::{IpAddr, SocketAddr, UdpSocket},
     thread,
     time::{Duration, Instant},
@@ -29,6 +30,26 @@ const REQUEST: &[u8] = b"synthetic-tunnel-request";
 const RESPONSE: &[u8] = b"synthetic-tunnel-response-after-fin";
 const REKEY_DURATION: Duration = Duration::from_secs(135);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportFailure {
+    StagingLimit,
+    StagingAccounting,
+    DrainLimit,
+}
+
+impl fmt::Display for TransportFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "WireGuard transport experiment: {self:?}")
+    }
+}
+
+impl std::error::Error for TransportFailure {}
+
+struct Endpoint {
+    peer: Peer,
+    transport: Transport,
+}
+
 struct Transport {
     tunnel: Tunn,
     socket: UdpSocket,
@@ -38,6 +59,9 @@ struct Transport {
     encrypted_packets: usize,
     drop_first_handshake: bool,
     dropped_handshakes: usize,
+    staged_packets: usize,
+    blackhole: bool,
+    dropped_packets: usize,
 }
 
 impl Transport {
@@ -53,6 +77,10 @@ impl Transport {
                         self.dropped_handshakes += 1;
                         return Ok(true);
                     }
+                }
+                if self.blackhole {
+                    self.dropped_packets = self.dropped_packets.saturating_add(1);
+                    return Ok(true);
                 }
                 ensure!(
                     self.socket.send_to(packet, self.remote)? == packet.len(),
@@ -82,8 +110,18 @@ impl Transport {
 
     fn pump(&mut self, peer: &mut Peer) -> Result<()> {
         let mut output = [0; MTU + 256];
-        while let Some(packet) = peer.device.outgoing.pop_front() {
+        while !peer.device.outgoing.is_empty() {
+            if self.staged_packets >= PACKET_CAPACITY {
+                return Err(TransportFailure::StagingLimit.into());
+            }
+            let Some(packet) = peer.device.outgoing.pop_front() else {
+                break;
+            };
+            self.staged_packets += 1;
             let result = self.tunnel.encapsulate(&packet, &mut output);
+            if is_application_data(&result) {
+                self.staged_packets -= 1;
+            }
             self.send_result(result, peer)?;
         }
         let result = self.tunnel.update_timers(&mut output);
@@ -99,20 +137,40 @@ impl Transport {
             let result =
                 self.tunnel
                     .decapsulate(Some(source.ip()), &incoming[..length], &mut output);
-            self.send_result(result, peer)?;
+            self.receive_result(result, peer)?;
             // BoringTun queues plaintext while handshaking; drain every network result.
             let mut drained = false;
-            for _ in 0..PACKET_CAPACITY {
+            // Up to 64 staged packets, then one Done result. The sentinel call
+            // must fit too; otherwise a full valid queue fails after delivery.
+            for _ in 0..=PACKET_CAPACITY {
                 let result = self.tunnel.decapsulate(None, &[], &mut output);
-                if !self.send_result(result, peer)? {
+                if !self.receive_result(result, peer)? {
                     drained = true;
                     break;
                 }
             }
-            ensure!(drained, "WireGuard drain exceeded packet budget");
+            if !drained {
+                return Err(TransportFailure::DrainLimit.into());
+            }
         }
         Ok(())
     }
+
+    fn receive_result(&mut self, result: TunnResult<'_>, peer: &mut Peer) -> Result<bool> {
+        if is_application_data(&result) {
+            self.staged_packets = self
+                .staged_packets
+                .checked_sub(1)
+                .ok_or(TransportFailure::StagingAccounting)?;
+        }
+        self.send_result(result, peer)
+    }
+}
+
+fn is_application_data(result: &TunnResult<'_>) -> bool {
+    // Type 4 with more than WireGuard's 32-byte overhead contains an IP packet.
+    // Empty encrypted keepalives are not staged application packets.
+    matches!(result, TunnResult::WriteToNetwork(packet) if packet.first() == Some(&4) && packet.len() > 32)
 }
 
 fn main() -> Result<()> {
@@ -136,6 +194,10 @@ fn main() -> Result<()> {
     for ipv6 in [false, true] {
         probe(ipv6, Duration::ZERO)?;
         println!("PASS active TCP/UDP, empty datagram, FIN, IPv6={ipv6}; loopback BoringTun peer");
+        outage::run_probe(ipv6)?;
+        println!(
+            "PASS WireGuard outage: bounded staging, recovery, deadlines and cancellation, IPv6={ipv6}"
+        );
     }
     if !arguments.is_empty() {
         probe(false, REKEY_DURATION)?;
@@ -145,6 +207,17 @@ fn main() -> Result<()> {
 }
 
 fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
+    let (mut client, mut server) = create_pair(ipv6)?;
+    run_client(
+        ipv6,
+        minimum_duration,
+        &mut client.peer,
+        &mut client.transport,
+        Some((&mut server.peer, &mut server.transport)),
+    )
+}
+
+fn create_pair(ipv6: bool) -> Result<(Endpoint, Endpoint)> {
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
     let mut server = Peer::new(server_address, 9000)?;
@@ -154,9 +227,9 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
         .listen((server_address, 9000))?;
     let server_socket = UdpSocket::bind("127.0.0.1:0")?;
     server_socket.set_nonblocking(true)?;
-    let (mut client, mut client_transport) = create_client(ipv6, server_socket.local_addr()?)?;
+    let (client, client_transport) = create_client(ipv6, server_socket.local_addr()?)?;
     let client_key = StaticSecret::from([0x11; 32]);
-    let mut server_transport = Transport {
+    let server_transport = Transport {
         tunnel: Tunn::new(
             StaticSecret::from([0x22; 32]),
             PublicKey::from(&client_key),
@@ -172,14 +245,20 @@ fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
         encrypted_packets: 0,
         drop_first_handshake: false,
         dropped_handshakes: 0,
+        staged_packets: 0,
+        blackhole: false,
+        dropped_packets: 0,
     };
-    run_client(
-        ipv6,
-        minimum_duration,
-        &mut client,
-        &mut client_transport,
-        Some((&mut server, &mut server_transport)),
-    )
+    Ok((
+        Endpoint {
+            peer: client,
+            transport: client_transport,
+        },
+        Endpoint {
+            peer: server,
+            transport: server_transport,
+        },
+    ))
 }
 
 fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
@@ -206,6 +285,9 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         encrypted_packets: 0,
         drop_first_handshake: false,
         dropped_handshakes: 0,
+        staged_packets: 0,
+        blackhole: false,
+        dropped_packets: 0,
     };
     Ok((client, transport))
 }

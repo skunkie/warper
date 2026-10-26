@@ -35,6 +35,12 @@ peer and adapter experiments. Linux kernel WireGuard interface creation and
 retirement work in disposable namespaces independently of the unavailable
 TUN device; this does not establish host TUN interception.
 
+WireGuard packet-level failure probes now cover bounded handshake staging,
+transient TCP/UDP loss, setup/application-response deadlines, cancellation,
+and outer socket release (`target/evidence/phase-0/outage/README.md`). These
+same-library fixture observations do not close service/backend outage or
+crash recovery acceptance, independent-kernel outage, or MTU/ICMP gates.
+
 ## Gate Evidence
 
 Update this ledger when a phase or prerequisite changes status. Link the

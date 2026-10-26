@@ -199,13 +199,34 @@ driving packet/timer output for 100 ms after application EOF before replacing
 a session, preserving delayed TCP acknowledgements. This controlled
 loopback drain is not a general network shutdown guarantee.
 
+The shared experimental transport bounds handshake staging at 64 IP packets,
+below BoringTun's internal 256-packet silent-drop limit. Encapsulation reserves
+before library admission; immediate encrypted IP output releases that charge,
+while pending plaintext retains it until drained. Empty keepalives do not
+release it. The bounded drain includes its final Done call. Resource and
+accounting failures are typed and fatal to the controlled owner; no library
+fork or application-payload retry is introduced.
+
+`outage.rs` groups the active stack, tunnel, and outer socket under injected
+setup/response/lifetime deadlines and explicit cancellation. Controlled
+outer loss demonstrates TCP retransmission after one application write,
+response-after-FIN preservation, and no replay of a lost UDP datagram.
+Application response success remains separate from cryptographic handshake
+completion. Tests verify socket release after cancellation, expiry, overflow,
+unexpected-peer failure, and owner drop, and verify a full staging drain.
+These cases are same-library packet experiments; independent-kernel outage,
+endpoint changes, OS state recovery, and service supervision remain unproven.
+The [failure boundary](../implementation-contracts.md#10-experimental-active-tunnel-failure-boundary)
+records exact scope and limits. Production backpressure/error policy needs
+finalization before a real backend depends on this prototype.
+
 The optional sustained probes check timer-driven rekey. These
 core packet experiments are portable Rust code; the kernel fixture is
 Linux-only. Observations so far are Linux ARM64
 only; no native macOS claim follows. No throughput/CPU/RSS
 performance budget is established. Library maintenance review, MSRV/platform
 validation, larger/varied workloads, fragmentation/ICMP, aggregate resource
-stress, WireGuard cancellation/outages, and production supervisor integration
+stress, production WireGuard cancellation/outages, and supervisor integration
 remain open. Packet-level admission, cancellation, and stalled-reader
 observations do not close their kernel/application acceptance gates.
 

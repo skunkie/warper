@@ -483,3 +483,59 @@ existing pinned `test-util` feature only as a development dependency.
 No kernel descriptor, backend transport task, journal, DNS mutation, readiness
 barrier, or graceful production drain is implemented here. Native-platform
 and outage/MTU/ICMP acceptance and finalized production contracts remain open.
+
+## 10. Experimental Active Tunnel Failure Boundary
+
+Status: Phase 0 failure probe, not a production backend API. The probe owns
+the active stack, BoringTun state, and outer UDP socket as one optional
+resource group. Setup, session lifetime, and an explicitly armed application
+response deadline use injected monotonic time. Cryptographic handshake
+completion is distinct from application response success. Cancellation,
+expiry, and fatal transport/resource errors destroy the resource group;
+later operations retain the original terminal category. There is no direct
+fallback, automatic application reconnect, or application-payload replay.
+
+Before encapsulation the transport reserves one of 64 plaintext staging
+slots, below the pinned library's silent-drop queue limit. Immediate encrypted
+data releases that reservation; handshake-staged packets retain it until
+drained. Encrypted keepalives do not release application reservations. A full
+queue fails explicitly before handing another packet to the library. Each
+drain permits 64 packets plus its final Done sentinel, with a typed error if
+the bounded drain or its accounting invariant fails.
+
+Controlled loopback peers blackhole outer packets before setup or after
+connection. Transient outage checks TCP's own retransmission without another
+application write and verifies that a lost UDP datagram is not replayed.
+Permanent request loss, queue exhaustion, and cancellation verify immediate
+outer socket release. These cases do not establish kernel networking,
+physical endpoint changes, service crash recovery, or production deadlines.
+
+`outage.rs` keeps `Session`, `Budget`, `Reason`, and `Failure` private to the
+experiment. `Session::new(Endpoint, Budget)`, `step(Duration)`,
+`arm_response(Duration)`, `complete_response()`, and `cancel()` are exercised
+against real controlled peers, without production dependents. The endpoint
+is an owned resource group, not a backend-neutral core interface. The
+fixture uses one-second setup and ten-second absolute lifetime budgets,
+with explicit response budgets of 100 ms or three seconds. These are
+experiment inputs, not YAML defaults. Zero/invalid budgets and backward or
+unrepresentable time fail before mutation. Only one response reservation
+can be armed; pre-handshake admission is `NotReady`, overlap is `Busy`.
+
+Expiry is checked before polling at the exact deadline. Initial transport
+errors retain their source; subsequent calls and cancellation preserve the
+terminal reason. Destruction releases the outer socket immediately, verified
+by rebinding its exact address. No worker is spawned. Controlled connect and
+recovery loops have finite packet steps and wall deadlines; BoringTun's own
+timers remain real-time. Each staged IP packet is at most 1280 bytes, so the
+additional library plaintext budget is at most 80 KiB, excluding fixed tunnel
+state, stack buffers, bounded raw packet queues, metadata/allocator overhead,
+and kernel socket memory. Queued output that cannot reach its selected peer
+is never redirected to a physical application socket.
+
+The resource policy is deliberately fatal rather than silent library loss.
+Malformed/unexpected outer traffic also follows the existing probe's fatal
+error policy; resilience to hostile datagrams and production congestion
+backpressure require separate decisions. Full-queue tests observe 64 actual
+encrypted datagrams at the peer socket, not 64 application deliveries through
+its smaller UDP ring. Kernel-peer interoperability/rekey and same-library
+outage scopes remain separate evidence.

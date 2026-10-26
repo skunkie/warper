@@ -246,6 +246,36 @@ it does not prove interoperability with an independent WireGuard peer.
 Polling every millisecond is experimental and is not a production scheduling
 or performance claim. Run long-lived rekey inside a disposable environment.
 
+The default WireGuard executable also runs `outage.rs` in both inner
+families. Controlled outer-packet blackholes test setup loss and transient
+established TCP/UDP loss. The application writes its TCP request once;
+TCP retransmission restores it and preserves the response after FIN. A lost
+UDP datagram is not replayed, while a distinct post-outage datagram arrives.
+An explicit response deadline fails an established but unresponsive session;
+a completed handshake alone is not application health.
+
+The experimental owner groups stack, tunnel, and UDP socket. Setup,
+response, lifetime, resource, and transport failures release that group;
+cancellation is idempotent and preserves an earlier terminal reason. Tests
+verify cleanup by rebinding the exact outer socket after expiry/cancel/drop.
+Injected monotonic time drives owner deadlines; BoringTun's protocol timers
+still use its real clock. The fixture's budgets are one second for setup,
+ten seconds for lifetime, and explicit 100 ms/three-second response cases,
+not implemented YAML defaults. Recovery has a bounded controlled-step and
+wall-time budget. No background task is spawned.
+
+Transport staging is capped at 64 IP packets before BoringTun's internal
+256-packet silent-drop boundary. Immediate encrypted data releases its
+reservation; queued plaintext stays charged until actual drain. Keepalives
+do not release application reservations. Exhaustion is a typed failure;
+the probe owner stops and releases resources without a fallback or replay.
+A drain allows 64 queued packets plus the Done sentinel. A full-queue
+regression verifies all 64 encrypted data datagrams reach the outer socket.
+These are packet-level failure observations with controlled BoringTun peers,
+not independent-kernel outage, endpoint-roaming, service crash, or general
+NET-07 acceptance. See the
+[active failure boundary](implementation-contracts.md#10-experimental-active-tunnel-failure-boundary).
+
 The explicit `--kernel-peer` scope instead connects the same Rust active
 stack and BoringTun client to Linux's independent WireGuard implementation.
 The kernel peer has `10.66.66.10/24` and `fd66:66::10/64`, MTU 1280, and
