@@ -16,6 +16,7 @@ use std::{
     time::Duration,
 };
 
+use futures::task::AtomicWaker;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage},
     phy::ChecksumCapabilities,
@@ -120,6 +121,7 @@ enum Termination {
 
 struct FlowLifetime {
     termination: AtomicU8,
+    wake: Arc<AtomicWaker>,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -149,6 +151,7 @@ impl Drop for AcceptedStream {
             Ordering::AcqRel,
             Ordering::Acquire,
         );
+        self.lifetime.wake.wake();
     }
 }
 
@@ -226,6 +229,7 @@ pub struct HostAdapter {
     slots: Box<[Slot]>,
     accepted: Option<Sender<AcceptedFlow>>,
     lifetimes: Arc<Semaphore>,
+    wake: Arc<AtomicWaker>,
     select_backend: fn(SocketAddr) -> Option<BackendId>,
     limits: Limits,
     next_id: u64,
@@ -296,6 +300,7 @@ impl HostAdapter {
                 slots,
                 accepted: Some(accepted),
                 lifetimes: Arc::new(Semaphore::new(limits.flows)),
+                wake: Arc::new(AtomicWaker::new()),
                 select_backend,
                 limits,
                 next_id: 1,
@@ -316,6 +321,7 @@ impl HostAdapter {
     }
 
     pub fn poll_io(&mut self, cx: &mut Context<'_>, now: Duration) -> Result<(), AdmissionError> {
+        self.wake.register(cx.waker());
         if self.cancelled {
             return Err(AdmissionError::Cancelled);
         }
@@ -390,6 +396,47 @@ impl HostAdapter {
 
     pub fn take_packet(&mut self) -> Option<Vec<u8>> {
         self.device.outgoing.pop_front()
+    }
+
+    pub fn has_packet(&self) -> bool {
+        !self.device.outgoing.is_empty()
+    }
+
+    pub fn next_deadline(&mut self, transport_ready: bool) -> Option<Duration> {
+        if self.cancelled {
+            return None;
+        }
+        let lifecycle = self
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                slot.flow.as_ref().map(|flow| {
+                    if self.sockets.get::<tcp::Socket>(slot.socket).state() != flow.previous_state
+                        || (!flow.network_eof
+                            && flow.lifetime.termination.load(Ordering::Acquire)
+                                == Termination::ApplicationClosed as u8)
+                    {
+                        return self.now;
+                    }
+                    (flow.created + self.limits.max_age).min(if flow.pending.is_some() {
+                        flow.created + self.limits.setup_timeout
+                    } else {
+                        flow.progress + self.limits.idle_timeout
+                    })
+                })
+            })
+            .min();
+        let transport = if transport_ready {
+            self.interface
+                .poll_at(
+                    Instant::from_millis(self.now.as_millis() as i64),
+                    &self.sockets,
+                )
+                .map(|time| Duration::from_millis(time.total_millis().max(0) as u64).max(self.now))
+        } else {
+            None
+        };
+        lifecycle.into_iter().chain(transport).min()
     }
 
     pub fn active_flows(&self) -> usize {
@@ -476,6 +523,7 @@ impl HostAdapter {
         let (driver, application) = tokio::io::duplex(BYTE_CAPACITY);
         let lifetime = Arc::new(FlowLifetime {
             termination: AtomicU8::new(Termination::Running as u8),
+            wake: self.wake.clone(),
             _permit: lifetime_permit,
         });
         let metadata = FlowMetadata {
@@ -538,7 +586,10 @@ fn bridge(
             }
         });
         match result {
-            Ok(Ok(count)) if count > 0 => flow.progress = now,
+            Ok(Ok(count)) if count > 0 => {
+                flow.progress = now;
+                cx.waker().wake_by_ref();
+            }
             Ok(Err(_)) | Err(_) => return Some(Termination::ApplicationClosed),
             _ => {}
         }
@@ -562,7 +613,10 @@ fn bridge(
             }
             Poll::Ready(Ok(())) => {
                 match socket.send_slice(buffer.filled()) {
-                    Ok(count) if count == buffer.filled().len() => flow.progress = now,
+                    Ok(count) if count == buffer.filled().len() => {
+                        flow.progress = now;
+                        cx.waker().wake_by_ref();
+                    }
                     // Never retry bytes after an unexpected partial admission.
                     _ => return Some(Termination::Reset),
                 }

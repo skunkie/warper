@@ -195,10 +195,33 @@ application drop, output backpressure, cancellation/drop wakeups, malformed
 packets, and both families' MTU boundaries. Expiry withdraws owned queued
 output before an association can be replaced. The candidate spawns no task;
 the probe owns and awaits its futures, while the expiry-wakeup test joins its
-bounded task. All timer-only cases use injected time. There is no combined
-TCP/UDP runner, production service, or completed scheduling contract yet.
+bounded task. All timer-only cases use injected time. These adapter-only
+probes do not establish production service scheduling; the separate combined
+experiment follows below.
 See [UDP boundary](implementation-contracts.md#8-experimental-udp-association-boundary)
 for signatures and precise accounting limits.
+
+The host executable also runs `runtime_probe.rs`, driving both candidates
+through a single wake-driven runtime with bounded packet channels. It checks
+concurrent 64 KiB TCP streaming and a trailer after FIN alongside empty,
+unequal, and MTU-sized UDP in both families. Application I/O/drop wakes,
+library poll deadlines, lifecycle timers, and packet/channel events schedule
+progress; the runner uses no periodic polling interval. Packet output work
+is bounded per turn and alternates protocols. UDP association priority
+rotates under output pressure. Paused-clock tests cover idle sleeping,
+TCP setup/idle and UDP expiry, blocked-output shutdown, capacity restoration,
+application drop, channel-owner loss, and abort-and-join cleanup. A controlled
+wraparound test ensures the peer consumes the final contiguous TCP slice
+before waiting. These tests use the pinned Tokio `test-util` development
+feature; release dependencies are unchanged.
+
+The runtime owns no detached task. The fixture retains and joins the runner
+and both controlled handlers, with bounded failure cleanup. Runtime failure
+preserves typed causes and counters, closes ingress, cancels adapters, and
+guards packet egress against release after shutdown. This is a scheduling
+candidate, not the production supervisor or kernel I/O layer. Packet handoff
+and retained-handle limits are specified in the
+[combined runner boundary](implementation-contracts.md#9-experimental-combined-runner).
 
 The wrapper comparison remains available explicitly:
 

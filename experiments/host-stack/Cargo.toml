@@ -17,5 +17,8 @@ netstack-smoltcp.workspace = true
 smoltcp.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true

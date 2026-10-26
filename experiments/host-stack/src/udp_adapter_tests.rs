@@ -229,6 +229,40 @@ async fn full_packet_output_backpressures_replies_without_consuming_them() {
     assert!(host.take_packet().is_none());
 }
 
+#[tokio::test]
+async fn near_full_output_rotates_association_priority_without_starving_a_sender() {
+    let limits = Limits {
+        datagrams: MAX_DATAGRAMS,
+        ..Limits::default()
+    };
+    let (mut host, mut accepted) = UdpAdapter::new(limits, select_backend).unwrap();
+    host.inject(&sample(40000, 9000, b"first")).unwrap();
+    let mut first = accepted.try_recv().unwrap();
+    drop(first.recv().await.unwrap());
+    host.inject(&sample(40001, 9000, b"second")).unwrap();
+    let mut second = accepted.try_recv().unwrap();
+    drop(second.recv().await.unwrap());
+    for _ in 0..PACKET_CAPACITY {
+        first.try_reply(b"filler").unwrap();
+        host.poll(Duration::ZERO).unwrap();
+    }
+    first.try_reply(b"first").unwrap();
+    second.try_reply(b"second").unwrap();
+    host.poll(Duration::ZERO).unwrap();
+    for _ in 0..2 {
+        host.take_packet().unwrap();
+        host.poll(Duration::ZERO).unwrap();
+    }
+    let mut final_payloads = Vec::new();
+    while let Some(packet) = host.take_packet() {
+        let payload = decode(&packet).unwrap().2;
+        if payload != b"filler" {
+            final_payloads.push(payload.to_vec());
+        }
+    }
+    assert_eq!(final_payloads, [b"second".to_vec(), b"first".to_vec()]);
+}
+
 #[test]
 fn dropping_application_retires_queued_replies_and_allows_new_identity() {
     let (mut host, mut accepted) = UdpAdapter::new(Limits::default(), select_backend).unwrap();

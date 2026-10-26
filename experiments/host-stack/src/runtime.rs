@@ -1,0 +1,350 @@
+// SPDX-FileCopyrightText: 2026 skunkie
+//
+// SPDX-License-Identifier: MIT
+
+//! Experimental wake-driven combined host adapter owner; no kernel I/O.
+
+use std::{
+    fmt,
+    future::pending,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Wake, Waker},
+};
+
+use tokio::{
+    sync::{Notify, mpsc, oneshot},
+    time::{Instant, sleep_until},
+};
+
+use crate::{
+    adapter::{self, AcceptedFlow, AdmissionError, BackendId, HostAdapter},
+    packet_peer::MTU,
+    udp_adapter::{self, Association, UdpAdapter},
+};
+
+const OUTPUT_BATCH: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    InvalidCapacity,
+    PacketTooLarge,
+    QueueFull,
+    IngressClosed,
+    EgressClosed,
+    ShutdownOwnerLost,
+    InvalidClock,
+    Tcp(AdmissionError),
+    Udp(udp_adapter::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "host runtime experiment: {self:?}")
+    }
+}
+
+impl std::error::Error for Error {}
+
+#[derive(Default, Debug)]
+pub struct Report {
+    pub turns: u64,
+    pub timer_wakes: u64,
+    pub admitted: u64,
+    pub rejected: u64,
+    pub emitted_tcp: u64,
+    pub emitted_udp: u64,
+    pub tcp_timed_out: u64,
+    pub udp_timed_out: u64,
+    pub udp_application_closed: u64,
+    pub discarded_packets: u64,
+}
+
+#[derive(Debug)]
+pub struct Failure {
+    pub cause: Error,
+    pub report: Report,
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} (admitted={}, rejected={})",
+            self.cause, self.report.admitted, self.report.rejected
+        )
+    }
+}
+
+impl std::error::Error for Failure {}
+
+#[derive(Clone)]
+pub struct Ingress {
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+impl Ingress {
+    pub fn try_inject(&self, packet: &[u8]) -> Result<(), Error> {
+        if packet.len() > MTU {
+            return Err(Error::PacketTooLarge);
+        }
+        let permit = self.sender.try_reserve().map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => Error::QueueFull,
+            mpsc::error::TrySendError::Closed(_) => Error::IngressClosed,
+        })?;
+        permit.send(packet.to_vec());
+        Ok(())
+    }
+}
+
+pub struct Channels {
+    pub ingress: Ingress,
+    pub packets: Egress,
+    pub tcp: mpsc::Receiver<AcceptedFlow>,
+    pub udp: mpsc::Receiver<Association>,
+    pub shutdown: oneshot::Sender<()>,
+}
+
+pub struct Egress {
+    receiver: mpsc::Receiver<Vec<u8>>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl Egress {
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        if self.stopped.load(Ordering::Acquire) {
+            self.discard();
+            return None;
+        }
+        let packet = self.receiver.recv().await;
+        if self.stopped.load(Ordering::Acquire) {
+            self.discard();
+            None
+        } else {
+            packet
+        }
+    }
+
+    fn discard(&mut self) {
+        self.receiver.close();
+        while self.receiver.try_recv().is_ok() {}
+    }
+}
+
+struct ApplicationWake(Notify);
+
+impl Wake for ApplicationWake {
+    fn wake(self: Arc<Self>) {
+        self.0.notify_one();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.notify_one();
+    }
+}
+
+pub struct Runtime {
+    tcp: HostAdapter,
+    udp: UdpAdapter,
+    input: mpsc::Receiver<Vec<u8>>,
+    output: mpsc::Sender<Vec<u8>>,
+    shutdown: oneshot::Receiver<()>,
+    application_wake: Arc<ApplicationWake>,
+    stopped: Arc<AtomicBool>,
+    udp_first: bool,
+    report: Report,
+}
+
+impl Runtime {
+    pub fn new(
+        tcp_limits: adapter::Limits,
+        udp_limits: udp_adapter::Limits,
+        select_backend: fn(SocketAddr) -> Option<BackendId>,
+        capacity: usize,
+    ) -> Result<(Self, Channels), Error> {
+        if !(1..=64).contains(&capacity) {
+            return Err(Error::InvalidCapacity);
+        }
+        let (tcp, accepted_tcp) =
+            HostAdapter::new(tcp_limits, select_backend).map_err(Error::Tcp)?;
+        let (udp, accepted_udp) =
+            UdpAdapter::new(udp_limits, select_backend).map_err(Error::Udp)?;
+        let (input, receiver) = mpsc::channel(capacity);
+        let (output, packets) = mpsc::channel(capacity);
+        let (shutdown, stopping) = oneshot::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        Ok((
+            Self {
+                tcp,
+                udp,
+                input: receiver,
+                output,
+                shutdown: stopping,
+                application_wake: Arc::new(ApplicationWake(Notify::new())),
+                stopped: stopped.clone(),
+                udp_first: false,
+                report: Report::default(),
+            },
+            Channels {
+                ingress: Ingress { sender: input },
+                packets: Egress {
+                    receiver: packets,
+                    stopped,
+                },
+                tcp: accepted_tcp,
+                udp: accepted_udp,
+                shutdown,
+            },
+        ))
+    }
+
+    pub async fn run(mut self) -> Result<Report, Failure> {
+        let outcome = self.drive().await;
+        self.input.close();
+        while self.input.try_recv().is_ok() {
+            self.report.discarded_packets = self.report.discarded_packets.saturating_add(1);
+        }
+        // Local cleanup cannot fail. Closing adapter senders publishes terminal
+        // reasons before waking application receivers. No task is detached here.
+        self.report.tcp_timed_out = self.tcp.statistics().timed_out;
+        self.report.udp_timed_out = self.udp.statistics().timed_out;
+        self.report.udp_application_closed = self.udp.statistics().application_closed;
+        self.tcp.cancel();
+        self.udp.cancel();
+        self.stopped.store(true, Ordering::Release);
+        let report = std::mem::take(&mut self.report);
+        match outcome {
+            Ok(()) => Ok(report),
+            Err(cause) => Err(Failure { cause, report }),
+        }
+    }
+
+    async fn drive(&mut self) -> Result<(), Error> {
+        let origin = Instant::now();
+        let waker = Waker::from(self.application_wake.clone());
+        let output = self.output.clone();
+        loop {
+            // A queued stop wins before any further adapter or output work.
+            match self.shutdown.try_recv() {
+                Ok(()) => return Ok(()),
+                Err(oneshot::error::TryRecvError::Closed) => return Err(Error::ShutdownOwnerLost),
+                Err(oneshot::error::TryRecvError::Empty) => {}
+            }
+            let now = origin.elapsed();
+            {
+                let mut cx = Context::from_waker(&waker);
+                self.tcp.poll_io(&mut cx, now).map_err(Error::Tcp)?;
+                self.udp.poll_io(&mut cx, now).map_err(Error::Udp)?;
+            }
+            self.report.turns = self.report.turns.saturating_add(1);
+            self.drain_output();
+            let blocked = self.output.capacity() == 0;
+            let next = self
+                .tcp
+                .next_deadline(!blocked)
+                .into_iter()
+                .chain(self.udp.next_deadline(!blocked))
+                .min();
+            let deadline = next
+                .map(|elapsed| origin.checked_add(elapsed).ok_or(Error::InvalidClock))
+                .transpose()?;
+            // Every ready branch returns to one bounded turn. Tokio's select
+            // varies packet/application/timer priority; shutdown is checked first.
+            tokio::select! {
+                result = &mut self.shutdown => return result.map_err(|_| Error::ShutdownOwnerLost),
+                _ = output.closed() => return Err(Error::EgressClosed),
+                permit = output.reserve(), if blocked => {
+                    drop(permit.map_err(|_| Error::EgressClosed)?);
+                }
+                packet = self.input.recv() => {
+                    self.admit(&packet.ok_or(Error::IngressClosed)?)?;
+                }
+                _ = self.application_wake.0.notified() => {}
+                _ = async {
+                    match deadline {
+                        Some(deadline) => sleep_until(deadline).await,
+                        None => pending().await,
+                    }
+                } => self.report.timer_wakes = self.report.timer_wakes.saturating_add(1),
+            }
+        }
+    }
+
+    fn drain_output(&mut self) {
+        for _ in 0..OUTPUT_BATCH {
+            let Ok(permit) = self.output.try_reserve() else {
+                break;
+            };
+            let udp = self.udp.has_packet() && (self.udp_first || !self.tcp.has_packet());
+            let packet = if udp {
+                self.udp.take_packet()
+            } else {
+                self.tcp.take_packet()
+            };
+            let Some(packet) = packet else { break };
+            permit.send(packet);
+            if udp {
+                self.report.emitted_udp = self.report.emitted_udp.saturating_add(1);
+            } else {
+                self.report.emitted_tcp = self.report.emitted_tcp.saturating_add(1);
+            }
+            self.udp_first = !udp;
+        }
+        // More output can remain after the per-turn budget even with channel
+        // capacity available. Continue cooperatively instead of stranding it.
+        if self.output.capacity() > 0 && (self.tcp.has_packet() || self.udp.has_packet()) {
+            self.application_wake.0.notify_one();
+        }
+    }
+
+    fn admit(&mut self, packet: &[u8]) -> Result<(), Error> {
+        let protocol = match packet.first().map(|byte| byte >> 4) {
+            Some(4) if packet.len() >= 20 => packet[9],
+            Some(6) if packet.len() >= 40 => packet[6],
+            _ => 0,
+        };
+        let admitted = match protocol {
+            6 => match self.tcp.inject(packet) {
+                Ok(_) => true,
+                Err(
+                    error @ (AdmissionError::Cancelled
+                    | AdmissionError::InvalidLimits
+                    | AdmissionError::InvalidTime),
+                ) => return Err(Error::Tcp(error)),
+                Err(_) => false,
+            },
+            17 => match self.udp.inject(packet) {
+                Ok(_) => true,
+                Err(
+                    error @ (udp_adapter::Error::Cancelled
+                    | udp_adapter::Error::InvalidLimits
+                    | udp_adapter::Error::InvalidTime),
+                ) => return Err(Error::Udp(error)),
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if admitted {
+            self.report.admitted = self.report.admitted.saturating_add(1);
+        } else {
+            self.report.rejected = self.report.rejected.saturating_add(1);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        // Also covers cancellation by the caller dropping/aborting this future.
+        self.tcp.cancel();
+        self.udp.cancel();
+    }
+}
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

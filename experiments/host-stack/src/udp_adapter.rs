@@ -12,9 +12,11 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
+    task::Context,
     time::Duration,
 };
 
+use futures::task::AtomicWaker;
 use smoltcp::{
     phy::ChecksumCapabilities,
     wire::{IpAddress, IpProtocol, Ipv4Packet, Ipv4Repr, Ipv6Packet, Ipv6Repr, UdpPacket, UdpRepr},
@@ -130,6 +132,7 @@ pub struct Association {
     replies: Sender<Datagram>,
     lifetime: Arc<Lifetime>,
     datagrams: Arc<Semaphore>,
+    wake: Arc<AtomicWaker>,
 }
 
 impl Association {
@@ -156,7 +159,15 @@ impl Association {
             bytes: payload.to_vec(),
             permit,
         });
+        self.wake.wake();
         Ok(())
+    }
+}
+
+impl Drop for Association {
+    fn drop(&mut self) {
+        self.incoming.close();
+        self.wake.wake();
     }
 }
 
@@ -180,10 +191,12 @@ pub struct UdpAdapter {
     accepted: Option<Sender<Association>>,
     lifetimes: Arc<Semaphore>,
     datagrams: Arc<Semaphore>,
+    wake: Arc<AtomicWaker>,
     outgoing: VecDeque<Output>,
     select_backend: fn(SocketAddr) -> Option<BackendId>,
     limits: Limits,
     next_id: u64,
+    next_slot: usize,
     now: Duration,
     cancelled: bool,
     statistics: Statistics,
@@ -211,10 +224,12 @@ impl UdpAdapter {
                 accepted: Some(accepted),
                 lifetimes: Arc::new(Semaphore::new(limits.associations)),
                 datagrams: Arc::new(Semaphore::new(limits.datagrams)),
+                wake: Arc::new(AtomicWaker::new()),
                 outgoing: VecDeque::new(),
                 select_backend,
                 limits,
                 next_id: 1,
+                next_slot: 0,
                 now: Duration::ZERO,
                 cancelled: false,
                 statistics: Statistics::default(),
@@ -239,7 +254,9 @@ impl UdpAdapter {
             return Err(Error::InvalidTime);
         }
         self.now = now;
-        for slot in &mut self.slots {
+        for offset in 0..self.slots.len() {
+            let index = (self.next_slot + offset) % self.slots.len();
+            let slot = &mut self.slots[index];
             let Some(state) = slot else { continue };
             let expired = now - state.created >= self.limits.max_age
                 || now - state.progress >= self.limits.idle_timeout;
@@ -281,11 +298,43 @@ impl UdpAdapter {
                 self.statistics.replied = self.statistics.replied.saturating_add(1);
             }
         }
+        self.next_slot = (self.next_slot + 1) % self.slots.len();
         Ok(())
+    }
+
+    pub fn poll_io(&mut self, cx: &mut Context<'_>, now: Duration) -> Result<(), Error> {
+        self.wake.register(cx.waker());
+        self.poll(now)
     }
 
     pub fn take_packet(&mut self) -> Option<Vec<u8>> {
         self.outgoing.pop_front().map(|output| output.bytes)
+    }
+
+    pub fn has_packet(&self) -> bool {
+        !self.outgoing.is_empty()
+    }
+
+    pub fn next_deadline(&self, transport_ready: bool) -> Option<Duration> {
+        if self.cancelled {
+            return None;
+        }
+        self.slots
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(|state| {
+                if state.incoming.is_closed()
+                    || (transport_ready
+                        && self.outgoing.len() < PACKET_CAPACITY
+                        && !state.replies.is_empty())
+                {
+                    self.now
+                } else {
+                    (state.created + self.limits.max_age)
+                        .min(state.progress + self.limits.idle_timeout)
+                }
+            })
+            .min()
     }
 
     pub fn active_associations(&self) -> usize {
@@ -379,6 +428,7 @@ impl UdpAdapter {
             replies,
             lifetime,
             datagrams: self.datagrams.clone(),
+            wake: self.wake.clone(),
         });
         self.next_id = next_id;
         self.statistics.admitted = self.statistics.admitted.saturating_add(1);

@@ -119,8 +119,8 @@ both half-close orders, slow readers, and typed timeout/reset/cancellation
 errors. `accepted_probe.rs` retains and joins controlled handler tasks.
 
 This is an experimental TCP boundary, not a selected production adapter.
-Runtime wake/timer scheduling, aggregate integration stress, combined
-TCP/UDP ownership, and kernel TUN traffic remain unproven. Backend indices
+Production scheduling, aggregate integration stress, and kernel TUN traffic
+remain unproven. Backend indices
 and limits are synthetic prototype inputs, not implemented YAML/service
 contracts. The [accepted TCP boundary](../implementation-contracts.md#7-experimental-accepted-tcp-boundary)
 records concrete signatures, ownership, and remaining decisions.
@@ -144,10 +144,32 @@ The adapter rejects zero IPv6 UDP checksums explicitly because the library
 verifier accepts them; omitted IPv4 checksums remain supported. Non-unicast
 traffic, zero source ports, fragments, and IPv6 extensions are unsupported
 in this reply-oriented candidate. It does not yet establish reassembly,
-ICMP errors, combined scheduling/fairness, kernel ingress, or supervised
+ICMP errors, production scheduling/fairness, kernel ingress, or supervised
 backend integration. The [UDP boundary](../implementation-contracts.md#8-experimental-udp-association-boundary)
 records the candidate API and its limits. Neither prototype selects a
 production stack or closes the full host-facing gate.
+
+`runtime.rs` now combines the two candidates as one owned Tokio future.
+It uses the pinned library's `Interface::poll_at`, adapter lifecycle deadlines,
+application wakers, and bounded packet channels to await progress without
+a periodic poll interval. TCP bridging explicitly reschedules bounded
+progress and registers application-drop wakes. UDP reply/drop wakes are
+coalesced, protocol output alternates within an eight-packet turn budget,
+and UDP association priority rotates under output pressure. Full output
+defers transport work deadlines while lifecycle timers and shutdown remain
+observable; restored capacity wakes the runner.
+
+The combined probe verifies concurrent 64 KiB TCP plus a trailer after FIN
+and empty/unequal/MTU-sized UDP in both families, then joins runner/handlers.
+Controlled-clock tests establish idle sleeping, expiry without new packets,
+blocked-output behavior, explicit shutdown, channel loss, and abort cleanup.
+The peer drains both contiguous receive-ring slices before waiting; its
+wraparound regression fails with only one read. Tokio's pinned `test-util`
+feature is added only for development tests, without a dependency upgrade.
+The [combined boundary](../implementation-contracts.md#9-experimental-combined-runner)
+records precise API, ownership, and packet handoff semantics. This runtime
+owns experimental queues/adapters, without kernel I/O, backend workers,
+readiness barriers, or a production graceful-drain/recovery contract.
 
 Active smoltcp sockets exchange TCP/UDP over real IPv4 loopback UDP between
 two BoringTun peers, with IPv4/IPv6 inner traffic, empty datagrams, and

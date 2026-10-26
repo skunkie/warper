@@ -285,6 +285,8 @@ readiness/waker/timer scheduling, driver-failure propagation, task ownership,
 and bounded service shutdown. These manually polled experiments do not
 establish runtime supervision, general UDP acceptance, or route, DNS,
 physical-transport, and native-platform mutation boundaries.
+The combined candidate in section 9 adds wake-driven scheduling without
+changing this adapter's ownership or selecting a production stack.
 
 ## 8. Experimental UDP Association Boundary
 
@@ -367,7 +369,8 @@ permits bound retired associations and their channels independently of active
 slots. Retaining handles/messages may prevent new admission; protected owners
 are never evicted to make room.
 
-Each poll examines each slot once and consumes at most one reply per slot,
+Each poll rotates its starting slot, examines each slot once, and consumes
+at most one reply per slot,
 only with output capacity available. Successful ingress and reply conversion
 refresh idle time; rejected input does not. Absolute age never renews. Expiry
 at the exact deadline precedes reply processing, removes owned queued output,
@@ -375,12 +378,108 @@ and reports `TimedOut` before closing the input sender. Application drop
 retires that tuple on the next poll. Cancellation is idempotent and reports
 `Cancelled`; later cancellation cannot overwrite an already retired reason.
 Both expiry and cancellation wake pending receive futures. No clean EOF is
-substituted for a terminal error. Caller polling still owns progress, expiry,
-and cancellation observation; production wakeups, timer scheduling, fairness,
-and backend task supervision remain open.
+substituted for a terminal error. Caller polling owns progress, expiry, and
+cancellation observation; section 9 exercises one combined caller. Final
+production scheduling, fairness under load, and backend task supervision
+remain open.
 
 Statistics are saturating counters without completion history. `received`
 counts admitted input messages, `replied` counts serialized output admission,
 and `rejected` counts failed `inject` calls. Output admission does not prove
 wire delivery; retirement can still withdraw it. Application-side reply
 errors are returned to the caller without creating a driver history entry.
+
+## 9. Experimental Combined Runner
+
+Status: executable Phase 0 candidate in `runtime.rs`, `runtime_tests.rs`, and
+`runtime_probe.rs` under `experiments/host-stack/src/`, not the production
+supervisor. A single
+owned future drives both host adapters using application wakeups, bounded
+packet input/output channels, and the earliest stack or flow deadline. It
+does not use a fixed polling interval. Each turn bounds packet output work
+and alternates protocol priority. Full output defers transport polling
+deadlines while retaining lifecycle expiry and shutdown observation; output
+capacity restoration wakes the runner. Application progress may still fill
+bounded internal buffers, without polling indefinitely for a blocked sink.
+
+Ingress copies only MTU-sized packets after channel reservation. Protocol
+admission failures count as packet rejections without direct fallback.
+Ingress/output channel loss is a typed runtime failure; explicit shutdown
+cancels both adapters and returns counters after owned queues are discarded.
+The caller retains/joins the runner and any backend/peer tasks. This candidate
+does not establish service readiness, kernel I/O, graceful backend draining,
+or the complete production shutdown/recovery contract.
+
+### API, Scheduling, and Handoff
+
+```text
+Runtime::new(adapter::Limits, udp_adapter::Limits,
+    fn(SocketAddr) -> Option<BackendId>, usize)
+    -> Result<(Runtime, Channels), Error>
+Runtime::run(self) -> impl Future<Output = Result<Report, Failure>>
+Ingress::try_inject(&self, &[u8]) -> Result<(), Error>
+Egress::recv(&mut self) -> impl Future<Output = Option<Vec<u8>>>
+```
+
+`Channels` owns cloneable ingress, guarded packet egress, separate accepted
+TCP/UDP receivers, and the internal explicit-shutdown oneshot sender. Packet
+channel capacity is 1–64 per direction; the probe uses 64. Each queued packet
+is at most 1280 bytes. Constructor errors preserve TCP/UDP validation variants.
+The adapters retain their independent flow/message quotas: this is not a
+combined production resource reservation manager. IDs remain scoped to their
+protocol driver, so consumers must distinguish TCP and UDP identity.
+
+TCP `poll_io` registers its application-drop waker and schedules another
+bounded turn after successful bridge progress. UDP `poll_io` registers its
+driver waker; reply admission and application drop notify it after publishing
+the relevant state. Both adapters expose `has_packet` and
+`next_deadline(transport_ready: bool)`. TCP combines smoltcp
+`Interface::poll_at`, state transitions, and setup/idle/age deadlines; UDP
+combines queued work and idle/age deadlines. All times are elapsed monotonic
+durations. A single coalescing `Notify` carries application wakes. The runner
+waits with Tokio `select!` and `sleep_until`, with no interval or polling sleep.
+
+Each turn admits at most one queued input and emits at most eight packets,
+alternating TCP/UDP when both have output. UDP also rotates association
+priority to prevent a near-full adapter output queue from continually
+favoring its first slot. When the handoff channel is full, output-capacity
+reservation remains a wake source and transport work deadlines are deferred;
+lifecycle deadlines and application/channel/shutdown events remain armed.
+Readiness and bounded work resumption do not establish throughput or latency
+guarantees under arbitrary load.
+
+Packet admission failures increment a rejection counter; malformed input,
+unknown flows, unsupported protocols, policy misses, and quota errors do not
+terminate the runner or switch transport. Channel closure is different:
+`IngressClosed`, `EgressClosed`, or `ShutdownOwnerLost` terminates the runtime
+with `Failure { cause, report }`. The internal shutdown owner is the experiment
+supervisor, not a GUI/control client. Its loss cannot masquerade as successful
+Disconnect. Explicit shutdown is checked every bounded turn. Adapter/clock
+failures retain their typed cause. Counters saturate and retain no per-run
+completion history.
+
+Sending a packet to the egress channel hands it off beyond the adapter;
+association retirement can withdraw only adapter-owned output. At runtime
+shutdown/drop, an atomic guard prevents egress from returning queued packets
+and discards them on the next receive/drop. A packet already returned to the
+caller remains caller-owned. Accepted handles/messages retained by consumers
+keep their existing bounded charges and report terminal errors. The runtime
+closes/drains input, cancels both adapters, and drops its queue/channel owners;
+its synchronous local cleanup has no fallible OS mutation. A cancelled runner
+future executes the same adapter cancellation through `Drop`.
+
+The combined probe retains its runner `JoinHandle` and at most two handler
+tasks. It verifies simultaneous 64 KiB streaming TCP plus a response trailer
+after FIN, empty/unequal/MTU-sized UDP, metadata, and explicit shutdown in both
+families. The controlled peer acknowledges final UDP receipt solely to keep
+its fixture handler alive; this is not UDP delivery acknowledgement exposed
+by the adapter. Peer stack polling also follows library deadlines. Its TCP
+reader drains both possible contiguous receive-ring slices before waiting.
+The fixture has a five-second exchange deadline and a one-second runner join
+deadline; failure aborts/joins remaining tasks and preserves the initial
+error with additional cleanup diagnostics. Paused-clock tests need Tokio's
+existing pinned `test-util` feature only as a development dependency.
+
+No kernel descriptor, backend transport task, journal, DNS mutation, readiness
+barrier, or graceful production drain is implemented here. Native-platform
+and outage/MTU/ICMP acceptance and finalized production contracts remain open.

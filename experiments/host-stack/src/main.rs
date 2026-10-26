@@ -9,6 +9,8 @@ mod adapter;
 mod direct;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+mod runtime;
+mod runtime_probe;
 mod udp_adapter;
 mod udp_probe;
 
@@ -47,6 +49,10 @@ async fn main() -> Result<()> {
             udp_probe::run_probe(ipv6, true).await?;
             println!(
                 "PASS bounded UDP associations: dynamic/shared destinations, metadata, empty datagrams and MTU boundary, IPv6={ipv6}"
+            );
+            runtime_probe::run_probe(ipv6).await?;
+            println!(
+                "PASS wake-driven combined TCP/UDP: bounded queues, half-close and joined shutdown, IPv6={ipv6}"
             );
         }
         return Ok(());
