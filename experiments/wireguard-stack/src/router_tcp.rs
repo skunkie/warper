@@ -101,7 +101,13 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue) -> Result<()> {
                 anyhow::bail!("routed TCP encryption was not immediately ready");
             };
             let mut reservation = Reservation::default();
-            reservation.reserve(packet, reporter, wall.elapsed(), Duration::from_secs(1))?;
+            reservation.reserve(
+                packet,
+                client.transport.socket.local_addr()?,
+                reporter,
+                wall.elapsed(),
+                Duration::from_secs(1),
+            )?;
             // Send exactly one attempt; no remaining TCP output is encrypted
             // until its remote report has been validated and sizing committed.
             client

@@ -50,6 +50,7 @@ pub struct LocalMtu {
     pub mtu: usize,
 }
 
+#[derive(Clone)]
 pub(super) struct Record {
     pub ipv6: bool,
     pub errno: u32,
@@ -60,7 +61,9 @@ pub(super) struct Record {
     pub reporter: Option<IpAddr>,
 }
 
+#[derive(Clone)]
 pub(super) struct ReceivedError {
+    pub local: SocketAddr,
     pub record: Record,
     pub destination: Option<SocketAddr>,
     pub flags: MsgFlags,
@@ -179,6 +182,7 @@ impl ErrorQueue {
         let retained = quoted_len.min(prefix.len());
         prefix[..retained].copy_from_slice(&bytes[..retained]);
         Ok(Some(ReceivedError {
+            local: self.local,
             record,
             destination,
             flags,

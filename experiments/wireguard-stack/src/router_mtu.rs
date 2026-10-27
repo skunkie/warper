@@ -131,10 +131,21 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
     let reporter = reporter(outer_ipv6)?;
     let address = client.transport.socket.local_addr()?;
     let queue = ErrorQueue::enable_remote_probe(&client.transport.socket)?;
-    let result = exchange(&mut client, &queue, ipv6, reporter);
+    let second = UdpSocket::bind(SocketAddr::new(address.ip(), 0))?;
+    second.connect(client.transport.remote)?;
+    let second_address = second.local_addr()?;
+    ensure!(
+        second_address != address,
+        "outer sockets must have distinct local tuples"
+    );
+    let second_queue = ErrorQueue::enable_remote_probe(&second)?;
+    let result = exchange(&mut client, &queue, &second, &second_queue, ipv6, reporter);
+    drop(second_queue);
+    drop(second);
     drop(queue);
     drop(client);
-    let cleanup = UdpSocket::bind(address).map(drop);
+    let cleanup = UdpSocket::bind(address)
+        .and_then(|first| UdpSocket::bind(second_address).map(|second| drop((first, second))));
     match (result, cleanup) {
         (Err(primary), cleanup) => Err(primary.context(match cleanup {
             Ok(()) => "router MTU outer socket rebound".into(),
@@ -144,7 +155,14 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
     }
 }
 
-fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpAddr) -> Result<()> {
+fn exchange(
+    client: &mut Endpoint,
+    queue: &ErrorQueue,
+    second: &UdpSocket,
+    second_queue: &ErrorQueue,
+    ipv6: bool,
+    reporter: IpAddr,
+) -> Result<()> {
     let wall = Instant::now();
     let destination: SocketAddr = if ipv6 {
         "[fd66:66::10]:9000"
@@ -182,7 +200,13 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
     };
     let encrypted_len = packet.len();
     let mut reservation = Reservation::default();
-    reservation.reserve(packet, reporter, wall.elapsed(), Duration::from_secs(1))?;
+    reservation.reserve(
+        packet,
+        client.transport.socket.local_addr()?,
+        reporter,
+        wall.elapsed(),
+        Duration::from_secs(1),
+    )?;
     // The send must succeed: local EMSGSIZE is not remote-router evidence.
     client
         .transport
@@ -195,7 +219,6 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
         reservation.advance(wall.elapsed())?;
         thread::sleep(Duration::from_millis(1));
     };
-    reservation.cancel();
     send_udp(
         client,
         destination,
@@ -221,14 +244,43 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
         packet[..16] != stale.prefix,
         "successive WireGuard headers repeated"
     );
-    reservation.reserve(packet, reporter, wall.elapsed(), Duration::from_secs(1))?;
-    client
-        .transport
-        .send_result(TunnResult::WriteToNetwork(packet), &mut client.peer)?;
-    let error = match reservation.apply(
+    let mut second_reservation = Reservation::default();
+    let mut second_budget = PathBudget::new(1600, second.local_addr()?.is_ipv6())?;
+    second_reservation.reserve(
+        packet,
+        second.local_addr()?,
+        reporter,
+        wall.elapsed(),
+        Duration::from_secs(1),
+    )?;
+    let mut wrong_owner = stale.clone();
+    wrong_owner.prefix.copy_from_slice(&packet[..16]);
+    client.transport.path_budget.check_datagram(packet.len())?;
+    ensure!(
+        second.send(packet)? == packet.len(),
+        "partial second outer datagram"
+    );
+    let error = match second_reservation.apply(
+        &wrong_owner,
+        client.transport.remote,
+        &mut second_budget,
+        wall.elapsed(),
+    ) {
+        Ok(_) => anyhow::bail!("wrong socket feedback matched a reservation"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_remote::Error>()
+            == Some(&crate::outer_remote::Error::Unmatched)
+    );
+    ensure!(
+        second_budget.outer_mtu() == 1600,
+        "wrong socket changed path budget"
+    );
+    let error = match second_reservation.apply(
         &stale,
         client.transport.remote,
-        &mut client.transport.path_budget,
+        &mut second_budget,
         wall.elapsed(),
     ) {
         Ok(_) => anyhow::bail!("stale feedback matched a later reservation"),
@@ -239,26 +291,39 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
             == Some(&crate::outer_remote::Error::Unmatched)
     );
     ensure!(
-        client.transport.path_budget.outer_mtu() == 1600,
+        second_budget.outer_mtu() == 1600,
         "stale feedback changed path budget"
     );
     let quoted_len = loop {
-        if let Some(received) = queue.receive()? {
+        if let Some(received) = second_queue.receive()? {
             ensure!(
                 received.record.mtu == 1400,
                 "unexpected later remote path MTU"
             );
-            ensure!(reservation.apply(
+            ensure!(second_reservation.apply(
                 &received,
                 client.transport.remote,
-                &mut client.transport.path_budget,
+                &mut second_budget,
                 wall.elapsed()
             )?);
             break received.quoted_len;
         }
-        reservation.advance(wall.elapsed())?;
+        second_reservation.advance(wall.elapsed())?;
         thread::sleep(Duration::from_millis(1));
     };
+    ensure!(
+        second_budget.outer_mtu() == 1400,
+        "second budget did not commit"
+    );
+    ensure!(
+        reservation.apply(
+            &stale,
+            client.transport.remote,
+            &mut client.transport.path_budget,
+            wall.elapsed()
+        )?,
+        "first socket did not commit its own report"
+    );
     ensure!(client.transport.path_budget.outer_mtu() == 1400 && encrypted_len > 1400);
     send_udp(
         client,
@@ -280,7 +345,7 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
     receive_udp(client, destination, &safe, wall)?;
     ensure!(queue.read()?.is_none() && client.transport.staged_packets == 0);
     println!(
-        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, stale_rejected=true, failed_payload_replayed=false",
+        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, stale_rejected=true, wrong_socket_rejected=true, failed_payload_replayed=false",
         client.transport.remote.is_ipv6(),
         quoted_len.min(16),
         safe.len()

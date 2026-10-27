@@ -31,6 +31,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 struct Pending {
+    local: SocketAddr,
     prefix: [u8; 16],
     encrypted_len: usize,
     reporter: IpAddr,
@@ -47,6 +48,7 @@ impl Reservation {
     pub fn reserve(
         &mut self,
         packet: &[u8],
+        local: SocketAddr,
         reporter: IpAddr,
         now: Duration,
         lifetime: Duration,
@@ -58,7 +60,11 @@ impl Reservation {
         if lifetime.is_zero() || lifetime > Duration::from_secs(10) {
             return Err(Error::InvalidTime);
         }
-        if !(33..=1536).contains(&packet.len())
+        if local.ip().is_unspecified()
+            || local.ip().is_multicast()
+            || local.port() == 0
+            || local.is_ipv6() != reporter.is_ipv6()
+            || !(33..=1536).contains(&packet.len())
             || packet[..4] != [4, 0, 0, 0]
             || reporter.is_unspecified()
             || reporter.is_multicast()
@@ -72,6 +78,7 @@ impl Reservation {
         let mut prefix = [0; 16];
         prefix.copy_from_slice(&packet[..16]);
         self.pending = Some(Pending {
+            local,
             prefix,
             encrypted_len: packet.len(),
             reporter,
@@ -145,6 +152,7 @@ impl Reservation {
                 .flags
                 .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC)
             || record.ipv6 != remote.is_ipv6()
+            || received.local != pending.local
             || received.destination != Some(remote)
             || record.errno != Errno::EMSGSIZE as u32
             || record.origin != origin
@@ -184,13 +192,27 @@ mod tests {
         packet[0] = 4;
         packet[4] = 17;
         packet[8] = 29;
+        let local = if ipv6 {
+            "[fd77:1::2]:40000"
+        } else {
+            "198.18.0.2:40000"
+        }
+        .parse()
+        .unwrap();
         let mut reservation = Reservation::default();
         reservation
-            .reserve(&packet, reporter, Duration::ZERO, Duration::from_secs(1))
+            .reserve(
+                &packet,
+                local,
+                reporter,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
             .unwrap();
         let mut prefix = [0; 16];
         prefix.copy_from_slice(&packet[..16]);
         let received = ReceivedError {
+            local,
             record: Record {
                 ipv6,
                 errno: Errno::EMSGSIZE as u32,
@@ -363,6 +385,7 @@ mod tests {
                 reservation
                     .reserve(
                         &packet,
+                        stale.local,
                         stale.record.reporter.unwrap(),
                         now,
                         Duration::from_secs(1),
@@ -392,6 +415,55 @@ mod tests {
     }
 
     #[test]
+    fn matching_header_from_another_local_socket_cannot_reduce_budget() {
+        for ipv6 in [false, true] {
+            let (mut reservation, mut received, remote) = fixture(ipv6);
+            let original = received.local;
+            received.local.set_port(original.port() + 1);
+            let mut budget = PathBudget::new(1600, ipv6).unwrap();
+            assert_eq!(
+                reservation
+                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unmatched)
+            );
+            assert_eq!(budget.outer_mtu(), 1600);
+            assert!(reservation.pending.is_some());
+            received.local = original;
+            assert!(
+                reservation
+                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_local_socket_identity_cannot_reserve() {
+        let mut packet = [0; 64];
+        packet[0] = 4;
+        for local in [
+            "0.0.0.0:40000",
+            "224.0.0.1:40000",
+            "198.18.0.2:0",
+            "[::1]:40000",
+        ] {
+            assert_eq!(
+                Reservation::default().reserve(
+                    &packet,
+                    local.parse().unwrap(),
+                    "198.18.0.1".parse().unwrap(),
+                    Duration::ZERO,
+                    Duration::from_secs(1)
+                ),
+                Err(Error::InvalidPacket),
+                "{local}"
+            );
+        }
+    }
+
+    #[test]
     fn repeated_header_cannot_distinguish_old_feedback_from_current_feedback() {
         for ipv6 in [false, true] {
             let (mut reservation, received, remote) = fixture(ipv6);
@@ -401,6 +473,7 @@ mod tests {
             reservation
                 .reserve(
                     &packet,
+                    received.local,
                     received.record.reporter.unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
@@ -547,6 +620,7 @@ mod tests {
         assert_eq!(
             reservation.reserve(
                 &packet,
+                "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
                 Duration::ZERO,
                 Duration::from_secs(1)
@@ -569,6 +643,7 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve(
                     &packet,
+                    "198.18.0.2:40000".parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
                     lifetime
@@ -580,6 +655,7 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve(
                     &packet,
+                    "198.18.0.2:40000".parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1)
@@ -591,6 +667,13 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve(
                     &packet,
+                    if reporter.contains(':') {
+                        "[fd77:1::2]:40000"
+                    } else {
+                        "198.18.0.2:40000"
+                    }
+                    .parse()
+                    .unwrap(),
                     reporter.parse().unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1)
@@ -601,6 +684,7 @@ mod tests {
         assert_eq!(
             Reservation::default().reserve(
                 &packet,
+                "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
                 Duration::from_millis(i64::MAX as u64),
                 Duration::from_secs(1)
@@ -611,6 +695,7 @@ mod tests {
         reservation
             .reserve(
                 &packet,
+                "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
                 Duration::ZERO,
                 Duration::from_secs(1),

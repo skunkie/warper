@@ -544,11 +544,13 @@ arrives. Matching requires the exact socket/destination, remote error origin,
 expected router and quoted 16-byte public WireGuard data header. A single
 nonrenewing one-second reservation bounds retained metadata. Missing or shorter
 quotes, malformed/unrelated errors and unsupported paths cannot reduce budgets.
-The fixture holds the first genuine router report after reading it, cancels its
-reservation, and sends a distinct oversized datagram with a new reservation.
-It verifies that the old report is unmatched and leaves the budget unchanged,
-then commits the second genuine report. Both oversized datagrams are dropped by
-the router; neither application payload is replayed.
+The fixture holds the first genuine report, sends a distinct oversized
+datagram from a second connected socket, and maintains separate reservations
+and budgets. It rejects the first socket's report against the second, including
+a synthetic copy with the second packet's header, then commits each socket's
+own genuine report. Both oversized datagrams are dropped; neither application
+payload is replayed. Local socket tuples are not durable identities across
+socket reuse, and the owner must bind reservations to the correct queue.
 
 A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
 and `ip`, with permission to create an isolated user and network namespace:

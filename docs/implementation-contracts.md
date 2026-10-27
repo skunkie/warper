@@ -955,13 +955,15 @@ earlier PMTU cache entries do not turn later remote cases into local errors;
 the declared transport budget continues to guard every send. All four inner/outer family
 combinations first complete a real encrypted UDP exchange.
 
-Exactly one oversized encrypted UDP send must be accepted locally and rejected
-by the forwarding router. A bounded reservation retains only its 16-byte public
-WireGuard data header, encrypted length, explicit fixture router address and
-monotonic deadline. Error-queue decoding retains at most the first 16 quoted
+Two oversized encrypted UDP sends on distinct connected sockets must be accepted
+locally and rejected by the forwarding router. Each bounded reservation retains
+its local socket tuple, 16-byte public WireGuard data header, encrypted length,
+explicit fixture router address and monotonic deadline. Error-queue decoding retains at most the first 16 quoted
 bytes plus quoted length in the returned metadata; its 2048-byte receive
 buffer is transient. No application/ciphertext payload enters the reservation
-or logs. Reduction requires exact connected socket/destination/family, ICMP
+or logs. The error reader attaches its checked local tuple to every decoded
+report; the reservation owner supplies the tuple from the corresponding socket.
+Reduction requires matching local tuple, connected destination and family, ICMP
 origin (IPv4 type 3/code 4 or IPv6 type 2/code 0), EMSGSIZE, the expected router,
 nontruncated controls, matching data header and a quote length within the sent
 datagram. Quotes shorter than the data header are unsupported. This is bounded
@@ -979,11 +981,14 @@ checks cover delayed reports after commit, cancellation and expiry: a different
 header is indistinguishable from a current report, even after cancellation;
 uniqueness across sessions and attribution on real paths remain unproven. A
 synthetic loopback error queue retains the quoted old header after a later send;
-this does not establish header uniqueness. The routed kernel-peer fixture also
-holds one genuine router report after it is read, cancels that reservation,
-and rejects it against a subsequent distinct encrypted send before applying
-the new send's report. This tests delayed processing rather than delayed packet
-delivery, and does not establish attribution across sessions or paths.
+this does not establish header uniqueness. The routed kernel-peer fixture holds
+one genuine router report after it is read, rejects it against the second
+socket's distinct reservation, and commits each socket's own report. A copy of
+the first report with the second packet's header tests the socket check in
+isolation. This tests delayed processing rather than delayed packet delivery.
+A local tuple is not a durable socket identity after close and reuse, or a proof
+of physical-path attribution; the owner must use the queue belonging to the
+reserved socket. Stronger production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram

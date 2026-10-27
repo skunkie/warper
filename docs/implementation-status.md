@@ -112,7 +112,11 @@ report arrives after a later send. The routed kernel-peer fixture now holds a
 genuine report after receipt, rejects it against a later distinct send, and
 applies the later report in all four family combinations
 (`target/evidence/phase-0/router-delayed/README.md`). Actual delayed packet
-delivery and cross-session header uniqueness remain unverified.
+delivery and cross-session header uniqueness remain unverified. The current
+routed fixture also uses two connected sockets and distinct budgets; matching
+checks the local socket tuple and rejects a wrong-socket report even when its
+header is made to match (`target/evidence/phase-0/router-sockets/README.md`).
+Socket tuple reuse and production path attribution remain unresolved.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
