@@ -763,11 +763,18 @@ mod tests {
                     .unwrap();
                 endpoint.peer.poll(now.as_millis() as i64);
                 let packet = endpoint.peer.device.outgoing.front().unwrap().clone();
-                endpoint.transport.watch_pmtu(&packet, now).unwrap();
+                let reporter = crate::pmtu_probe::plain_tcp(&packet)
+                    .unwrap()
+                    .unwrap()
+                    .destination;
+                endpoint
+                    .transport
+                    .watch_pmtu(&packet, reporter, now)
+                    .unwrap();
                 assert_eq!(
                     endpoint
                         .transport
-                        .watch_pmtu(&packet, now)
+                        .watch_pmtu(&packet, reporter, now)
                         .unwrap_err()
                         .downcast_ref::<crate::pmtu_feedback::Error>(),
                     Some(&crate::pmtu_feedback::Error::Busy)

@@ -88,7 +88,10 @@ reconfiguration; addresses, routes and any-IP policy survive
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
 quotes and queue-busy retry are covered
-(`target/evidence/phase-0/matched-pmtu/README.md`). Production path attribution
+(`target/evidence/phase-0/matched-pmtu/README.md`). The matcher now requires a
+caller-selected reporter and rejects a different source without consuming the
+reservation (`target/evidence/phase-0/selected-pmtu-reporter/README.md`).
+This is not reporter authentication. Production path attribution
 and state-transfer policy are still missing. The same candidate now carries
 inner too-big feedback through encrypted WireGuard in all inner/outer family
 combinations, preserving exact TCP bytes/FIN and retiring reservations on expiry

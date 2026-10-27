@@ -231,7 +231,9 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
                 "reserved data did not exercise the path limit"
             );
             let sequence = tcp.seq_number();
-            client.transport.watch_pmtu(packet, now)?;
+            client
+                .transport
+                .watch_pmtu(packet, frame.destination, now)?;
             // Established handshake ACK precedes this first application write.
             client
                 .transport

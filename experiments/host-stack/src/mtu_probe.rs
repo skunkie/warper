@@ -227,7 +227,12 @@ fn interface_mtu_reduction(ipv6: bool, advertised_mtu: usize) -> Result<()> {
     );
     let feedback = too_big_with_mtu(&lost, ipv6, advertised_mtu)?;
     let mut tracker = crate::pmtu_feedback::Tracker::default();
-    tracker.reserve(&lost, Duration::from_millis(32), Duration::from_secs(1))?;
+    tracker.reserve(
+        &lost,
+        addresses(ipv6)?.1,
+        Duration::from_millis(32),
+        Duration::from_secs(1),
+    )?;
     tracker.acknowledge(
         accepted_ack.context("missing accepted prefix ACK")?,
         Duration::from_millis(33),
@@ -571,7 +576,12 @@ mod tests {
             let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
             let mut tracker = crate::pmtu_feedback::Tracker::default();
             tracker
-                .reserve(&packet, Duration::ZERO, Duration::from_secs(1))
+                .reserve(
+                    &packet,
+                    addresses(ipv6).unwrap().1,
+                    Duration::ZERO,
+                    Duration::from_secs(1),
+                )
                 .unwrap();
             let mut corrupt = feedback.clone();
             corrupt[if ipv6 { 42 } else { 22 }] ^= 1;
@@ -614,7 +624,12 @@ mod tests {
             let mut peer = Peer::new(source, 40000).unwrap();
             let mut tracker = crate::pmtu_feedback::Tracker::default();
             tracker
-                .reserve(&packet, Duration::ZERO, Duration::from_secs(1))
+                .reserve(
+                    &packet,
+                    addresses(ipv6).unwrap().1,
+                    Duration::ZERO,
+                    Duration::from_secs(1),
+                )
                 .unwrap();
             assert!(
                 !apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(1))

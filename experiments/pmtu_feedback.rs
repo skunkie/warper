@@ -18,6 +18,7 @@ const MAX_LIFETIME: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidPacket,
+    InvalidReporter,
     InvalidTime,
     InvalidLifetime,
     Busy,
@@ -45,6 +46,7 @@ struct Identity {
 
 struct Reservation {
     identity: Identity,
+    reporter: IpAddr,
     end_sequence: TcpSeqNumber,
     expires: Duration,
 }
@@ -69,6 +71,7 @@ impl Tracker {
     pub fn reserve(
         &mut self,
         packet: &[u8],
+        reporter: IpAddr,
         now: Duration,
         lifetime: Duration,
     ) -> Result<(), Error> {
@@ -84,6 +87,9 @@ impl Tracker {
             return Err(Error::InvalidTime);
         }
         let ip = parse_ip(packet, false).ok_or(Error::InvalidPacket)?;
+        if !unicast(reporter) || reporter.is_ipv6() != ip.source.is_ipv6() {
+            return Err(Error::InvalidReporter);
+        }
         let identity = Identity::from_ip(&ip).ok_or(Error::InvalidPacket)?;
         let tcp = TcpPacket::new_checked(ip.payload).map_err(|_| Error::InvalidPacket)?;
         if !tcp.ack()
@@ -97,6 +103,7 @@ impl Tracker {
         let end_sequence = tcp.seq_number() + tcp.payload().len() + usize::from(tcp.fin());
         self.pending = Some(Reservation {
             identity,
+            reporter,
             end_sequence,
             expires,
         });
@@ -108,7 +115,7 @@ impl Tracker {
         let Some(pending) = &self.pending else {
             return Ok(None);
         };
-        let Some(mtu) = matched_mtu(feedback, &pending.identity) else {
+        let Some(mtu) = matched_mtu(feedback, &pending.identity, pending.reporter) else {
             return Ok(None);
         };
         if mtu >= pending.identity.length {
@@ -185,9 +192,9 @@ impl Identity {
     }
 }
 
-fn matched_mtu(feedback: &[u8], identity: &Identity) -> Option<usize> {
+fn matched_mtu(feedback: &[u8], identity: &Identity, reporter: IpAddr) -> Option<usize> {
     let ip = parse_ip(feedback, false)?;
-    if ip.destination != identity.source || !unicast(ip.source) {
+    if ip.destination != identity.source || ip.source != reporter {
         return None;
     }
     let (mtu, quote) = match (ip.protocol, ip.source, ip.destination) {

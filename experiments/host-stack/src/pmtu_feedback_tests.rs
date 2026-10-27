@@ -32,7 +32,12 @@ pub(super) fn sample(ipv6: bool) -> (Vec<u8>, Vec<u8>) {
 fn reserved(packet: &[u8]) -> Tracker {
     let mut tracker = Tracker::default();
     tracker
-        .reserve(packet, Duration::ZERO, Duration::from_secs(1))
+        .reserve(
+            packet,
+            packet_addresses(packet, packet[0] >> 4 == 6).1,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
         .unwrap();
     tracker
 }
@@ -194,10 +199,9 @@ fn quoted_addresses_identity_and_original_lengths_must_match() {
 }
 
 #[test]
-fn router_sources_are_allowed_but_nonunicast_sources_are_rejected() {
+fn only_the_selected_router_can_supply_feedback() {
     for ipv6 in [false, true] {
         let (packet, feedback) = sample(ipv6);
-        let mut tracker = reserved(&packet);
         let mut router = feedback.clone();
         if ipv6 {
             Ipv6Packet::new_unchecked(&mut router[..]).set_src_addr("fd66:66::1".parse().unwrap());
@@ -205,7 +209,13 @@ fn router_sources_are_allowed_but_nonunicast_sources_are_rejected() {
             Ipv4Packet::new_unchecked(&mut router[..]).set_src_addr("10.66.66.1".parse().unwrap());
         }
         refill(&mut router, ipv6);
-        assert_eq!(tracker.reduction(&router, Duration::ZERO), Ok(Some(1280)));
+        let selected = packet_addresses(&router, ipv6).0;
+        let mut tracker = Tracker::default();
+        tracker
+            .reserve(&packet, selected, Duration::ZERO, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(tracker.reduction(&feedback, Duration::ZERO), Ok(None));
+        assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
         for source in if ipv6 {
             vec!["::", "ff02::1"]
         } else {
@@ -224,6 +234,41 @@ fn router_sources_are_allowed_but_nonunicast_sources_are_rejected() {
                 "source {source}"
             );
         }
+        assert_eq!(tracker.reduction(&router, Duration::ZERO), Ok(Some(1280)));
+    }
+}
+
+#[test]
+fn invalid_reporters_do_not_reserve_capacity() {
+    for ipv6 in [false, true] {
+        let (packet, feedback) = sample(ipv6);
+        let mut tracker = Tracker::default();
+        let reporters = if ipv6 {
+            ["::", "ff02::1", "127.0.0.1"]
+        } else {
+            ["0.0.0.0", "224.0.0.1", "::1"]
+        };
+        for reporter in reporters {
+            assert_eq!(
+                tracker.reserve(
+                    &packet,
+                    reporter.parse().unwrap(),
+                    Duration::ZERO,
+                    Duration::from_secs(1)
+                ),
+                Err(Error::InvalidReporter)
+            );
+            assert_eq!(tracker.next_deadline(), None);
+        }
+        tracker
+            .reserve(
+                &packet,
+                packet_addresses(&packet, ipv6).1,
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(tracker.reduction(&feedback, Duration::ZERO), Ok(Some(1280)));
     }
 }
 
@@ -260,7 +305,12 @@ fn lifetime_is_nonrenewing_and_expiry_cancellation_and_clock_errors_are_explicit
         let (packet, feedback) = sample(ipv6);
         let mut tracker = reserved(&packet);
         assert_eq!(
-            tracker.reserve(&packet, Duration::from_millis(1), Duration::from_secs(10)),
+            tracker.reserve(
+                &packet,
+                packet_addresses(&packet, ipv6).1,
+                Duration::from_millis(1),
+                Duration::from_secs(10)
+            ),
             Err(Error::Busy)
         );
         assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
@@ -275,7 +325,12 @@ fn lifetime_is_nonrenewing_and_expiry_cancellation_and_clock_errors_are_explicit
         );
         assert_eq!(tracker.next_deadline(), None);
         tracker
-            .reserve(&packet, Duration::from_secs(1), Duration::from_secs(1))
+            .reserve(
+                &packet,
+                packet_addresses(&packet, ipv6).1,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            )
             .unwrap();
         tracker.cancel();
         tracker.cancel();
@@ -285,7 +340,12 @@ fn lifetime_is_nonrenewing_and_expiry_cancellation_and_clock_errors_are_explicit
             Err(Error::Cancelled)
         );
         assert_eq!(
-            tracker.reserve(&packet, Duration::from_secs(1), Duration::from_secs(1)),
+            tracker.reserve(
+                &packet,
+                packet_addresses(&packet, ipv6).1,
+                Duration::from_secs(1),
+                Duration::from_secs(1)
+            ),
             Err(Error::Cancelled)
         );
     }
@@ -298,13 +358,23 @@ fn invalid_packets_lifetimes_and_deadline_overflow_do_not_reserve_capacity() {
         let mut tracker = Tracker::default();
         for lifetime in [Duration::ZERO, Duration::from_secs(11)] {
             assert_eq!(
-                tracker.reserve(&packet, Duration::ZERO, lifetime),
+                tracker.reserve(
+                    &packet,
+                    packet_addresses(&packet, ipv6).1,
+                    Duration::ZERO,
+                    lifetime
+                ),
                 Err(Error::InvalidLifetime)
             );
         }
         for length in 0..packet.len() {
             assert_eq!(
-                tracker.reserve(&packet[..length], Duration::ZERO, Duration::from_secs(1)),
+                tracker.reserve(
+                    &packet[..length],
+                    packet_addresses(&packet, ipv6).1,
+                    Duration::ZERO,
+                    Duration::from_secs(1)
+                ),
                 Err(Error::InvalidPacket)
             );
         }
@@ -319,24 +389,40 @@ fn invalid_packets_lifetimes_and_deadline_overflow_do_not_reserve_capacity() {
             }
             tcp.fill_checksum(&source.into(), &destination.into());
             assert_eq!(
-                tracker.reserve(&zero_port, Duration::ZERO, Duration::from_secs(1)),
+                tracker.reserve(
+                    &zero_port,
+                    packet_addresses(&packet, ipv6).1,
+                    Duration::ZERO,
+                    Duration::from_secs(1)
+                ),
                 Err(Error::InvalidPacket)
             );
         }
         let mut checksum = packet.clone();
         checksum[if ipv6 { 56 } else { 36 }] ^= 1;
         assert_eq!(
-            tracker.reserve(&checksum, Duration::ZERO, Duration::from_secs(1)),
+            tracker.reserve(
+                &checksum,
+                packet_addresses(&packet, ipv6).1,
+                Duration::ZERO,
+                Duration::from_secs(1)
+            ),
             Err(Error::InvalidPacket)
         );
         assert_eq!(tracker.next_deadline(), None);
         assert_eq!(
-            tracker.reserve(&packet, Duration::MAX, Duration::from_secs(1)),
+            tracker.reserve(
+                &packet,
+                packet_addresses(&packet, ipv6).1,
+                Duration::MAX,
+                Duration::from_secs(1)
+            ),
             Err(Error::InvalidTime)
         );
         assert_eq!(
             tracker.reserve(
                 &packet,
+                packet_addresses(&packet, ipv6).1,
                 Duration::from_millis(i64::MAX as u64),
                 Duration::from_secs(1)
             ),

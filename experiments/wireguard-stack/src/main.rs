@@ -212,7 +212,12 @@ impl Transport {
         Ok(())
     }
 
-    fn watch_pmtu(&mut self, packet: &[u8], now: Duration) -> Result<()> {
+    fn watch_pmtu(
+        &mut self,
+        packet: &[u8],
+        reporter: std::net::IpAddr,
+        now: Duration,
+    ) -> Result<()> {
         if now < self.now {
             return Err(pmtu_feedback::Error::InvalidTime.into());
         }
@@ -224,7 +229,7 @@ impl Transport {
             return Err(pmtu_feedback::Error::Busy.into());
         }
         let mut tracker = pmtu_feedback::Tracker::default();
-        tracker.reserve(packet, now, Duration::from_secs(1))?;
+        tracker.reserve(packet, reporter, now, Duration::from_secs(1))?;
         self.pmtu_feedback = Some(tracker);
         Ok(())
     }

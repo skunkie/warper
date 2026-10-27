@@ -790,17 +790,19 @@ Status: one outstanding TCP segment, one interface-wide reduction candidate.
 Reserve a validated emitted TCP data packet after its owner has established
 that its sequence remains outstanding. Store only addresses, original IP
 length/IPv4 identity and the first eight TCP bytes (ports and sequence), with
-one nonrenewing deadline. The owner supplies only ACKs already accepted by the
+one nonrenewing deadline and one explicitly selected unicast reporter of the
+same IP family. The owner supplies only ACKs already accepted by the
 reserved flow's stack; a full ACK retires the segment (including FIN sequence
 space), while partial ACKs preserve it. A second reservation is Busy;
 cancellation and exact deadline expiry retire the reservation. The candidate owns no payload, cache,
 unbounded history or background task.
 
 ICMPv4 fragmentation-required and ICMPv6 Packet Too Big must have valid IP and
-ICMP lengths/checksums, a local recipient, a unicast reporting source and an
+ICMP lengths/checksums, a local recipient, the selected reporting source and an
 exact quoted IP/transport identity. Quotes may stop after eight TCP bytes while
-retaining original IP lengths. Router sources are allowed; matching is not
-cryptographic authentication or proof of path ownership. Malformed/unrelated
+retaining original IP lengths. A selected router source is allowed; matching is
+not cryptographic authentication or proof of path ownership. Reporter selection
+and changes remain a production path-policy decision. Malformed/unrelated
 feedback cannot mutate sizing or consume the reservation. Only supported
 1280–1500-byte reductions smaller than the quoted packet are usable; matched
 sub-minimum/zero advertisements return typed UnsupportedMtu without pretending
