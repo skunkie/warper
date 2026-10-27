@@ -325,7 +325,12 @@ request FIN. The probe retains and joins both server threads, bounds socket
 waits, and checks their results alongside the client result. The first IPv4
 case deliberately drops one handshake initiation and requires the library's
 retry to recover within the ten-second setup budget. No application payload
-is replayed by the harness. After EOF it continues pumping for a 100 ms
+is replayed by the harness. In the non-rekey run, the controlled outbound
+blackout remains active for at least 1200 ms and until a TCP retry with the
+original sequence and the distinct lost UDP datagram have both been observed.
+A 25-second workload and worker bound covers subsequent retransmission and
+recovery. This is outbound ciphertext suppression, not a disabled link or a
+production outage detector. After EOF it continues pumping for a 100 ms
 controlled loopback drain so delayed TCP acknowledgements are emitted before
 replacing the fixture session. This is experimental fixture timing, not a
 production shutdown guarantee. Long mode additionally checks at least 135

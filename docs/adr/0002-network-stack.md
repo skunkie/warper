@@ -316,7 +316,12 @@ bytes are admitted once, then stack retransmission recovers the request and
 FIN; a separate lost UDP datagram is never resubmitted. Exact kernel-worker
 payload/count assertions and joined cleanup support this narrow recovery
 claim. This adds independent-peer evidence to the same-library failure probes;
-full outage detection, roaming, and service recovery remain unproven.
+full outage detection, roaming, and service recovery remain unproven. The
+bounded workload now keeps outbound ciphertext suppressed for at least 1200 ms
+and until the original TCP sequence is retried and a distinct UDP datagram is
+observed at the blackout boundary. It then checks recovery without application
+replay (`target/evidence/phase-0/sustained-outage/README.md`). The network link
+itself and inbound traffic remain available.
 
 Outer transport is now selected independently of inner addresses. Actual IPv4
 and IPv6 loopback UDP sockets carry all four inner/outer combinations through

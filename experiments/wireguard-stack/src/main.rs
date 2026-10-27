@@ -546,7 +546,7 @@ fn run_client_with_outage(
     let start = Instant::now();
     // A fresh peer may need WireGuard's first handshake retry after kernel
     // initiation limiting. Keep this within the canonical 10-second setup budget.
-    let deadline = minimum_duration + Duration::from_secs(10);
+    let deadline = minimum_duration + Duration::from_secs(if inject_outage { 25 } else { 10 });
     let mut next_heartbeat = Duration::from_secs(1);
     let mut sent = false;
     let mut request = Vec::new();
@@ -557,6 +557,11 @@ fn run_client_with_outage(
     let mut completion_started = None;
     let mut outage_recovered = !inject_outage;
     let mut outage_started = None;
+    let mut outage_since = None;
+    let mut lost_sequence = None;
+    let mut lost_udp_queued = false;
+    let mut lost_udp_observed = false;
+    let mut retried_during_outage = false;
     loop {
         ensure!(
             start.elapsed() < deadline,
@@ -564,6 +569,23 @@ fn run_client_with_outage(
         );
         let elapsed_ms = i64::try_from(start.elapsed().as_millis())?;
         client.poll(elapsed_ms);
+        if client_transport.blackhole {
+            for packet in &client.device.outgoing {
+                lost_udp_observed |= is_lost_datagram(packet)?;
+                if let Some(frame) = pmtu_probe::plain_tcp(packet)? {
+                    let tcp = smoltcp::wire::TcpPacket::new_checked(frame.payload)?;
+                    if !tcp.payload().is_empty() {
+                        match lost_sequence {
+                            None => lost_sequence = Some(tcp.seq_number()),
+                            Some(sequence) if sequence == tcp.seq_number() => {
+                                retried_during_outage = true
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                }
+            }
+        }
         client_transport.pump(client, start.elapsed())?;
         if let Some((server, transport)) = server.as_mut() {
             server.poll(elapsed_ms);
@@ -575,6 +597,7 @@ fn run_client_with_outage(
             if inject_outage {
                 client_transport.blackhole = true;
                 outage_started = Some(client_transport.dropped_packets);
+                outage_since = Some(start.elapsed());
             }
             ensure!(
                 socket.send_slice(REQUEST)? == REQUEST.len(),
@@ -600,17 +623,26 @@ fn run_client_with_outage(
                 if !client_transport.blackhole {
                     anyhow::bail!("outage unexpectedly inactive");
                 }
-                if client.sockets.get::<udp::Socket>(client.udp).send_queue() == 0 {
+                if !lost_udp_queued
+                    && client.sockets.get::<udp::Socket>(client.udp).send_queue() == 0
+                {
                     client
                         .sockets
                         .get_mut::<udp::Socket>(client.udp)
                         .send_slice(b"lost-datagram", (server_address, 9000))?;
+                    lost_udp_queued = true;
                 }
-            } else {
+            } else if start
+                .elapsed()
+                .saturating_sub(outage_since.context("missing outage start")?)
+                >= Duration::from_millis(1200)
+                && retried_during_outage
+                && lost_udp_observed
+            {
                 ensure!(
                     client_transport.dropped_packets
-                        >= outage_started.context("missing outage reservation")? + 2,
-                    "outage did not suppress TCP and UDP"
+                        >= outage_started.context("missing outage reservation")? + 3,
+                    "outage did not suppress TCP, UDP, and a TCP retry"
                 );
                 client_transport.blackhole = false;
                 client
@@ -730,9 +762,62 @@ fn run_client_with_outage(
     }
 }
 
+fn is_lost_datagram(packet: &[u8]) -> Result<bool> {
+    use smoltcp::wire::{IpProtocol, Ipv4Packet, Ipv6Packet, UdpPacket};
+    let (protocol, payload) = match packet.first().map(|byte| byte >> 4) {
+        Some(4) => {
+            let ip = Ipv4Packet::new_checked(packet)?;
+            (ip.next_header(), ip.payload())
+        }
+        Some(6) => {
+            let ip = Ipv6Packet::new_checked(packet)?;
+            (ip.next_header(), ip.payload())
+        }
+        _ => anyhow::bail!("invalid blackout packet IP version"),
+    };
+    if protocol != IpProtocol::Udp {
+        return Ok(false);
+    }
+    Ok(UdpPacket::new_checked(payload)?.payload() == b"lost-datagram")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blackout_datagram_detection_handles_both_families_and_malformed_packets() {
+        assert!(is_lost_datagram(&[]).is_err());
+        assert!(is_lost_datagram(&[0x70]).is_err());
+        for ipv6 in [false, true] {
+            let header = if ipv6 { 40 } else { 20 };
+            let payload = b"lost-datagram";
+            let mut packet = vec![0; header + 8 + payload.len()];
+            if ipv6 {
+                packet[0] = 0x60;
+                packet[4..6]
+                    .copy_from_slice(&u16::try_from(8 + payload.len()).unwrap().to_be_bytes());
+                packet[6] = 17;
+            } else {
+                packet[0] = 0x45;
+                let length = u16::try_from(packet.len()).unwrap();
+                packet[2..4].copy_from_slice(&length.to_be_bytes());
+                packet[9] = 17;
+            }
+            packet[header + 4..header + 6]
+                .copy_from_slice(&u16::try_from(8 + payload.len()).unwrap().to_be_bytes());
+            packet[header + 8..].copy_from_slice(payload);
+            assert!(is_lost_datagram(&packet).unwrap(), "IPv6 {ipv6}");
+            *packet.last_mut().unwrap() ^= 1;
+            assert!(!is_lost_datagram(&packet).unwrap(), "IPv6 {ipv6}");
+            packet[if ipv6 { 6 } else { 9 }] = 6;
+            assert!(!is_lost_datagram(&packet).unwrap(), "IPv6 {ipv6}");
+            assert!(
+                is_lost_datagram(&packet[..header - 1]).is_err(),
+                "IPv6 {ipv6}"
+            );
+        }
+    }
 
     #[test]
     fn active_sockets_exchange_ipv4_and_ipv6_through_wireguard() {

@@ -328,8 +328,14 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
     let (mut client, mut transport) = create_client(ipv6, endpoint)?;
     let require_retry = !ipv6 && duration.is_zero();
     transport.drop_first_handshake = require_retry;
-    let mut workers = Workers::start(address, duration)?;
     let inject_outage = duration.is_zero();
+    let worker_duration = duration
+        + if inject_outage {
+            Duration::from_secs(15)
+        } else {
+            Duration::ZERO
+        };
+    let mut workers = Workers::start(address, worker_duration)?;
     let result = run_client_with_outage(
         ipv6,
         duration,
@@ -354,7 +360,7 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
     );
     if inject_outage {
         ensure!(
-            transport.dropped_packets >= 2 && !transport.blackhole,
+            transport.dropped_packets >= 3 && !transport.blackhole,
             "kernel workload did not complete the controlled outage"
         );
         ensure!(
@@ -362,7 +368,7 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
             "kernel peer did not receive exactly the original datagrams and recovery heartbeat"
         );
         println!(
-            "PASS independent kernel outage: TCP retry and FIN, lost UDP not replayed, IPv6={ipv6}"
+            "PASS independent kernel outage: at least 1200ms blackout, TCP retry during outage and FIN, lost UDP not replayed, IPv6={ipv6}"
         );
     }
     if require_retry {

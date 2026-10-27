@@ -682,18 +682,21 @@ fragmentation of outer UDP packets or kernel-peer fragment handling.
 The active exchange helper supports a controlled outage after the four initial
 UDP request/reply datagrams and TCP establishment. It admits the TCP request
 once, half-closes once, and queues one distinct UDP datagram while outbound
-ciphertexts are suppressed. After at least two encrypted packets are dropped,
-it restores transport and sends a separate recovery heartbeat. TCP retransmits
-through the stack; the application never resubmits request bytes or lost UDP.
+ciphertexts are suppressed. It observes the distinct UDP datagram and initial
+TCP segment entering the blackout, then requires a TCP segment with the same
+sequence number while the blackout remains active for at least 1200 ms. After
+at least three encrypted packets are dropped, it restores transport and sends a
+separate recovery heartbeat. TCP retransmits through the stack; the application
+never resubmits request bytes or lost UDP.
 Completion requires the exact response after FIN and the recovery heartbeat.
 
 The default Linux kernel-peer run applies this workload in both inner families.
 Its retained workers validate the exact TCP request and reject the lost UDP
 payload if it appears. Exactly five UDP messages are expected: the four original
 messages and one recovery heartbeat. Automatic sustained heartbeats are disabled
-for this bounded case. The existing 10-second workload deadline includes
-handshake retries and TCP recovery; workers are stopped and joined on every
-result. The separate sustained rekey workload retains its periodic heartbeats.
+for this bounded case. A 25-second workload deadline and matching worker
+bound include handshake loss, the observed retransmission, and later TCP
+recovery; workers are stopped and joined on every result. The separate sustained rekey workload retains its periodic heartbeats.
 This establishes controlled outbound loss recovery against an independent peer,
 not full network outage detection, service crash recovery, or roaming.
 
