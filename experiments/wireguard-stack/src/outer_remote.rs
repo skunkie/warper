@@ -673,6 +673,56 @@ mod tests {
     }
 
     #[test]
+    fn peer_changed_and_restored_between_checks_is_not_observed() {
+        use std::net::UdpSocket;
+        for ipv6 in [false, true] {
+            let first_peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let other_peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            other_peer
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let socket = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            socket.connect(first_peer.local_addr().unwrap()).unwrap();
+            let local = socket.local_addr().unwrap();
+            let queue = ErrorQueue::enable(&socket).unwrap();
+            let (_, mut received, _) = fixture(ipv6);
+            let mut packet = [0; 1432];
+            packet[..16].copy_from_slice(&received.prefix);
+            let mut reservation = Reservation::default();
+            reservation
+                .reserve(
+                    &packet,
+                    &queue,
+                    received.record.reporter.unwrap(),
+                    Duration::ZERO,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+            received.identity = Arc::clone(queue.identity());
+            received.local = queue.local();
+            received.destination = Some(queue.remote());
+            socket.connect(other_peer.local_addr().unwrap()).unwrap();
+            assert_eq!(socket.send(b"other-peer").unwrap(), b"other-peer".len());
+            let mut buffer = [0; 32];
+            let (length, source) = other_peer.recv_from(&mut buffer).unwrap();
+            assert_eq!(&buffer[..length], b"other-peer");
+            assert_eq!(source, local);
+            socket.connect(first_peer.local_addr().unwrap()).unwrap();
+            let mut budget = PathBudget::new(1600, ipv6).unwrap();
+            assert!(
+                reservation
+                    .apply(&queue, &received, &mut budget, Duration::ZERO)
+                    .unwrap(),
+                "a restored tuple is indistinguishable from an unchanged socket"
+            );
+            assert_eq!(budget.outer_mtu(), 1400);
+            drop(queue);
+            drop(socket);
+            UdpSocket::bind(local).unwrap();
+        }
+    }
+
+    #[test]
     fn feedback_cannot_use_another_live_reader_even_with_matching_report() {
         use std::net::UdpSocket;
         for ipv6 in [false, true] {

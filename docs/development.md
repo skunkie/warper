@@ -557,7 +557,10 @@ destination and token come from the same reader. The owner must choose the
 correct reader; independently created readers have different tokens even when
 they refer to the same socket. Reservation and feedback application check the
 live socket tuple before mutation. These point-in-time checks do not detect a
-peer changed and restored between checks or concurrent reconfiguration.
+peer changed and restored between checks or concurrent reconfiguration. A
+loopback test demonstrates this by delivering a synthetic datagram to another
+peer, restoring the original connection, and applying matching synthetic cached
+feedback. This is evidence of a limitation, not a production-safe transition.
 
 A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
 and `ip`, with permission to create an isolated user and network namespace:

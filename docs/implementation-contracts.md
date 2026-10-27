@@ -999,7 +999,15 @@ currently changed peer is rejected before mutation. The caller must still
 serialize socket reconfiguration with these operations: a peer changed and
 restored between checks, or concurrently after a check, is not detected. Reader
 replacement, peer transitions and physical-path attribution still need a
-production contract. Production ownership and path policy remain open.
+production contract. A controlled loopback test demonstrates the blind spot:
+traffic reaches a second peer, the original peer is restored, and otherwise
+matching cached feedback is accepted. This is a limitation, not an acceptance
+of such reconfiguration. A production adapter must exclusively own socket
+reconfiguration and serialize it with send, reservation and feedback handling;
+it must retire the old reader generation and invalidate its pending feedback
+before publishing a changed peer, even when a previous tuple is later restored.
+The mechanism and its cancellation, failure and recovery evidence are not yet
+implemented. Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram
