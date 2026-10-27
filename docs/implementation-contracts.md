@@ -994,8 +994,12 @@ A real loopback rebinding test verifies that a new reader at the same local
 tuple cannot match an old reservation. The token identifies an error-reader
 instance, not a physical path: two independent readers for one socket have
 separate tokens, and owners must select the reader used for the operation.
-Reader replacement, socket peer changes and physical-path attribution still need
-a production contract. Production ownership and path policy remain open.
+Reservation and feedback application recheck the reader's socket tuple; a
+currently changed peer is rejected before mutation. The caller must still
+serialize socket reconfiguration with these operations: a peer changed and
+restored between checks, or concurrently after a check, is not detected. Reader
+replacement, peer transitions and physical-path attribution still need a
+production contract. Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram

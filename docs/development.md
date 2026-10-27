@@ -553,8 +553,11 @@ payload is replayed. Each error-queue reader also supplies an opaque lifetime
 token to its reservations and decoded reports. A socket-rebinding test checks
 that a new reader at the same local tuple cannot match an old reservation.
 Reservations take the error reader itself so the local tuple, connected
-destination and token come from the same reader. The owner must choose the correct reader; independently created
-readers have different tokens even when they refer to the same socket.
+destination and token come from the same reader. The owner must choose the
+correct reader; independently created readers have different tokens even when
+they refer to the same socket. Reservation and feedback application check the
+live socket tuple before mutation. These point-in-time checks do not detect a
+peer changed and restored between checks or concurrent reconfiguration.
 
 A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
 and `ip`, with permission to create an isolated user and network namespace:

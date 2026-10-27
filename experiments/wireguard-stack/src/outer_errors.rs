@@ -106,6 +106,13 @@ impl ErrorQueue {
         Ok(queue)
     }
 
+    pub(super) fn verify_socket(&self) -> Result<()> {
+        if self.socket.local_addr()? != self.local || self.socket.peer_addr()? != self.remote {
+            return Err(Error::WrongSocket.into());
+        }
+        Ok(())
+    }
+
     pub(super) fn local(&self) -> SocketAddr {
         self.local
     }
@@ -161,10 +168,8 @@ impl ErrorQueue {
     }
 
     pub(super) fn receive(&self) -> Result<Option<ReceivedError>> {
+        self.verify_socket()?;
         let socket = &self.socket;
-        if socket.local_addr()? != self.local || socket.peer_addr()? != self.remote {
-            return Err(Error::WrongSocket.into());
-        }
         let mut bytes = [0; 2048];
         let mut iov = [IoSliceMut::new(&mut bytes)];
         let mut ancillary = [0; 256];

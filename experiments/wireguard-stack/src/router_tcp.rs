@@ -118,6 +118,7 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue) -> Result<()> {
                     ensure!(received.record.mtu == 1400, "unexpected routed TCP MTU");
                     ensure!(
                         reservation.apply_tcp(
+                            queue,
                             &received,
                             &mut client.peer,
                             &mut client.transport.path_budget,

@@ -124,7 +124,10 @@ The experimental reservation API now takes the reader directly, binding its
 local tuple and token together (`target/evidence/phase-0/reader-interface/README.md`).
 The connected destination now also comes from that reader; matching accepts
 no separate destination (`target/evidence/phase-0/reader-destination/README.md`).
-Socket peer changes and replacement policy remain open.
+Reservation and UDP/TCP feedback application now reject a currently changed
+socket peer before mutation; loopback tests cover both families and wrong-reader
+application (`target/evidence/phase-0/reader-peer/README.md`). Changes restored
+between checks, concurrent reconfiguration, and replacement policy remain open.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
