@@ -979,7 +979,11 @@ checks cover delayed reports after commit, cancellation and expiry: a different
 header is indistinguishable from a current report, even after cancellation;
 uniqueness across sessions and attribution on real paths remain unproven. A
 synthetic loopback error queue retains the quoted old header after a later send;
-this does not test actual router delays or establish header uniqueness.
+this does not establish header uniqueness. The routed kernel-peer fixture also
+holds one genuine router report after it is read, cancels that reservation,
+and rejects it against a subsequent distinct encrypted send before applying
+the new send's report. This tests delayed processing rather than delayed packet
+delivery, and does not establish attribution across sessions or paths.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram

@@ -187,9 +187,67 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
     client
         .transport
         .send_result(TunnResult::WriteToNetwork(packet), &mut client.peer)?;
-    let quoted_len = loop {
+    let stale = loop {
         if let Some(received) = queue.receive()? {
             ensure!(received.record.mtu == 1400, "unexpected remote path MTU");
+            break received;
+        }
+        reservation.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    reservation.cancel();
+    send_udp(
+        client,
+        destination,
+        &vec![0x63; if ipv6 { 1352 } else { 1372 }],
+    )?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    ensure!(
+        client.peer.device.outgoing.len() == 1,
+        "expected one later datagram"
+    );
+    let packet = client
+        .peer
+        .device
+        .outgoing
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("missing later router-bound packet"))?;
+    ensure!(packet.len() == 1400);
+    let result = client.transport.tunnel.encapsulate(&packet, &mut encrypted);
+    let TunnResult::WriteToNetwork(packet) = result else {
+        anyhow::bail!("later router MTU encryption was not immediately ready");
+    };
+    ensure!(
+        packet[..16] != stale.prefix,
+        "successive WireGuard headers repeated"
+    );
+    reservation.reserve(packet, reporter, wall.elapsed(), Duration::from_secs(1))?;
+    client
+        .transport
+        .send_result(TunnResult::WriteToNetwork(packet), &mut client.peer)?;
+    let error = match reservation.apply(
+        &stale,
+        client.transport.remote,
+        &mut client.transport.path_budget,
+        wall.elapsed(),
+    ) {
+        Ok(_) => anyhow::bail!("stale feedback matched a later reservation"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_remote::Error>()
+            == Some(&crate::outer_remote::Error::Unmatched)
+    );
+    ensure!(
+        client.transport.path_budget.outer_mtu() == 1600,
+        "stale feedback changed path budget"
+    );
+    let quoted_len = loop {
+        if let Some(received) = queue.receive()? {
+            ensure!(
+                received.record.mtu == 1400,
+                "unexpected later remote path MTU"
+            );
             ensure!(reservation.apply(
                 &received,
                 client.transport.remote,
@@ -222,7 +280,7 @@ fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpA
     receive_udp(client, destination, &safe, wall)?;
     ensure!(queue.read()?.is_none() && client.transport.staged_packets == 0);
     println!(
-        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, failed_payload_replayed=false",
+        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, stale_rejected=true, failed_payload_replayed=false",
         client.transport.remote.is_ipv6(),
         quoted_len.min(16),
         safe.len()

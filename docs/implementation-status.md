@@ -108,8 +108,11 @@ queue in either outer family; all lengths below 16 bytes remain rejected
 also reject a delayed report after commit, cancellation or expiry when the next
 reservation has a distinct header; identical headers cannot be distinguished.
 A synthetic Linux loopback error queue preserves the old header when its ICMP
-report arrives after a later send; routed delays and cross-session header
-uniqueness remain unverified (`target/evidence/phase-0/delayed-icmp/run.log`).
+report arrives after a later send. The routed kernel-peer fixture now holds a
+genuine report after receipt, rejects it against a later distinct send, and
+applies the later report in all four family combinations
+(`target/evidence/phase-0/router-delayed/README.md`). Actual delayed packet
+delivery and cross-session header uniqueness remain unverified.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
