@@ -13,7 +13,7 @@ import unittest
 
 
 class PhysicalPathHarnessTests(unittest.TestCase):
-    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False, fail_group_signal=False, families=("4",)):
+    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False, fail_group_signal=False, track_peer_shutdown=False, families=("4",)):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -59,6 +59,10 @@ if [[ "$1" == --physical-path-peer ]]; then
     if [[ "{early_peer}" == True ]]; then exit {peer_exit}; fi
     touch "$2/peer.ready"
     while [[ ! -f "$2/peer.stop" ]]; do sleep 0.01; done
+    if [[ "{track_peer_shutdown}" == True ]]; then
+        sleep 0.1
+        touch "{root}/peer-finished"
+    fi
     exit {peer_exit}
 fi
 if [[ "$1" == --physical-path-client ]]; then
@@ -147,6 +151,12 @@ exit 2
         self.assertIn("link del dev routers0", (root / "ip.log").read_text())
         self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
         self.assertNotIn("FAIL independent physical-path cleanup", result.stderr)
+
+    def test_peer_has_time_to_finish_before_forced_termination(self):
+        result, root = self.run_harness(fail_down=True, track_peer_shutdown=True)
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertTrue((root / "peer-finished").exists(), result.stderr)
+        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
 
     def test_broad_namespace_is_rejected_before_mutation(self):
         result, root = self.run_harness(mapping="0 0 4294967295")

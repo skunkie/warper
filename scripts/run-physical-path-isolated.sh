@@ -41,10 +41,19 @@ cleanup() {
         fi
         child_status=0
         wait "$client_process" || child_status=$?
-        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then failed=true; fi
+        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then
+            echo "FAIL physical-path cleanup: client exited $child_status" >&2
+            failed=true
+        fi
     fi
     if [[ -n "$peer_process" ]]; then
         : > "$control_directory/peer.stop"
+        # Allow the peer to join its workers and remove its interface before
+        # forcing termination. Both this grace and timeout's wait are bounded.
+        for _ in {1..100}; do
+            if ! kill -0 "$peer_process" 2>/dev/null; then break; fi
+            sleep 0.01
+        done
         if kill -0 "$peer_process" 2>/dev/null; then
             if ! kill -- -"$peer_process" 2>/dev/null; then
                 kill "$peer_process" 2>/dev/null || :
@@ -52,31 +61,55 @@ cleanup() {
         fi
         child_status=0
         wait "$peer_process" || child_status=$?
-        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then failed=true; fi
+        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then
+            echo "FAIL physical-path cleanup: peer exited $child_status" >&2
+            failed=true
+        fi
     fi
     for log in "$control_directory/client.log" "$control_directory/peer.log"; do
-        if [[ -f "$log" ]] && ! cat "$log"; then failed=true; fi
+        if [[ -f "$log" ]] && ! cat "$log"; then
+            echo "FAIL physical-path cleanup: cannot read child log" >&2
+            failed=true
+        fi
     done
     for link in "${links[@]}"; do
         if ip link show dev "$link" >/dev/null 2>&1; then
-            if ! ip link del dev "$link"; then failed=true; fi
+            if ! ip link del dev "$link"; then
+                echo "FAIL physical-path cleanup: cannot remove $link" >&2
+                failed=true
+            fi
         fi
     done
-    if ! ip -j link show | python3 -c 'import json,sys; sys.exit(any(row["ifname"] in ("routerc0","routers0") for row in json.load(sys.stdin)))'; then failed=true; fi
+    if ! ip -j link show | python3 -c 'import json,sys; sys.exit(any(row["ifname"] in ("routerc0","routers0") for row in json.load(sys.stdin)))'; then
+        echo "FAIL physical-path cleanup: link removal verification" >&2
+        failed=true
+    fi
     for anchor in "$client_anchor" "$server_anchor"; do
         if [[ -n "$anchor" ]]; then
             if kill -0 "$anchor" 2>/dev/null; then
-                if ! kill "$anchor" 2>/dev/null; then failed=true; fi
+                if ! kill "$anchor" 2>/dev/null; then
+                    echo "FAIL physical-path cleanup: cannot signal namespace process $anchor" >&2
+                    failed=true
+                fi
             fi
             child_status=0
             wait "$anchor" || child_status=$?
-            if [[ "$child_status" != 0 && "$child_status" != 143 ]]; then failed=true; fi
+            if [[ "$child_status" != 0 && "$child_status" != 143 ]]; then
+                echo "FAIL physical-path cleanup: namespace process exited $child_status" >&2
+                failed=true
+            fi
         fi
     done
     if [[ "$mounted" == true ]]; then
-        if ! umount "$control_directory"; then failed=true; fi
+        if ! umount "$control_directory"; then
+            echo "FAIL physical-path cleanup: control mount" >&2
+            failed=true
+        fi
     fi
-    if ! rmdir -- "$control_directory"; then failed=true; fi
+    if ! rmdir -- "$control_directory"; then
+        echo "FAIL physical-path cleanup: control directory" >&2
+        failed=true
+    fi
     if [[ "$failed" == true ]]; then
         echo "FAIL independent physical-path cleanup" >&2
         if [[ "$status" == 0 ]]; then status=1; fi
