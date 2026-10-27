@@ -110,6 +110,10 @@ impl ErrorQueue {
         self.local
     }
 
+    pub(super) fn remote(&self) -> SocketAddr {
+        self.remote
+    }
+
     pub(super) fn identity(&self) -> &Arc<()> {
         &self.identity
     }

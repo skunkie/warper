@@ -260,12 +260,7 @@ fn exchange(
         second.send(packet)? == packet.len(),
         "partial second outer datagram"
     );
-    let error = match second_reservation.apply(
-        &wrong_owner,
-        client.transport.remote,
-        &mut second_budget,
-        wall.elapsed(),
-    ) {
+    let error = match second_reservation.apply(&wrong_owner, &mut second_budget, wall.elapsed()) {
         Ok(_) => anyhow::bail!("wrong socket feedback matched a reservation"),
         Err(error) => error,
     };
@@ -277,12 +272,7 @@ fn exchange(
         second_budget.outer_mtu() == 1600,
         "wrong socket changed path budget"
     );
-    let error = match second_reservation.apply(
-        &stale,
-        client.transport.remote,
-        &mut second_budget,
-        wall.elapsed(),
-    ) {
+    let error = match second_reservation.apply(&stale, &mut second_budget, wall.elapsed()) {
         Ok(_) => anyhow::bail!("stale feedback matched a later reservation"),
         Err(error) => error,
     };
@@ -300,12 +290,7 @@ fn exchange(
                 received.record.mtu == 1400,
                 "unexpected later remote path MTU"
             );
-            ensure!(second_reservation.apply(
-                &received,
-                client.transport.remote,
-                &mut second_budget,
-                wall.elapsed()
-            )?);
+            ensure!(second_reservation.apply(&received, &mut second_budget, wall.elapsed())?);
             break received.quoted_len;
         }
         second_reservation.advance(wall.elapsed())?;
@@ -316,12 +301,7 @@ fn exchange(
         "second budget did not commit"
     );
     ensure!(
-        reservation.apply(
-            &stale,
-            client.transport.remote,
-            &mut client.transport.path_budget,
-            wall.elapsed()
-        )?,
+        reservation.apply(&stale, &mut client.transport.path_budget, wall.elapsed())?,
         "first socket did not commit its own report"
     );
     ensure!(client.transport.path_budget.outer_mtu() == 1400 && encrypted_len > 1400);

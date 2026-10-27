@@ -119,7 +119,6 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue) -> Result<()> {
                     ensure!(
                         reservation.apply_tcp(
                             &received,
-                            client.transport.remote,
                             &mut client.peer,
                             &mut client.transport.path_budget,
                             wall.elapsed()

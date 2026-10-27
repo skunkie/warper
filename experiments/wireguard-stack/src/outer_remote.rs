@@ -38,6 +38,7 @@ impl std::error::Error for Error {}
 struct Pending {
     identity: Arc<()>,
     local: SocketAddr,
+    remote: SocketAddr,
     prefix: [u8; 16],
     encrypted_len: usize,
     reporter: IpAddr,
@@ -61,7 +62,7 @@ impl Reservation {
     ) -> Result<(), Error> {
         self.reserve_with_identity(
             packet,
-            queue.local(),
+            (queue.local(), queue.remote()),
             reporter,
             now,
             lifetime,
@@ -72,12 +73,13 @@ impl Reservation {
     fn reserve_with_identity(
         &mut self,
         packet: &[u8],
-        local: SocketAddr,
+        endpoints: (SocketAddr, SocketAddr),
         reporter: IpAddr,
         now: Duration,
         lifetime: Duration,
         identity: &Arc<()>,
     ) -> Result<(), Error> {
+        let (local, remote) = endpoints;
         self.advance(now)?;
         if self.pending.is_some() {
             return Err(Error::Busy);
@@ -89,6 +91,7 @@ impl Reservation {
             || local.ip().is_multicast()
             || local.port() == 0
             || local.is_ipv6() != reporter.is_ipv6()
+            || local.is_ipv6() != remote.is_ipv6()
             || !(33..=1536).contains(&packet.len())
             || packet[..4] != [4, 0, 0, 0]
             || reporter.is_unspecified()
@@ -105,6 +108,7 @@ impl Reservation {
         self.pending = Some(Pending {
             identity: Arc::clone(identity),
             local,
+            remote,
             prefix,
             encrypted_len: packet.len(),
             reporter,
@@ -116,11 +120,10 @@ impl Reservation {
     pub fn apply(
         &mut self,
         received: &ReceivedError,
-        remote: SocketAddr,
         budget: &mut PathBudget,
         now: Duration,
     ) -> anyhow::Result<bool> {
-        let mtu = self.reduction(received, remote, now)?;
+        let mtu = self.reduction(received, now)?;
         let changed = budget.reduce(mtu)?;
         self.cancel();
         Ok(changed)
@@ -129,12 +132,11 @@ impl Reservation {
     pub fn apply_tcp(
         &mut self,
         received: &ReceivedError,
-        remote: SocketAddr,
         peer: &mut Peer,
         budget: &mut PathBudget,
         now: Duration,
     ) -> anyhow::Result<usize> {
-        let mtu = self.reduction(received, remote, now)?;
+        let mtu = self.reduction(received, now)?;
         let retired = crate::outer_tcp_probe::apply_outer(peer, budget, mtu, now)?;
         self.cancel();
         Ok(retired)
@@ -159,15 +161,11 @@ impl Reservation {
     pub fn cancel(&mut self) {
         self.pending = None;
     }
-    fn reduction(
-        &mut self,
-        received: &ReceivedError,
-        remote: SocketAddr,
-        now: Duration,
-    ) -> anyhow::Result<usize> {
+    fn reduction(&mut self, received: &ReceivedError, now: Duration) -> anyhow::Result<usize> {
         self.advance(now)?;
         let pending = self.pending.as_ref().ok_or(Error::MissingReservation)?;
         let record = &received.record;
+        let remote = pending.remote;
         let (origin, kind, code) = if remote.is_ipv6() {
             (nix::libc::SO_EE_ORIGIN_ICMP6, 2, 0)
         } else {
@@ -231,7 +229,7 @@ mod tests {
         reservation
             .reserve_with_identity(
                 &packet,
-                local,
+                (local, remote),
                 reporter,
                 Duration::ZERO,
                 Duration::from_secs(1),
@@ -267,12 +265,12 @@ mod tests {
     #[test]
     fn exact_header_and_router_commit_only_after_budget_validation() {
         for ipv6 in [false, true] {
-            let (mut reservation, mut received, remote) = fixture(ipv6);
+            let (mut reservation, mut received, _) = fixture(ipv6);
             let mut budget = PathBudget::new(1600, ipv6).unwrap();
             received.record.mtu = 1300;
             assert_eq!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap_err()
                     .downcast_ref::<crate::path_mtu::Error>(),
                 Some(&crate::path_mtu::Error::PathTooSmall)
@@ -282,23 +280,23 @@ mod tests {
             received.record.mtu = 1400;
             assert!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap()
             );
             assert_eq!(budget.outer_mtu(), 1400);
             assert!(reservation.pending.is_none());
             assert_eq!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap_err()
                     .downcast_ref::<Error>(),
                 Some(&Error::MissingReservation)
             );
-            let (mut reservation, mut received, remote) = fixture(ipv6);
+            let (mut reservation, mut received, _) = fixture(ipv6);
             received.record.mtu = 1500;
             assert!(
                 !reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap()
             );
             assert_eq!(budget.outer_mtu(), 1400);
@@ -310,7 +308,7 @@ mod tests {
     fn unrelated_truncated_or_malformed_reports_preserve_reservation_and_budget() {
         for ipv6 in [false, true] {
             for case in 0..20 {
-                let (mut reservation, mut received, remote) = fixture(ipv6);
+                let (mut reservation, mut received, _) = fixture(ipv6);
                 match case {
                     0 => received.record.reporter = None,
                     1 => {
@@ -347,7 +345,7 @@ mod tests {
                 let mut budget = PathBudget::new(1600, ipv6).unwrap();
                 assert_eq!(
                     reservation
-                        .apply(&received, remote, &mut budget, Duration::ZERO)
+                        .apply(&received, &mut budget, Duration::ZERO)
                         .unwrap_err()
                         .downcast_ref::<Error>(),
                     Some(&Error::Unmatched),
@@ -363,13 +361,13 @@ mod tests {
     fn every_short_quote_preserves_the_reservation_and_budget() {
         for ipv6 in [false, true] {
             for length in 0..16 {
-                let (mut reservation, mut received, remote) = fixture(ipv6);
+                let (mut reservation, mut received, _) = fixture(ipv6);
                 received.quoted_len = length;
                 received.prefix[length..].fill(0);
                 let mut budget = PathBudget::new(1600, ipv6).unwrap();
                 assert_eq!(
                     reservation
-                        .apply(&received, remote, &mut budget, Duration::ZERO)
+                        .apply(&received, &mut budget, Duration::ZERO)
                         .unwrap_err()
                         .downcast_ref::<Error>(),
                     Some(&Error::Unmatched),
@@ -391,7 +389,7 @@ mod tests {
                     "commit" => {
                         assert!(
                             reservation
-                                .apply(&stale, remote, &mut budget, Duration::ZERO)
+                                .apply(&stale, &mut budget, Duration::ZERO)
                                 .unwrap()
                         );
                         // Use a fresh budget to observe whether stale feedback mutates it.
@@ -415,7 +413,7 @@ mod tests {
                 reservation
                     .reserve_with_identity(
                         &packet,
-                        stale.local,
+                        (stale.local, remote),
                         stale.record.reporter.unwrap(),
                         now,
                         Duration::from_secs(1),
@@ -424,7 +422,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(
                     reservation
-                        .apply(&stale, remote, &mut budget, now)
+                        .apply(&stale, &mut budget, now)
                         .unwrap_err()
                         .downcast_ref::<Error>(),
                     Some(&Error::Unmatched),
@@ -435,11 +433,7 @@ mod tests {
                 let (_, mut current, _) = fixture(ipv6);
                 current.identity = Arc::clone(&stale.identity);
                 current.prefix.copy_from_slice(&packet[..16]);
-                assert!(
-                    reservation
-                        .apply(&current, remote, &mut budget, now)
-                        .unwrap()
-                );
+                assert!(reservation.apply(&current, &mut budget, now).unwrap());
                 assert_eq!(budget.outer_mtu(), 1400);
                 assert!(reservation.pending.is_none());
             }
@@ -449,13 +443,13 @@ mod tests {
     #[test]
     fn matching_header_from_another_local_socket_cannot_reduce_budget() {
         for ipv6 in [false, true] {
-            let (mut reservation, mut received, remote) = fixture(ipv6);
+            let (mut reservation, mut received, _) = fixture(ipv6);
             let original = received.local;
             received.local.set_port(original.port() + 1);
             let mut budget = PathBudget::new(1600, ipv6).unwrap();
             assert_eq!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap_err()
                     .downcast_ref::<Error>(),
                 Some(&Error::Unmatched)
@@ -465,7 +459,7 @@ mod tests {
             received.local = original;
             assert!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap()
             );
         }
@@ -507,7 +501,7 @@ mod tests {
             let mut budget = PathBudget::new(1600, ipv6).unwrap();
             assert_eq!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap_err()
                     .downcast_ref::<Error>(),
                 Some(&Error::Unmatched)
@@ -516,12 +510,57 @@ mod tests {
             received.identity = identity;
             assert!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap()
             );
             drop(second_queue);
             drop(second);
             UdpSocket::bind(local).unwrap();
+        }
+    }
+
+    #[test]
+    fn reservation_uses_reader_destination_for_feedback_matching() {
+        use std::net::UdpSocket;
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let other = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let sender = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            sender.connect(peer.local_addr().unwrap()).unwrap();
+            let queue = ErrorQueue::enable(&sender).unwrap();
+            let (_, mut received, _) = fixture(ipv6);
+            let mut packet = [0; 1432];
+            packet[..16].copy_from_slice(&received.prefix);
+            let mut reservation = Reservation::default();
+            reservation
+                .reserve(
+                    &packet,
+                    &queue,
+                    received.record.reporter.unwrap(),
+                    Duration::ZERO,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+            received.identity = Arc::clone(queue.identity());
+            received.local = sender.local_addr().unwrap();
+            received.destination = Some(other.local_addr().unwrap());
+            let mut budget = PathBudget::new(1600, ipv6).unwrap();
+            assert_eq!(
+                reservation
+                    .apply(&received, &mut budget, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unmatched)
+            );
+            assert_eq!(budget.outer_mtu(), 1600);
+            received.destination = Some(peer.local_addr().unwrap());
+            assert!(
+                reservation
+                    .apply(&received, &mut budget, Duration::ZERO)
+                    .unwrap()
+            );
+            drop(queue);
+            drop(sender);
         }
     }
 
@@ -538,7 +577,7 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve_with_identity(
                     &packet,
-                    local.parse().unwrap(),
+                    (local.parse().unwrap(), "198.19.0.2:9010".parse().unwrap()),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
@@ -560,7 +599,7 @@ mod tests {
             reservation
                 .reserve_with_identity(
                     &packet,
-                    received.local,
+                    (received.local, remote),
                     received.record.reporter.unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
@@ -570,7 +609,7 @@ mod tests {
             let mut budget = PathBudget::new(1600, ipv6).unwrap();
             assert!(
                 reservation
-                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .apply(&received, &mut budget, Duration::ZERO)
                     .unwrap()
             );
             assert_eq!(budget.outer_mtu(), 1400);
@@ -581,7 +620,7 @@ mod tests {
     fn tcp_sizing_keeps_the_reservation_until_queue_busy_retry_commits() {
         use smoltcp::{phy::Device, socket::tcp};
         for ipv6 in [false, true] {
-            let (mut reservation, received, remote) = fixture(ipv6);
+            let (mut reservation, received, _) = fixture(ipv6);
             let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
                 .parse()
                 .unwrap();
@@ -606,7 +645,7 @@ mod tests {
             peer.device.inject(vec![0]).unwrap();
             let mut budget = PathBudget::new(1600, ipv6).unwrap();
             let error = reservation
-                .apply_tcp(&received, remote, &mut peer, &mut budget, Duration::ZERO)
+                .apply_tcp(&received, &mut peer, &mut budget, Duration::ZERO)
                 .unwrap_err();
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),
@@ -620,13 +659,7 @@ mod tests {
             assert!(!peer.device.has_ingress());
             assert_eq!(
                 reservation
-                    .apply_tcp(
-                        &received,
-                        remote,
-                        &mut peer,
-                        &mut budget,
-                        Duration::from_millis(1)
-                    )
+                    .apply_tcp(&received, &mut peer, &mut budget, Duration::from_millis(1))
                     .unwrap(),
                 queued.len()
             );
@@ -652,7 +685,7 @@ mod tests {
     fn tcp_rejects_invalid_feedback_limits_or_time_before_retiring_attempts() {
         use smoltcp::{phy::Device, socket::tcp};
         for case in 0..5 {
-            let (mut reservation, mut received, remote) = fixture(false);
+            let (mut reservation, mut received, _) = fixture(false);
             let source: IpAddr = "10.66.66.2".parse().unwrap();
             let target: IpAddr = "10.66.66.10".parse().unwrap();
             let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
@@ -678,7 +711,7 @@ mod tests {
                 _ => Duration::ZERO,
             };
             let error = reservation
-                .apply_tcp(&received, remote, &mut peer, &mut budget, now)
+                .apply_tcp(&received, &mut peer, &mut budget, now)
                 .unwrap_err();
             if case == 1 {
                 assert_eq!(
@@ -702,13 +735,16 @@ mod tests {
 
     #[test]
     fn reservation_is_bounded_nonrenewing_expiring_and_cancellable() {
-        let (mut reservation, received, remote) = fixture(false);
+        let (mut reservation, received, _) = fixture(false);
         let mut packet = [0; 1432];
         packet[0] = 4;
         assert_eq!(
             reservation.reserve_with_identity(
                 &packet,
-                "198.18.0.2:40000".parse().unwrap(),
+                (
+                    "198.18.0.2:40000".parse().unwrap(),
+                    "198.19.0.2:9010".parse().unwrap()
+                ),
                 "198.18.0.1".parse().unwrap(),
                 Duration::ZERO,
                 Duration::from_secs(1),
@@ -719,7 +755,7 @@ mod tests {
         let mut budget = PathBudget::new(1600, false).unwrap();
         assert_eq!(
             reservation
-                .apply(&received, remote, &mut budget, Duration::from_secs(1))
+                .apply(&received, &mut budget, Duration::from_secs(1))
                 .unwrap_err()
                 .downcast_ref::<Error>(),
             Some(&Error::Timeout)
@@ -732,7 +768,10 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve_with_identity(
                     &packet,
-                    "198.18.0.2:40000".parse().unwrap(),
+                    (
+                        "198.18.0.2:40000".parse().unwrap(),
+                        "198.19.0.2:9010".parse().unwrap()
+                    ),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
                     lifetime,
@@ -745,7 +784,10 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve_with_identity(
                     &packet,
-                    "198.18.0.2:40000".parse().unwrap(),
+                    (
+                        "198.18.0.2:40000".parse().unwrap(),
+                        "198.19.0.2:9010".parse().unwrap()
+                    ),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
@@ -758,13 +800,22 @@ mod tests {
             assert_eq!(
                 Reservation::default().reserve_with_identity(
                     &packet,
-                    if reporter.contains(':') {
-                        "[fd77:1::2]:40000"
-                    } else {
-                        "198.18.0.2:40000"
-                    }
-                    .parse()
-                    .unwrap(),
+                    (
+                        if reporter.contains(':') {
+                            "[fd77:1::2]:40000"
+                        } else {
+                            "198.18.0.2:40000"
+                        }
+                        .parse()
+                        .unwrap(),
+                        if reporter.contains(':') {
+                            "[fd77:2::2]:9010"
+                        } else {
+                            "198.19.0.2:9010"
+                        }
+                        .parse()
+                        .unwrap()
+                    ),
                     reporter.parse().unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
@@ -776,7 +827,10 @@ mod tests {
         assert_eq!(
             Reservation::default().reserve_with_identity(
                 &packet,
-                "198.18.0.2:40000".parse().unwrap(),
+                (
+                    "198.18.0.2:40000".parse().unwrap(),
+                    "198.19.0.2:9010".parse().unwrap()
+                ),
                 "198.18.0.1".parse().unwrap(),
                 Duration::from_millis(i64::MAX as u64),
                 Duration::from_secs(1),
@@ -788,7 +842,10 @@ mod tests {
         reservation
             .reserve_with_identity(
                 &packet,
-                "198.18.0.2:40000".parse().unwrap(),
+                (
+                    "198.18.0.2:40000".parse().unwrap(),
+                    "198.19.0.2:9010".parse().unwrap(),
+                ),
                 "198.18.0.1".parse().unwrap(),
                 Duration::ZERO,
                 Duration::from_secs(1),

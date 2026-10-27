@@ -964,7 +964,8 @@ bytes plus quoted length in the returned metadata; its 2048-byte receive
 buffer is transient. No application/ciphertext payload enters the reservation
 or logs. The error reader attaches its checked local tuple to every decoded
 report, along with an opaque token unique to that reader's lifetime. Reservation
-accepts the reader itself and obtains its token and local tuple together.
+accepts the reader itself and obtains its token, local tuple and connected
+destination together. Feedback matching does not accept a separate destination.
 Reduction requires the same reader token and local tuple, connected destination
 and family, ICMP
 origin (IPv4 type 3/code 4 or IPv6 type 2/code 0), EMSGSIZE, the expected router,
@@ -993,9 +994,8 @@ A real loopback rebinding test verifies that a new reader at the same local
 tuple cannot match an old reservation. The token identifies an error-reader
 instance, not a physical path: two independent readers for one socket have
 separate tokens, and owners must select the reader used for the operation.
-The caller still supplies the destination to feedback matching; connecting that
-destination and validating reader replacement need a production contract.
-Production ownership and path policy remain open.
+Reader replacement, socket peer changes and physical-path attribution still need
+a production contract. Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram
