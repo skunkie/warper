@@ -240,7 +240,12 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
                 .pmtu_feedback
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("missing PMTU owner"))?
-                .acknowledge(sequence.0 as u32, now)?;
+                .acknowledge(
+                    std::net::SocketAddr::new(frame.source, tcp.src_port()),
+                    std::net::SocketAddr::new(frame.destination, tcp.dst_port()),
+                    sequence.0 as u32,
+                    now,
+                )?;
             retry_sequence = Some(sequence);
             reserved = true;
         }

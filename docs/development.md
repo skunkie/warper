@@ -524,6 +524,7 @@ deadline. A different reporter cannot consume the reservation. Valid ICMPv4
 fragmentation-required or ICMPv6 Packet Too Big feedback supplies the new MTU;
 all four IPv4/IPv6 and 1280/1400-byte cases complete the retained transfer.
 Only ACKs accepted by the reserved flow's TCP owner may retire the segment;
+the supplied local and remote addresses and ports must match the reservation.
 partial ACKs retain it, full ACKs account for FIN and sequence wrap. Unsupported
 small/legacy-zero MTUs are typed errors. Corrupt or unrelated quotes cannot
 resize; busy device queues preserve the reservation for retry within its

@@ -4,7 +4,11 @@
 
 //! Bounded matching of too-big feedback for one outstanding TCP segment.
 
-use std::{fmt, net::IpAddr, time::Duration};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use smoltcp::wire::{
     Icmpv4Packet, Icmpv6Packet, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket, TcpSeqNumber,
@@ -25,6 +29,7 @@ pub enum Error {
     Expired,
     Cancelled,
     UnsupportedMtu,
+    WrongFlow,
 }
 
 impl fmt::Display for Error {
@@ -132,8 +137,25 @@ impl Tracker {
     }
 
     /// The flow owner supplies only ACKs already accepted by its TCP stack.
-    pub fn acknowledge(&mut self, sequence: u32, now: Duration) -> Result<(), Error> {
+    pub fn acknowledge(
+        &mut self,
+        source: SocketAddr,
+        destination: SocketAddr,
+        sequence: u32,
+        now: Duration,
+    ) -> Result<(), Error> {
         self.advance(now)?;
+        if let Some(pending) = &self.pending {
+            let identity = &pending.identity;
+            let source_port = u16::from_be_bytes([identity.tcp_prefix[0], identity.tcp_prefix[1]]);
+            let destination_port =
+                u16::from_be_bytes([identity.tcp_prefix[2], identity.tcp_prefix[3]]);
+            if source != SocketAddr::new(identity.source, source_port)
+                || destination != SocketAddr::new(identity.destination, destination_port)
+            {
+                return Err(Error::WrongFlow);
+            }
+        }
         if self
             .pending
             .as_ref()

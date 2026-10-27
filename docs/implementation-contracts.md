@@ -791,8 +791,10 @@ Reserve a validated emitted TCP data packet after its owner has established
 that its sequence remains outstanding. Store only addresses, original IP
 length/IPv4 identity and the first eight TCP bytes (ports and sequence), with
 one nonrenewing deadline and one explicitly selected unicast reporter of the
-same IP family. The owner supplies only ACKs already accepted by the
-reserved flow's stack; a full ACK retires the segment (including FIN sequence
+same IP family. The owner supplies only ACKs already accepted by the stack,
+along with the local and remote socket addresses of that flow. An ACK for a
+different tuple returns a typed error without retiring the reservation; a full
+ACK for the reserved flow retires the segment (including FIN sequence
 space), while partial ACKs preserve it. A second reservation is Busy;
 cancellation and exact deadline expiry retire the reservation. The candidate owns no payload, cache,
 unbounded history or background task.
@@ -827,9 +829,9 @@ The concrete tracker API is:
 
 ```text
 Tracker::default()
-Tracker::reserve(&mut self, packet: &[u8], now: Duration, lifetime: Duration)
+Tracker::reserve(&mut self, packet: &[u8], reporter: IpAddr, now: Duration, lifetime: Duration)
     -> Result<(), Error>
-Tracker::acknowledge(&mut self, accepted_ack: u32, now: Duration)
+Tracker::acknowledge(&mut self, source: SocketAddr, destination: SocketAddr, accepted_ack: u32, now: Duration)
     -> Result<(), Error>
 Tracker::reduction(&mut self, feedback: &[u8], now: Duration)
     -> Result<Option<usize>, Error>
@@ -843,8 +845,8 @@ Time-bearing operations check the injected monotonic clock. Full ACK, expiry, co
 and cancellation clear pending metadata. Classification alone never consumes
 a reservation; the owning synchronous apply operation commits only after its
 mutation succeeds. No await or other flow progress intervenes between those
-steps in this candidate. The owner must retire accepted ACKs and must not reuse
-a reservation for a different flow or operation.
+steps in this candidate. The owner must provide the tuple belonging to the
+accepted ACK and must not reuse a reservation for a different flow or operation.
 
 ## 19. Experimental Encrypted Inner PMTU Feedback
 

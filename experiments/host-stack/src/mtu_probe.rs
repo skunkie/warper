@@ -207,7 +207,8 @@ fn interface_mtu_reduction(ipv6: bool, advertised_mtu: usize) -> Result<()> {
         .context("no oversized packet to drop")?;
     ensure!(lost.len() > MTU);
     let header_len = if ipv6 { 40 } else { 20 };
-    let lost_sequence = TcpPacket::new_checked(&lost[header_len..])?.seq_number();
+    let lost_tcp = TcpPacket::new_checked(&lost[header_len..])?;
+    let lost_sequence = lost_tcp.seq_number();
     let dropped_packets = client.device.outgoing.len() + 1;
     client.device.outgoing.clear();
     let prefix_bytes = received.len();
@@ -234,6 +235,8 @@ fn interface_mtu_reduction(ipv6: bool, advertised_mtu: usize) -> Result<()> {
         Duration::from_secs(1),
     )?;
     tracker.acknowledge(
+        SocketAddr::new(addresses(ipv6)?.0, lost_tcp.src_port()),
+        SocketAddr::new(addresses(ipv6)?.1, lost_tcp.dst_port()),
         accepted_ack.context("missing accepted prefix ACK")?,
         Duration::from_millis(33),
     )?;

@@ -91,7 +91,10 @@ quotes and queue-busy retry are covered
 (`target/evidence/phase-0/matched-pmtu/README.md`). The matcher now requires a
 caller-selected reporter and rejects a different source without consuming the
 reservation (`target/evidence/phase-0/selected-pmtu-reporter/README.md`).
-This is not reporter authentication. Production path attribution
+ACK retirement also checks the supplied flow tuple and rejects another flow
+without consuming the reservation (`target/evidence/phase-0/pmtu-ack-flow/README.md`).
+This is not reporter authentication or verification that an ACK was accepted
+by the stack. Production path attribution
 and state-transfer policy are still missing. The same candidate now carries
 inner too-big feedback through encrypted WireGuard in all inner/outer family
 combinations, preserving exact TCP bytes/FIN and retiring reservations on expiry

@@ -8,7 +8,10 @@ use crate::pmtu_feedback::*;
 use smoltcp::wire::{
     Icmpv4Packet, Icmpv6Packet, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket, TcpSeqNumber,
 };
-use std::{net::IpAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 fn packet_addresses(packet: &[u8], ipv6: bool) -> (IpAddr, IpAddr) {
     if ipv6 {
@@ -448,19 +451,26 @@ fn accepted_ack_retires_only_the_complete_segment_across_sequence_wrap() {
             tcp.set_seq_number(TcpSeqNumber(sequence as i32));
             tcp.set_fin(fin);
             tcp.fill_checksum(&source.into(), &destination.into());
-            let payload_len = TcpPacket::new_checked(&packet[ip_len..])
-                .unwrap()
-                .payload()
-                .len();
+            let tcp = TcpPacket::new_checked(&packet[ip_len..]).unwrap();
+            let payload_len = tcp.payload().len();
+            let source = SocketAddr::new(source, tcp.src_port());
+            let destination = SocketAddr::new(destination, tcp.dst_port());
             let end = sequence
                 .wrapping_add(payload_len as u32)
                 .wrapping_add(u32::from(fin));
             let mut tracker = reserved(&packet);
             tracker
-                .acknowledge(end.wrapping_sub(1), Duration::from_millis(1))
+                .acknowledge(
+                    source,
+                    destination,
+                    end.wrapping_sub(1),
+                    Duration::from_millis(1),
+                )
                 .unwrap();
             assert!(tracker.next_deadline().is_some());
-            tracker.acknowledge(end, Duration::from_millis(2)).unwrap();
+            tracker
+                .acknowledge(source, destination, end, Duration::from_millis(2))
+                .unwrap();
             assert!(tracker.next_deadline().is_none());
             let feedback = crate::mtu_probe::too_big(&packet, ipv6).unwrap();
             assert_eq!(
@@ -468,5 +478,47 @@ fn accepted_ack_retires_only_the_complete_segment_across_sequence_wrap() {
                 Ok(None)
             );
         }
+    }
+}
+
+#[test]
+fn accepted_ack_from_another_flow_cannot_retire_the_reservation() {
+    for ipv6 in [false, true] {
+        let (packet, feedback) = sample(ipv6);
+        let (source_ip, destination_ip) = packet_addresses(&packet, ipv6);
+        let tcp = TcpPacket::new_checked(&packet[if ipv6 { 40 } else { 20 }..]).unwrap();
+        let source = SocketAddr::new(source_ip, tcp.src_port());
+        let destination = SocketAddr::new(destination_ip, tcp.dst_port());
+        let end = (tcp.seq_number().0 as u32)
+            .wrapping_add(tcp.payload().len() as u32)
+            .wrapping_add(u32::from(tcp.fin()));
+        let mut other_source = source;
+        other_source.set_port(source.port() + 1);
+        let mut other_destination = destination;
+        other_destination.set_port(destination.port() + 1);
+        let mut other_address = source;
+        other_address.set_ip(
+            if ipv6 { "fd66:66::99" } else { "10.66.66.99" }
+                .parse()
+                .unwrap(),
+        );
+        let mut tracker = reserved(&packet);
+        for (wrong_source, wrong_destination) in [
+            (other_source, destination),
+            (source, other_destination),
+            (other_address, destination),
+            (destination, source),
+        ] {
+            assert_eq!(
+                tracker.acknowledge(wrong_source, wrong_destination, end, Duration::ZERO),
+                Err(Error::WrongFlow)
+            );
+            assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
+            assert_eq!(tracker.reduction(&feedback, Duration::ZERO), Ok(Some(1280)));
+        }
+        tracker
+            .acknowledge(source, destination, end, Duration::from_millis(1))
+            .unwrap();
+        assert!(tracker.next_deadline().is_none());
     }
 }
