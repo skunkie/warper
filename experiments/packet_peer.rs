@@ -45,11 +45,15 @@ impl PacketDevice {
         if !(MTU..=1500).contains(&mtu) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        if !self.incoming.is_empty() || !self.outgoing.is_empty() {
+        if self.has_ingress() || !self.outgoing.is_empty() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         self.mtu = mtu;
         Ok(())
+    }
+
+    pub fn has_ingress(&self) -> bool {
+        !self.incoming.is_empty()
     }
 
     pub fn inject(&mut self, packet: Vec<u8>) -> io::Result<()> {

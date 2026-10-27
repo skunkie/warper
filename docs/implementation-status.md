@@ -83,8 +83,12 @@ limits remain tested. A Linux-only isolated outer probe now reads genuine local
 EMSGSIZE/error-queue MTU reports for encrypted UDP, validates socket/destination
 metadata, reduces the outer budget, rejects later oversized sends before the
 socket, and delivers a distinct safe message without replay
-(`target/evidence/phase-0/outer-errors/README.md`). Remote router discovery,
-outer-feedback TCP resizing and general error propagation,
+(`target/evidence/phase-0/outer-errors/README.md`). The same isolated scope now
+applies local outer feedback to a retained TCP connection, preserving 8 KiB,
+FIN/response, tuple and retry sequence across interface sizing in all four
+family combinations, without inner feedback or application replay
+(`target/evidence/phase-0/outer-tcp/README.md`). Remote router discovery,
+concurrent/physical-path TCP sizing and general error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 

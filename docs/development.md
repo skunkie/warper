@@ -507,5 +507,12 @@ kernel report must provide 1400, and the reduced budget must reject a distinct
 oversized operation before socket send. A separate safe datagram must arrive
 unchanged; failed application data is never replayed. Socket rebinding checks
 cleanup. This scope rejects `--rekey` and requires wireguard-stack. Its success
-is local enforcement evidence, not remote/physical path discovery or active
-TCP adaptation from outer feedback. The full PMTU gate remains open.
+also verifies local-feedback TCP adaptation: one 8 KiB application write and
+FIN survive kernel rejection and TCP retransmission on the original connection.
+The reduced inner limit reserves outer headers, encryption and padding (1328
+bytes over IPv4 or 1312 over IPv6 at outer MTU 1400). Pending packet attempts
+are retired only after validating the entire output queue as the same TCP flow;
+queued input, mixed UDP, foreign flows, invalid checksums and clocks fail before
+mutation. No inner feedback is generated. This is one serialized local path,
+not remote/physical discovery or concurrent flow sizing. The full PMTU gate
+remains open.

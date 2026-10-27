@@ -102,7 +102,7 @@ cat "$run_directory/probe.log"
     if [[ "$scope" == --mtu-check ]]; then echo "mtu_probe_exit=$status"; fi
     if [[ "$scope" == --outer-mtu-check ]]; then
         echo "outer_local_mtu_probe_exit=$status"
-        echo "NOT RUN remote router MTU discovery or outer-feedback TCP resizing"
+        echo "NOT RUN remote router MTU discovery or concurrent physical-path TCP sizing"
     fi
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
     echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"

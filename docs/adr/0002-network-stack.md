@@ -410,10 +410,22 @@ negative control removes explicit no-fragment discovery and must fail because
 its oversized send is then accepted, rather than reported as a local MTU error.
 
 This establishes local kernel enforcement for the connected UDP transport,
-not remote router attribution, physical route changes or active TCP adaptation
-from outer feedback. The owner must serialize one operation with an initially
-empty error queue; LOCAL reports do not include a ciphertext quote. See
+with retained TCP sizing now demonstrated for the serialized local operation.
+It does not establish remote router attribution or physical route changes.
+The owner must serialize one operation with an initially empty error queue; LOCAL reports do not include a ciphertext quote. See
 [recvmsg(2)](https://man7.org/linux/man-pages/man2/recvmsg.2.html),
 [ip(7)](https://man7.org/linux/man-pages/man7/ip.7.html), and
 [udp(7)](https://man7.org/linux/man-pages/man7/udp.7.html) for Linux semantics.
 Those remaining contracts and networking evidence keep this ADR proposed.
+
+Local outer feedback now also drives the experimental interface replacement.
+The owner validates pending output as the same checksum-valid TCP flow and
+refuses queued input before retiring packet attempts; retained socket buffers
+produce fresh encrypted retransmissions. Accounting reserves outer headers,
+32 bytes of WireGuard overhead and padding to 16 bytes. At outer MTU 1400,
+all four address-family combinations retain an established TCP connection,
+transfer 8 KiB exactly, preserve FIN/response and complete the final peer ACK.
+No inner too-big feedback contributes. Invalid pending traffic leaves queues
+and both budgets unchanged. This remains the interface-wide controlled fixture
+with its state/entropy limitations, not a general production migration API.
+See contract section 21 and `target/evidence/phase-0/outer-tcp/README.md`.

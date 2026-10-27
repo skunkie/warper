@@ -29,6 +29,8 @@ mod kernel_peer;
 mod outer_errors;
 #[cfg(target_os = "linux")]
 mod outer_mtu_probe;
+#[cfg(target_os = "linux")]
+mod outer_tcp_probe;
 
 use std::{
     fmt, io,

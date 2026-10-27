@@ -5,14 +5,12 @@
 //! Real local EMSGSIZE feedback for encrypted UDP in a private MTU fixture.
 
 use std::{
-    io,
     net::{SocketAddr, UdpSocket},
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Result, ensure};
-use nix::errno::Errno;
 use rustix::net::sockopt as options;
 use smoltcp::socket::udp;
 
@@ -23,6 +21,7 @@ pub fn run() -> Result<()> {
     for ipv6 in [false, true] {
         for outer_ipv6 in [false, true] {
             run_case(ipv6, outer_ipv6)?;
+            crate::outer_tcp_probe::run_case(ipv6, outer_ipv6)?;
         }
     }
     Ok(())
@@ -91,19 +90,7 @@ fn exchange(
         Ok(()) => anyhow::bail!("oversized encrypted datagram unexpectedly sent"),
         Err(error) => error,
     };
-    let Some(send_error) = error.downcast_ref::<io::Error>() else {
-        return Err(error);
-    };
-    if send_error.raw_os_error() != Some(Errno::EMSGSIZE as i32) {
-        return Err(error);
-    }
-    let report = match queue.read() {
-        Ok(Some(report)) => report,
-        Ok(None) => return Err(error.context("kernel MTU error had no queued report")),
-        Err(diagnostic) => {
-            return Err(error.context(format!("kernel MTU error diagnostic failed: {diagnostic}")));
-        }
-    };
+    let report = queue.diagnose(error)?;
     ensure!(report.mtu == 1400, "kernel outer MTU report changed");
     ensure!(client.transport.path_budget.reduce(report.mtu)?);
     ensure!(client.transport.path_budget.outer_mtu() == 1400);

@@ -881,7 +881,7 @@ bytes; truncation, missing/duplicate/unknown controls or endpoint changes fail
 without changing the path budget. No packet payload is logged, retained or
 replayed. A validated report can reduce the declared outer budget only; an
 unsupported small path is typed failure and a larger report cannot grow it.
-The initial probe does not yet resize active TCP from outer feedback.
+Section 21 adds sizing for one retained TCP connection from local feedback.
 
 The isolated 1400-byte loopback fixture carries real BoringTun traffic. After
 handshake/warmup, one oversized encrypted UDP datagram must fail locally and
@@ -897,3 +897,28 @@ expected failed-send diagnosis, budget reduction and cleanup. Safe APIs are
 pinned nix 0.31.3 (net/uio) and rustix 1.1.5 (net/time), Linux-only. Dedicated
 socket ownership means these option changes need no host-state rollback.
 No generic transport path enables the option automatically in this increment.
+
+## 21. Experimental Outer-Driven TCP Sizing
+
+Status: local-kernel outer feedback applied to one retained TCP connection.
+A validated outer MTU yields an inner limit of
+`floor((outer_mtu - outer_IP_UDP_headers - 32) / 16) * 16`, reserving WireGuard
+padding. Unsupported paths fail before mutation. At outer MTU 1400 the limit
+is 1328 for IPv4 outer transport or 1312 for IPv6, independently of inner family.
+
+The controlled owner handles one synchronous failed encrypted send with an
+initially empty error queue. It validates all pending output as checksum-valid,
+unfragmented TCP for the same socket tuple and refuses queued input, UDP,
+foreign flows or invalid clocks before mutation. Pending TCP packet attempts
+may then be retired explicitly; their unacknowledged bytes remain in the
+original TCP send buffer. Interface replacement preserves the SocketSet and
+commits the reduced outer budget only after sizing succeeds. No ciphertext or
+application write is replayed; TCP generates retries with fresh encryption.
+
+The isolated outer scope adds 1500-byte TCP fixtures under a declared 1600-byte
+outer budget. Kernel EMSGSIZE/report 1400 must drive the reduction, exact 8 KiB
+transfer, original tuple, lost-sequence retry, FIN/response and final peer ACK.
+The receiver's scoped larger-TCP admission must generate no inner feedback.
+All four inner/outer combinations run. This remains one serialized local-path
+operation, with the prior interface-wide/state/entropy restrictions; remote
+router discovery, concurrent flows and general physical-path policy stay open.

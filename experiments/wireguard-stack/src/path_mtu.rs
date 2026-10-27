@@ -23,6 +23,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[derive(Clone, Copy)]
 pub struct PathBudget {
     outer_mtu: usize,
     outer_headers: usize,
@@ -36,11 +37,10 @@ impl PathBudget {
         };
         // Reserve padding to a 16-byte boundary even though pinned BoringTun
         // emits unpadded data. Inner IPv6 still requires a 1280-byte link MTU.
-        let minimum = MTU.div_ceil(16) * 16 + 32 + budget.outer_headers;
         if outer_mtu > 65535 {
             return Err(Error::InvalidMtu);
         }
-        if outer_mtu < minimum {
+        if budget.inner_mtu() < MTU {
             return Err(Error::PathTooSmall);
         }
         Ok(budget)
@@ -54,6 +54,10 @@ impl PathBudget {
         }
         *self = candidate;
         Ok(true)
+    }
+
+    pub fn inner_mtu(&self) -> usize {
+        self.outer_mtu.saturating_sub(self.outer_headers + 32) / 16 * 16
     }
 
     pub fn outer_mtu(&self) -> usize {
@@ -110,6 +114,22 @@ mod tests {
             );
             assert_eq!(
                 budget.check_datagram(1401 - if ipv6 { 48 } else { 28 }),
+                Err(Error::PacketTooLarge)
+            );
+        }
+    }
+
+    #[test]
+    fn inner_limit_reserves_outer_headers_encryption_and_padding() {
+        for (ipv6, expected) in [(false, 1328), (true, 1312)] {
+            let budget = PathBudget::new(1400, ipv6).unwrap();
+            assert_eq!(budget.inner_mtu(), expected);
+            assert_eq!(
+                budget.check_datagram(expected.div_ceil(16) * 16 + 32),
+                Ok(())
+            );
+            assert_eq!(
+                budget.check_datagram((expected + 1).div_ceil(16) * 16 + 32),
                 Err(Error::PacketTooLarge)
             );
         }

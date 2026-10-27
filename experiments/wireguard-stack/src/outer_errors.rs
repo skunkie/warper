@@ -6,7 +6,7 @@
 
 use std::{
     fmt,
-    io::IoSliceMut,
+    io::{self, IoSliceMut},
     net::{SocketAddr, UdpSocket},
     os::fd::AsRawFd,
 };
@@ -87,6 +87,22 @@ impl ErrorQueue {
             );
         }
         Ok(queue)
+    }
+
+    pub fn diagnose(&self, primary: anyhow::Error) -> Result<LocalMtu> {
+        let Some(error) = primary.downcast_ref::<io::Error>() else {
+            return Err(primary);
+        };
+        if error.raw_os_error() != Some(Errno::EMSGSIZE as i32) {
+            return Err(primary);
+        }
+        match self.read() {
+            Ok(Some(report)) => Ok(report),
+            Ok(None) => Err(primary.context("kernel MTU error had no queued report")),
+            Err(diagnostic) => {
+                Err(primary.context(format!("kernel MTU error diagnostic failed: {diagnostic}")))
+            }
+        }
     }
 
     pub fn read(&self) -> Result<Option<LocalMtu>> {
@@ -182,6 +198,39 @@ fn classify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_diagnosis_preserves_the_original_send_error() {
+        for ipv6 in [false, true] {
+            let socket = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let remote = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            socket.connect(remote.local_addr().unwrap()).unwrap();
+            let queue = ErrorQueue::enable(&socket).unwrap();
+            let original = io::Error::from_raw_os_error(Errno::EMSGSIZE as i32);
+            let error = queue.diagnose(original.into()).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<io::Error>().unwrap().raw_os_error(),
+                Some(Errno::EMSGSIZE as i32)
+            );
+            let error = queue
+                .diagnose(io::Error::from(io::ErrorKind::PermissionDenied).into())
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            let error = queue.diagnose(Error::WrongSocket.into()).unwrap_err();
+            assert_eq!(error.downcast_ref::<Error>(), Some(&Error::WrongSocket));
+            socket.connect(crate::loopback_address(ipv6)).unwrap();
+            let error = queue
+                .diagnose(io::Error::from_raw_os_error(Errno::EMSGSIZE as i32).into())
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<io::Error>().unwrap().raw_os_error(),
+                Some(Errno::EMSGSIZE as i32)
+            );
+        }
+    }
 
     #[test]
     fn local_records_require_exact_destination_family_origin_and_error() {

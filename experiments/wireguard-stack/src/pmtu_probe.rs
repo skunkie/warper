@@ -37,7 +37,7 @@ pub struct PathFixture {
 }
 
 impl PathFixture {
-    fn new(limit: usize) -> Result<Self> {
+    pub(super) fn new(limit: usize) -> Result<Self> {
         ensure!(
             (MTU..1500).contains(&limit),
             "invalid controlled path limit"
@@ -81,14 +81,14 @@ impl PathFixture {
     }
 }
 
-struct TcpFrame<'a> {
+pub(super) struct TcpFrame<'a> {
     ipv6: bool,
-    source: IpAddr,
-    destination: IpAddr,
-    payload: &'a [u8],
+    pub(super) source: IpAddr,
+    pub(super) destination: IpAddr,
+    pub(super) payload: &'a [u8],
 }
 
-fn plain_tcp(packet: &[u8]) -> Result<Option<TcpFrame<'_>>> {
+pub(super) fn plain_tcp(packet: &[u8]) -> Result<Option<TcpFrame<'_>>> {
     ensure!(
         packet.len() <= 1500,
         "controlled plaintext exceeded fixture budget"
@@ -343,7 +343,7 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
     anyhow::bail!("encrypted PMTU connection did not complete")
 }
 
-fn drain(peer: &mut Peer, output: &mut Vec<u8>, limit: usize) -> Result<()> {
+pub(super) fn drain(peer: &mut Peer, output: &mut Vec<u8>, limit: usize) -> Result<()> {
     let socket = peer.sockets.get_mut::<tcp::Socket>(peer.tcp);
     for _ in 0..2 {
         if !socket.can_recv() {
