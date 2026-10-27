@@ -561,6 +561,12 @@ peer changed and restored between checks or concurrent reconfiguration. A
 loopback test demonstrates this by delivering a synthetic datagram to another
 peer, restoring the original connection, and applying matching synthetic cached
 feedback. This is evidence of a limitation, not a production-safe transition.
+The separate Linux test-only `outer_owner` experiment constructs a private
+socket and serializes operations through exclusive mutable access. Its peer
+transition revokes the old reservation and reader before reconnecting; failed
+transitions stay unavailable until recovery. Run its controlled loopback tests
+with `cargo test --locked -p wireguard-stack outer_owner::tests`. It is not
+integrated with the WireGuard transport or a native macOS implementation.
 
 A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
 and `ip`, with permission to create an isolated user and network namespace:

@@ -130,8 +130,12 @@ application (`target/evidence/phase-0/reader-peer/README.md`). Changes restored
 between checks, concurrent reconfiguration, and replacement policy remain open.
 An IPv4/IPv6 loopback test demonstrates that a changed-and-restored peer is
 invisible to these checks (`target/evidence/phase-0/restored-peer/README.md`).
-Exclusive reconfiguration ownership and generation retirement are required
-before production use but have not been implemented or verified.
+A separate test-only Linux owner now keeps its socket private, retires feedback
+before reconnecting, and fails closed on an injected uncertain peer transition;
+IPv4/IPv6 loopback tests cover returning to the original peer and fresh-reader
+recovery (`target/evidence/phase-0/owned-peer/README.md`). This owner is not
+integrated with WireGuard and has no routed ICMP, concurrent transition, or
+production path attribution evidence.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

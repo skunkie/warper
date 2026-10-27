@@ -1006,8 +1006,17 @@ of such reconfiguration. A production adapter must exclusively own socket
 reconfiguration and serialize it with send, reservation and feedback handling;
 it must retire the old reader generation and invalidate its pending feedback
 before publishing a changed peer, even when a previous tuple is later restored.
-The mechanism and its cancellation, failure and recovery evidence are not yet
-implemented. Production ownership and path policy remain open.
+A separate Linux test-only owner constructs and privately owns a nonblocking
+socket and its error reader. Peer replacement validates first, cancels pending
+feedback and drops the old reader before reconnecting; if reconnect or reader
+creation fails, feedback and sends stay unavailable until explicit recovery.
+A fresh reader and separately validated path budget are published together on
+success. Loopback tests cover change and return, stale feedback even with a
+matching header, validation refusal, and an injected failure after the peer has
+already changed. The old error is preserved and recovery creates a new reader.
+This prototype does not own the existing WireGuard transport or exercise actual
+routed ICMP, concurrency, cancellation during transition, or production path
+selection. Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram
