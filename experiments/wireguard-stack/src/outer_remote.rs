@@ -330,6 +330,93 @@ mod tests {
     }
 
     #[test]
+    fn delayed_feedback_cannot_change_a_later_distinct_reservation() {
+        for ipv6 in [false, true] {
+            for retirement in ["commit", "cancel", "expiry"] {
+                let (mut reservation, stale, remote) = fixture(ipv6);
+                let mut budget = PathBudget::new(1600, ipv6).unwrap();
+                let now = match retirement {
+                    "commit" => {
+                        assert!(
+                            reservation
+                                .apply(&stale, remote, &mut budget, Duration::ZERO)
+                                .unwrap()
+                        );
+                        // Use a fresh budget to observe whether stale feedback mutates it.
+                        budget = PathBudget::new(1600, ipv6).unwrap();
+                        Duration::ZERO
+                    }
+                    "cancel" => {
+                        reservation.cancel();
+                        Duration::ZERO
+                    }
+                    "expiry" => {
+                        let now = Duration::from_secs(1);
+                        assert_eq!(reservation.advance(now), Err(Error::Timeout));
+                        now
+                    }
+                    _ => unreachable!(),
+                };
+                let mut packet = [0; 1432];
+                packet[..16].copy_from_slice(&stale.prefix);
+                packet[8] ^= 1;
+                reservation
+                    .reserve(
+                        &packet,
+                        stale.record.reporter.unwrap(),
+                        now,
+                        Duration::from_secs(1),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    reservation
+                        .apply(&stale, remote, &mut budget, now)
+                        .unwrap_err()
+                        .downcast_ref::<Error>(),
+                    Some(&Error::Unmatched),
+                    "IPv6 {ipv6}, retirement {retirement}"
+                );
+                assert_eq!(budget.outer_mtu(), 1600);
+                assert!(reservation.pending.is_some());
+                let (_, mut current, _) = fixture(ipv6);
+                current.prefix.copy_from_slice(&packet[..16]);
+                assert!(
+                    reservation
+                        .apply(&current, remote, &mut budget, now)
+                        .unwrap()
+                );
+                assert_eq!(budget.outer_mtu(), 1400);
+                assert!(reservation.pending.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_header_cannot_distinguish_old_feedback_from_current_feedback() {
+        for ipv6 in [false, true] {
+            let (mut reservation, received, remote) = fixture(ipv6);
+            reservation.cancel();
+            let mut packet = [0; 1432];
+            packet[..16].copy_from_slice(&received.prefix);
+            reservation
+                .reserve(
+                    &packet,
+                    received.record.reporter.unwrap(),
+                    Duration::ZERO,
+                    Duration::from_secs(1),
+                )
+                .unwrap();
+            let mut budget = PathBudget::new(1600, ipv6).unwrap();
+            assert!(
+                reservation
+                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .unwrap()
+            );
+            assert_eq!(budget.outer_mtu(), 1400);
+        }
+    }
+
+    #[test]
     fn tcp_sizing_keeps_the_reservation_until_queue_busy_retry_commits() {
         use smoltcp::{phy::Device, socket::tcp};
         for ipv6 in [false, true] {

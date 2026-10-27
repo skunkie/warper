@@ -76,6 +76,35 @@ def run_case(ipv6):
                 raise RuntimeError("unexpected ICMP error metadata")
             print(f"PASS ipv6={ipv6} quoted_payload_bytes={length} returned_bytes={len(returned)}")
 
+        # Two sends precede both reports, so the first error is delayed until
+        # after a distinct later operation has already used the same socket.
+        first = bytearray(payload)
+        first[:16] = bytes([4, 0, 0, 0, 17, 0, 0, 0, 29, 0, 0, 0, 0, 0, 0, 0])
+        second = bytearray(first)
+        second[8] += 1
+        for packet in (first, second):
+            sender.sendall(packet)
+            if receiver.recv(128) != packet:
+                raise RuntimeError("successive datagram was not delivered")
+        for packet in (first, second):
+            message = struct.pack("!BBHI", 2 if ipv6 else 3, 0 if ipv6 else 4, 0, 1400)
+            message += ip + udp + packet[:16]
+            if not ipv6:
+                message = message[:2] + struct.pack("!H", checksum(message)) + message[4:]
+            router.sendto(message, (address, 0))
+            returned, controls, flags, destination = sender.recvmsg(
+                2048, 512, socket.MSG_ERRQUEUE | socket.MSG_DONTWAIT
+            )
+            if (returned != packet[:16] or destination[:2] != receiver.getsockname()[:2]
+                    or len(controls) != 1 or controls[0][:2] != (level, receive_errors)
+                    or not flags & socket.MSG_ERRQUEUE
+                    or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)):
+                raise RuntimeError("delayed report did not retain its quoted header")
+            error, origin, kind, code, _, mtu, _ = struct.unpack_from("=IBBBBII", controls[0][2])
+            if (error, origin, kind, code, mtu) != (errno.EMSGSIZE, 3 if ipv6 else 2, 2 if ipv6 else 3, 0 if ipv6 else 4, 1400):
+                raise RuntimeError("unexpected delayed ICMP error metadata")
+        print(f"PASS ipv6={ipv6} delayed_report_preserves_original_header=true")
+
 
 def main():
     uid_map = Path("/proc/self/uid_map").read_text().split()

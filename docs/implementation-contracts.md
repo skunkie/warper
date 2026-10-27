@@ -973,8 +973,14 @@ reservation's correlation rule. See `scripts/probe-short-icmp.py`; this does not
 establish behavior on other kernels or safe correlation using other metadata.
 
 The owner confirms an empty error queue before reservation, serializes I/O,
-and waits no longer than its reservation deadline. Larger reports never grow
-the budget; unsupported small paths fail before mutation. Matching alone does
+and waits no longer than its reservation deadline. Synthetic decoded-record
+checks cover delayed reports after commit, cancellation and expiry: a different
+16-byte header leaves the new reservation and budget unchanged. An identical
+header is indistinguishable from a current report, even after cancellation;
+uniqueness across sessions and attribution on real paths remain unproven. A
+synthetic loopback error queue retains the quoted old header after a later send;
+this does not test actual router delays or establish header uniqueness.
+Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram
 or ciphertext is replayed. The reduced budget must reject a distinct oversized

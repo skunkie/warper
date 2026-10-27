@@ -104,8 +104,13 @@ both budgets and sizing commit; kernel workers verify the combined workload
 (`target/evidence/phase-0/router-tcp/README.md`). A synthetic Linux loopback
 probe shows that UDP-header-only ICMP quotes yield no UDP payload in the error
 queue in either outer family; all lengths below 16 bytes remain rejected
-(`target/evidence/phase-0/short-icmp/run.log`). Short-quote correlation, general
-router trust, concurrent/physical-path policy and error propagation,
+(`target/evidence/phase-0/short-icmp/run.log`). Synthetic decoded-record tests
+also reject a delayed report after commit, cancellation or expiry when the next
+reservation has a distinct header; identical headers cannot be distinguished.
+A synthetic Linux loopback error queue preserves the old header when its ICMP
+report arrives after a later send; routed delays and cross-session header
+uniqueness remain unverified (`target/evidence/phase-0/delayed-icmp/run.log`).
+Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 

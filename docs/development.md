@@ -554,7 +554,9 @@ unshare --user --map-root-user --net sh -c 'ip link set lo up && python3 scripts
 
 It injects ICMP errors on private loopback for both outer families and checks
 error-queue metadata for quotes containing 0, 4, 8, 15, or 16 payload bytes.
-The single-UID mapping guard does not itself verify network isolation; the
+It also injects a delayed error after two distinct synthetic sends and checks
+that the queue retains the old header. The single-UID mapping guard does not
+itself verify network isolation; the
 command creates that isolation. This synthetic fixture does not prove router
 trust or support short-quote correlation.
 
