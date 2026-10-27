@@ -67,6 +67,9 @@ ICMP port-unreachable generation, and WireGuard envelope limits are tested.
 Bounded pre-admission IPv4/IPv6 fragment input now handles both orders,
 overlap tombstones, atomic fragments, expiry, and transport checksum gating
 (`target/evidence/phase-0/reassembly/README.md`). The same boundary now runs
+with representable clock deadlines for new assemblies while preserving
+existing assemblies near the clock limit
+(`target/evidence/phase-0/fragment-deadline/README.md`). The boundary also runs
 after authenticated WireGuard decryption and inner-address checks, with
 encrypted UDP fragment round trips, expiry, overlap rejection, and socket
 release (`target/evidence/phase-0/wireguard-fragments/README.md`).

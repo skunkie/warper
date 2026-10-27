@@ -110,6 +110,48 @@ fn accepted_fragment_progress_does_not_renew_the_original_deadline() {
 }
 
 #[test]
+fn new_fragment_deadline_must_fit_clock_without_disturbing_existing_assembly() {
+    for ipv6 in [false, true] {
+        let original = sample(ipv6);
+        let fragments = split(&original, 42, 128).unwrap();
+        let other = split(&original, 43, 128).unwrap();
+        let maximum = Duration::from_millis(i64::MAX as u64);
+        let start = maximum - Duration::from_secs(1);
+        let later = start + Duration::from_millis(1);
+
+        let mut input = Reassembler::new(Limits::default()).unwrap();
+        pending(&mut input, &fragments[0], start);
+        assert_eq!(input.next_deadline(), Some(maximum));
+        assert!(matches!(
+            input.accept(&other[0], later),
+            Err(Error::InvalidTime)
+        ));
+        assert_eq!(input.next_deadline(), Some(maximum));
+        let result = input.accept(&fragments[1], later);
+        assert!(
+            matches!(&result, Ok(Outcome::Complete(_))),
+            "existing assembly must complete without creating a new deadline"
+        );
+        if let Ok(Outcome::Complete(packet)) = result {
+            let header = if ipv6 { 40 } else { 20 };
+            assert_eq!(&packet[header..], &original[header..]);
+        }
+        assert_eq!(input.next_deadline(), None);
+
+        let mut input = Reassembler::new(Limits::default()).unwrap();
+        pending(&mut input, &fragments[0], start);
+        input.advance(maximum).unwrap();
+        assert_eq!(input.next_deadline(), None);
+        assert_eq!(input.statistics().timed_out, 1);
+        assert!(matches!(
+            input.accept(&other[0], maximum),
+            Err(Error::InvalidTime)
+        ));
+        assert_eq!(input.next_deadline(), None);
+    }
+}
+
+#[test]
 fn unsupported_headers_and_bad_alignment_do_not_allocate_assembly_state() {
     for ipv6 in [false, true] {
         let first = split(&sample(ipv6), 42, 128).unwrap()[0].clone();

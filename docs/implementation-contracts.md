@@ -644,6 +644,10 @@ their slot until the original deadline, preventing later pieces from reviving
 the same datagram. IPv6 atomic fragments neither consume nor alter a queued
 slot with their identification. The runtime observes assembly timers even
 without more input, and cancels this owner on every exit/drop path.
+New assemblies are admitted only when their timeout deadline fits the
+supported monotonic clock; an unrepresentable deadline returns a typed time
+error without allocating a slot. Fragments for existing assemblies retain their
+original deadline and do not require a new representable deadline.
 
 Packet receive stages at most one additional MTU-sized input until the next
 bounded turn advances every adapter's monotonic clock. This prevents

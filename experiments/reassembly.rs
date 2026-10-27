@@ -189,6 +189,18 @@ impl Reassembler {
             })
             .or_else(|| self.slots.iter().position(Option::is_none))
             .ok_or(Error::ResourceLimit)?;
+        let expires = match &self.slots[index] {
+            Some(assembly) => assembly.expires,
+            None => {
+                let deadline = now
+                    .checked_add(self.limits.timeout)
+                    .ok_or(Error::InvalidTime)?;
+                if deadline.as_millis() > i64::MAX as u128 {
+                    return Err(Error::InvalidTime);
+                }
+                deadline
+            }
+        };
         let assembly = self.slots[index].get_or_insert_with(|| Assembly {
             key: fragment.key,
             protocol: fragment.protocol,
@@ -197,7 +209,7 @@ impl Reassembler {
             data: [0; MTU],
             ranges: Assembler::new(),
             total: None,
-            expires: now + self.limits.timeout,
+            expires,
             discarded: false,
         });
         if assembly.discarded {
