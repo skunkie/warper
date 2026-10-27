@@ -202,11 +202,10 @@ fn exchange(
     let mut reservation = Reservation::default();
     reservation.reserve(
         packet,
-        client.transport.socket.local_addr()?,
+        queue,
         reporter,
         wall.elapsed(),
         Duration::from_secs(1),
-        queue.identity(),
     )?;
     // The send must succeed: local EMSGSIZE is not remote-router evidence.
     client
@@ -249,11 +248,10 @@ fn exchange(
     let mut second_budget = PathBudget::new(1600, second.local_addr()?.is_ipv6())?;
     second_reservation.reserve(
         packet,
-        second.local_addr()?,
+        second_queue,
         reporter,
         wall.elapsed(),
         Duration::from_secs(1),
-        second_queue.identity(),
     )?;
     let mut wrong_owner = stale.clone();
     wrong_owner.prefix.copy_from_slice(&packet[..16]);

@@ -106,6 +106,10 @@ impl ErrorQueue {
         Ok(queue)
     }
 
+    pub(super) fn local(&self) -> SocketAddr {
+        self.local
+    }
+
     pub(super) fn identity(&self) -> &Arc<()> {
         &self.identity
     }

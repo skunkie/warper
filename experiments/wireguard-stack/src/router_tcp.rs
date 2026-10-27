@@ -103,11 +103,10 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue) -> Result<()> {
             let mut reservation = Reservation::default();
             reservation.reserve(
                 packet,
-                client.transport.socket.local_addr()?,
+                queue,
                 reporter,
                 wall.elapsed(),
                 Duration::from_secs(1),
-                queue.identity(),
             )?;
             // Send exactly one attempt; no remaining TCP output is encrypted
             // until its remote report has been validated and sizing committed.

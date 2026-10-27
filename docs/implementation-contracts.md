@@ -963,9 +963,10 @@ deadline. Error-queue decoding retains at most the first 16 quoted
 bytes plus quoted length in the returned metadata; its 2048-byte receive
 buffer is transient. No application/ciphertext payload enters the reservation
 or logs. The error reader attaches its checked local tuple to every decoded
-report, along with an opaque token unique to that reader's lifetime. The owner
-supplies that reader's token and local tuple when reserving. Reduction requires
-the same reader token and local tuple, connected destination and family, ICMP
+report, along with an opaque token unique to that reader's lifetime. Reservation
+accepts the reader itself and obtains its token and local tuple together.
+Reduction requires the same reader token and local tuple, connected destination
+and family, ICMP
 origin (IPv4 type 3/code 4 or IPv6 type 2/code 0), EMSGSIZE, the expected router,
 nontruncated controls, matching data header and a quote length within the sent
 datagram. Quotes shorter than the data header are unsupported. This is bounded
@@ -991,7 +992,9 @@ isolation. This tests delayed processing rather than delayed packet delivery.
 A real loopback rebinding test verifies that a new reader at the same local
 tuple cannot match an old reservation. The token identifies an error-reader
 instance, not a physical path: two independent readers for one socket have
-separate tokens, and owners must bind reservations to the correct reader.
+separate tokens, and owners must select the reader used for the operation.
+The caller still supplies the destination to feedback matching; connecting that
+destination and validating reader replacement need a production contract.
 Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.

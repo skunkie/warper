@@ -4,7 +4,11 @@
 
 //! One bounded, expiring correlation for a controlled router MTU error.
 
-use crate::{outer_errors::ReceivedError, packet_peer::Peer, path_mtu::PathBudget};
+use crate::{
+    outer_errors::{ErrorQueue, ReceivedError},
+    packet_peer::Peer,
+    path_mtu::PathBudget,
+};
 use nix::{errno::Errno, sys::socket::MsgFlags};
 use std::{
     fmt,
@@ -48,6 +52,24 @@ pub struct Reservation {
 
 impl Reservation {
     pub fn reserve(
+        &mut self,
+        packet: &[u8],
+        queue: &ErrorQueue,
+        reporter: IpAddr,
+        now: Duration,
+        lifetime: Duration,
+    ) -> Result<(), Error> {
+        self.reserve_with_identity(
+            packet,
+            queue.local(),
+            reporter,
+            now,
+            lifetime,
+            queue.identity(),
+        )
+    }
+
+    fn reserve_with_identity(
         &mut self,
         packet: &[u8],
         local: SocketAddr,
@@ -207,7 +229,7 @@ mod tests {
         let identity = Arc::new(());
         let mut reservation = Reservation::default();
         reservation
-            .reserve(
+            .reserve_with_identity(
                 &packet,
                 local,
                 reporter,
@@ -391,7 +413,7 @@ mod tests {
                 packet[..16].copy_from_slice(&stale.prefix);
                 packet[8] ^= 1;
                 reservation
-                    .reserve(
+                    .reserve_with_identity(
                         &packet,
                         stale.local,
                         stale.record.reporter.unwrap(),
@@ -467,11 +489,10 @@ mod tests {
             reservation
                 .reserve(
                     &packet,
-                    local,
+                    &first_queue,
                     received.record.reporter.unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
-                    &identity,
                 )
                 .unwrap();
             drop(first_queue);
@@ -515,7 +536,7 @@ mod tests {
             "[::1]:40000",
         ] {
             assert_eq!(
-                Reservation::default().reserve(
+                Reservation::default().reserve_with_identity(
                     &packet,
                     local.parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
@@ -537,7 +558,7 @@ mod tests {
             let mut packet = [0; 1432];
             packet[..16].copy_from_slice(&received.prefix);
             reservation
-                .reserve(
+                .reserve_with_identity(
                     &packet,
                     received.local,
                     received.record.reporter.unwrap(),
@@ -685,7 +706,7 @@ mod tests {
         let mut packet = [0; 1432];
         packet[0] = 4;
         assert_eq!(
-            reservation.reserve(
+            reservation.reserve_with_identity(
                 &packet,
                 "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
@@ -709,7 +730,7 @@ mod tests {
         assert_eq!(reservation.advance(Duration::MAX), Err(Error::InvalidTime));
         for lifetime in [Duration::ZERO, Duration::from_secs(11)] {
             assert_eq!(
-                Reservation::default().reserve(
+                Reservation::default().reserve_with_identity(
                     &packet,
                     "198.18.0.2:40000".parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
@@ -722,7 +743,7 @@ mod tests {
         }
         for packet in [Vec::new(), vec![0; 32], vec![0; 1537], vec![1; 64]] {
             assert_eq!(
-                Reservation::default().reserve(
+                Reservation::default().reserve_with_identity(
                     &packet,
                     "198.18.0.2:40000".parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
@@ -735,7 +756,7 @@ mod tests {
         }
         for reporter in ["0.0.0.0", "224.0.0.1", "::", "ff02::1"] {
             assert_eq!(
-                Reservation::default().reserve(
+                Reservation::default().reserve_with_identity(
                     &packet,
                     if reporter.contains(':') {
                         "[fd77:1::2]:40000"
@@ -753,7 +774,7 @@ mod tests {
             );
         }
         assert_eq!(
-            Reservation::default().reserve(
+            Reservation::default().reserve_with_identity(
                 &packet,
                 "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
@@ -765,7 +786,7 @@ mod tests {
         );
         let mut reservation = Reservation::default();
         reservation
-            .reserve(
+            .reserve_with_identity(
                 &packet,
                 "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
