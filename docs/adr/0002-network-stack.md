@@ -499,8 +499,8 @@ production recovery, or macOS behavior. See contract section 25 and
 A separate three-namespace routed probe now lowers and restores a private router
 egress veth while an established WireGuard path has TCP and UDP work in flight.
 The independent kernel peer checks exact recovery and no lost UDP replay for
-matching IPv4 and IPv6 families. The helper restores its own IPv6 address and
-independently removes links and processes. The passing runs did not observe OS
-network errors; physical NIC failure, cross-family paths, host TUN, production
+all inner/outer IPv4 and IPv6 combinations. The helper restores its own IPv6
+address and independently removes links and processes. The passing runs did not observe OS
+network errors; physical NIC failure, host TUN, production
 routing and macOS remain open. See contract section 26 and
-`target/evidence/phase-0/physical-path/README.md`.
+`target/evidence/phase-0/physical-cross/README.md`.

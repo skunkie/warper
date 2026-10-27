@@ -326,28 +326,30 @@ fn main() -> Result<()> {
             || arguments == ["--kernel-mtu-check"]
             || arguments == ["--router-mtu-check"]
             || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
-            || (arguments.len() == 3 && arguments[0] == "--physical-path-client")
-            || (arguments.len() == 3 && arguments[0] == "--physical-path-peer")
+            || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-client")
+            || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-peer")
             || arguments == ["--kernel-link-check"]
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY FAMILY | --physical-path-peer DIRECTORY FAMILY | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
     );
     if arguments.first().is_some_and(|argument| {
         argument == "--physical-path-client" || argument == "--physical-path-peer"
     }) {
         #[cfg(target_os = "linux")]
         {
-            let ipv6 = match arguments[2].as_str() {
-                "4" => false,
-                "6" => true,
+            let parse_family = |family: &str| match family {
+                "4" => Ok(false),
+                "6" => Ok(true),
                 _ => bail!("physical path family must be 4 or 6"),
             };
+            let inner_ipv6 = parse_family(&arguments[2])?;
+            let outer_ipv6 = parse_family(arguments.get(3).unwrap_or(&arguments[2]))?;
             let directory = std::path::Path::new(&arguments[1]);
             return if arguments[0] == "--physical-path-client" {
-                router_path::run(directory, ipv6)
+                router_path::run(directory, inner_ipv6, outer_ipv6)
             } else {
-                router_path::serve(directory, ipv6)
+                router_path::serve(directory, inner_ipv6)
             };
         }
         #[cfg(not(target_os = "linux"))]

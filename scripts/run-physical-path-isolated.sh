@@ -5,8 +5,8 @@
 
 # Internal private router fixture. Never configure the invoking host.
 set -euo pipefail
-if [[ $# -ne 2 || ! "$2" =~ ^(4|6)$ ]]; then
-    echo "usage: run-physical-path-isolated.sh PROBE {4|6}" >&2
+if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^(4|6)$ || ! "${3:-$2}" =~ ^(4|6)$ ]]; then
+    echo "usage: run-physical-path-isolated.sh PROBE INNER [OUTER] (families 4 or 6)" >&2
     exit 2
 fi
 mapping=$(cat /proc/self/uid_map)
@@ -16,7 +16,8 @@ if [[ "$mapping" == *$'\n'* || "$inside" != 0 || "$count" != 1 || -n "${extra:-}
     exit 1
 fi
 probe=$1
-family=$2
+inner_family=$2
+outer_family=${3:-$inner_family}
 control_directory=$(mktemp -d /tmp/warper-path.XXXXXXXX)
 mounted=false
 client_anchor=
@@ -126,7 +127,7 @@ nsenter --net="/proc/$server_anchor/ns/net" bash -eu -c '
 '
 helper=$(dirname "${BASH_SOURCE[0]}")/run-feasibility-isolated.sh
 timeout --signal=TERM --kill-after=2s 48s nsenter --net="/proc/$server_anchor/ns/net" \
-    bash "$helper" kernel-mtu "$probe" --physical-path-peer "$control_directory" "$family" > "$control_directory/peer.log" 2>&1 &
+    bash "$helper" kernel-mtu "$probe" --physical-path-peer "$control_directory" "$inner_family" "$outer_family" > "$control_directory/peer.log" 2>&1 &
 peer_process=$!
 wait_for() {
     local marker=$1
@@ -149,7 +150,7 @@ wait_for() {
 }
 wait_for peer.ready "$peer_process"
 timeout --signal=TERM --kill-after=2s 40s nsenter --net="/proc/$client_anchor/ns/net" \
-    "$probe" --physical-path-client "$control_directory" "$family" > "$control_directory/client.log" 2>&1 &
+    "$probe" --physical-path-client "$control_directory" "$inner_family" "$outer_family" > "$control_directory/client.log" 2>&1 &
 client_process=$!
 wait_for down.request "$client_process"
 ip link set dev routers0 down

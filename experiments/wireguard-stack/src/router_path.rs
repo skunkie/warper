@@ -20,12 +20,12 @@ use smoltcp::socket::{tcp, udp};
 
 use crate::{Endpoint, REQUEST, RESPONSE, kernel_peer, router_mtu};
 
-pub fn run(directory: &Path, ipv6: bool) -> Result<()> {
+pub fn run(directory: &Path, inner_ipv6: bool, outer_ipv6: bool) -> Result<()> {
     kernel_peer::require_mapped_namespace()?;
     validate_directory(directory)?;
-    let mut client = router_mtu::client(ipv6, ipv6)?;
+    let mut client = router_mtu::client(inner_ipv6, outer_ipv6)?;
     let local = client.transport.socket.local_addr()?;
-    let result = exchange(directory, ipv6, &mut client);
+    let result = exchange(directory, inner_ipv6, outer_ipv6, &mut client);
     drop(client);
     let cleanup = UdpSocket::bind(local).map(drop);
     finish_client(result, cleanup)
@@ -149,7 +149,7 @@ fn inner_address(ipv6: bool) -> Result<IpAddr> {
     Ok(if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?)
 }
 
-fn exchange(directory: &Path, ipv6: bool, client: &mut Endpoint) -> Result<()> {
+fn exchange(directory: &Path, ipv6: bool, outer_ipv6: bool, client: &mut Endpoint) -> Result<()> {
     let destination = inner_address(ipv6)?;
     let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     client
@@ -288,7 +288,7 @@ fn exchange(directory: &Path, ipv6: bool, client: &mut Endpoint) -> Result<()> {
             let done = *done_since.get_or_insert_with(Instant::now);
             if done.elapsed() >= Duration::from_millis(100) {
                 println!(
-                    "PASS private outer path restored: IPv6={ipv6}, down_at_least_ms=1200, elapsed_ms={}, lost_udp_not_replayed=true, tcp_write_once=true, observed_os_errors={transient_errors}",
+                    "PASS private outer path restored: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}, down_at_least_ms=1200, elapsed_ms={}, lost_udp_not_replayed=true, tcp_write_once=true, observed_os_errors={transient_errors}",
                     start.elapsed().as_millis()
                 );
                 return Ok(());

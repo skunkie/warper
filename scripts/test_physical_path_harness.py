@@ -13,7 +13,7 @@ import unittest
 
 
 class PhysicalPathHarnessTests(unittest.TestCase):
-    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False):
+    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False, families=("4",)):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -55,12 +55,14 @@ elif [[ "$1" == -j ]]; then echo '[]'; fi
         probe.write_text(f'''#!/usr/bin/env bash
 set -eu
 if [[ "$1" == --physical-path-peer ]]; then
+    echo "$3 $4" > "{root}/peer-families"
     if [[ "{early_peer}" == True ]]; then exit {peer_exit}; fi
     touch "$2/peer.ready"
     while [[ ! -f "$2/peer.stop" ]]; do sleep 0.01; done
     exit {peer_exit}
 fi
 if [[ "$1" == --physical-path-client ]]; then
+    echo "$3 $4" > "{root}/client-families"
     if [[ "{early_client}" == True ]]; then exit {client_exit}; fi
     if [[ "{kill_client}" == True ]]; then kill -KILL $$; fi
     touch "$2/down.request"
@@ -74,7 +76,7 @@ exit 2
         probe.chmod(0o700)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
         result = subprocess.run(
-            ["bash", str(scripts / "run-physical-path-isolated.sh"), str(probe), "4"],
+            ["bash", str(scripts / "run-physical-path-isolated.sh"), str(probe), *families],
             env=environment, capture_output=True, text=True, timeout=12,
         )
         return result, root
@@ -87,6 +89,21 @@ exit 2
         self.assertIn("link set dev routers0 up", commands)
         self.assertIn("link del dev routers0", commands)
         self.assertIn("CLEANUP physical-path links removed and verified", result.stdout)
+        self.assertEqual((root / "client-families").read_text().strip(), "4 4")
+
+    def test_cross_family_arguments_reach_both_peers(self):
+        for families in [("4", "6"), ("6", "4")]:
+            result, root = self.run_harness(families=families)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for role in ("client", "peer"):
+                self.assertEqual((root / f"{role}-families").read_text().strip(), " ".join(families))
+
+    def test_invalid_family_is_rejected_before_mutation(self):
+        for families in [("5",), ("4", "5")]:
+            result, root = self.run_harness(families=families)
+            self.assertEqual(result.returncode, 2)
+            self.assertFalse((root / "ip.log").exists())
+            self.assertFalse((root / "mount.log").exists())
 
     def test_child_failures_preserve_status_and_cleanup(self):
         for client_exit, peer_exit, expected in [(7, 0, 7), (0, 8, 8)]:

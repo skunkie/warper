@@ -356,14 +356,16 @@ the probe explicitly restores and verifies that address before proceeding. The
 helper independently deletes its interface on exit. This is not a physical-link
 or host TUN test. See contract section 25.
 
-The private routed-path interruption fixture runs each matching IP family in
+The private routed-path interruption fixture runs all inner/outer IP families in
 its own user, network and mount namespaces. It requires `mount`, `umount`,
 `nsenter`, `sysctl`, `ip`, `python3`, and permission to create those namespaces:
 
 ```sh
 cargo build --locked -p wireguard-stack
-for family in 4 6; do
-  PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 55s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-physical-path-isolated.sh "$PWD/target/debug/wireguard-stack" "$family"
+for inner in 4 6; do
+  for outer in 4 6; do
+    PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 55s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-physical-path-isolated.sh "$PWD/target/debug/wireguard-stack" "$inner" "$outer"
+  done
 done
 ```
 

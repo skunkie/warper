@@ -1124,7 +1124,7 @@ unmounts its private control state, preserving primary failure status. The
 control directory is validated for naming, ownership, mode, canonical path and
 a tmpfs mount; markers are created exclusively.
 
-This covers matching inner/outer IPv4 and IPv6 families on private virtual
-links. It does not establish behavior for a physical NIC, cross-family paths,
+This covers all inner/outer IPv4 and IPv6 family combinations on private virtual
+links. It does not establish behavior for a physical NIC,
 production route repair, host TUN interception, macOS, or concurrent network
 changes. An actual OS network error was not observed in the passing runs.
