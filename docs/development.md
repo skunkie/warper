@@ -561,5 +561,25 @@ The peer helper independently removes its WireGuard interface. IPv4/IPv6
 forwarding sysctls belong only to the private router network namespace. No host
 resolver, bus or physical configuration is touched. Supply `nsenter`, `sysctl`,
 `readlink` and `sleep` on PATH; `/usr/sbin` may be needed for sysctl. The full
-Phase0 gate remains open, especially remote-driven TCP, short quotes, router
-trust and concurrent/asymmetric physical paths. See contract section 23.
+Phase0 gate remains open, especially short quotes, router trust and
+concurrent/asymmetric physical paths. See contract section 23.
+
+The routed scope also runs four retained TCP cases. The peer's WireGuard link
+uses MTU 1500 so its advertised TCP MSS exercises the smaller routed outer path.
+For each case, the client writes 8192 bytes once and closes sending; only the
+first oversized TCP segment is encrypted/sent before waiting for its remote
+report. Shared validation and the original interface sizing action execute
+synchronously before releasing the reservation. Queue-busy retries preserve the
+report reservation and both budgets; invalid quotes/MTUs cannot retire queued
+TCP attempts. TCP retransmits from its unchanged send buffer under fresh
+WireGuard counters at inner MTU 1328 (outer IPv4) or 1312 (outer IPv6).
+
+The probe verifies the rejected sequence, original tuple, exact bytes,
+FIN/response and a 100ms final-ACK pumping interval. The kernel peer accepts two
+TCP connections per inner family, verifies the combined four TCP/eight UDP
+workload and 42828 application bytes, joins all four workers and rebinds its
+listeners. Both client and peer have explicit wall deadlines; real monotonic
+time drives TCP retries. The fixture's server/control/global bounds remain
+15/16/20 seconds. This extends the existing `--router-mtu-check` scope; there
+are no new flags. See contract section 24. General production migration/state,
+router trust and minimum-size IPv4 quotes remain unresolved.

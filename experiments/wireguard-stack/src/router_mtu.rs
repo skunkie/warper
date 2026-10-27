@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Routed remote ICMP correlation for a single encrypted UDP operation.
+//! Routed remote ICMP correlation for serialized encrypted UDP/TCP operations.
 
 use crate::{
     Endpoint, create_client, kernel_peer,
@@ -30,6 +30,8 @@ pub fn run() -> Result<()> {
             // Fresh synthetic sessions reuse one kernel peer identity. Space
             // initiations beyond its anti-flood window; this is fixture pacing.
             thread::sleep(Duration::from_millis(100));
+            crate::router_tcp::run_case(ipv6, outer_ipv6)?;
+            thread::sleep(Duration::from_millis(100));
         }
     }
     Ok(())
@@ -38,10 +40,18 @@ pub fn run() -> Result<()> {
 pub fn serve(directory: &Path) -> Result<()> {
     let (mut netlink, port) = kernel_peer::configure_with_port(9010)?;
     ensure!(port == 9010);
-    let mut workers = kernel_peer::Workers::start_udp([
-        UdpSocket::bind("10.66.66.10:9000")?,
-        UdpSocket::bind("[fd66:66::10]:9000")?,
-    ])?;
+    let mut workers = kernel_peer::Workers::start_router(
+        [
+            UdpSocket::bind("10.66.66.10:9000")?,
+            UdpSocket::bind("[fd66:66::10]:9000")?,
+        ],
+        [
+            std::net::TcpListener::bind("10.66.66.10:9000")?,
+            std::net::TcpListener::bind("[fd66:66::10]:9000")?,
+        ],
+        crate::router_tcp::payload(),
+        crate::router_tcp::RESPONSE,
+    )?;
     let result = (|| -> Result<()> {
         fs::write(directory.join("ready"), b"ready\n")?;
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -58,36 +68,45 @@ pub fn serve(directory: &Path) -> Result<()> {
     let report = match (result, cleanup) {
         (Err(primary), cleanup) => {
             return Err(primary.context(match cleanup {
-                Ok(_) => "router peer UDP workers joined".into(),
+                Ok(_) => "router peer workers joined".into(),
                 Err(error) => format!("router peer worker cleanup also failed: {error}"),
             }));
         }
         (Ok(()), report) => report?,
     };
     ensure!(
-        report.tcp == 0 && report.udp == 8 && report.bytes == 9944,
-        "router peer did not verify exact UDP counts and bytes"
+        report.tcp == 4
+            && report.udp == 8
+            && report.bytes == 9944 + 4 * (8192 + crate::router_tcp::RESPONSE.len()),
+        "router peer did not verify exact TCP/UDP counts and bytes"
     );
+    for address in ["10.66.66.10:9000", "[fd66:66::10]:9000"] {
+        drop(UdpSocket::bind(address)?);
+        drop(std::net::TcpListener::bind(address)?);
+    }
     kernel_peer::verify_handshake(&mut netlink, false)?;
     println!(
-        "PASS independent router peer: udp={}, application_bytes={}, workers_joined=true",
-        report.udp, report.bytes
+        "PASS independent router peer: tcp={}, udp={}, application_bytes={}, workers_joined=true",
+        report.tcp, report.udp, report.bytes
     );
     Ok(())
 }
 
-fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
+pub(super) fn reporter(outer_ipv6: bool) -> Result<IpAddr> {
+    Ok(if outer_ipv6 {
+        "fd77:1::1"
+    } else {
+        "198.18.0.1"
+    }
+    .parse()?)
+}
+
+pub(super) fn client(ipv6: bool, outer_ipv6: bool) -> Result<Endpoint> {
     let remote: SocketAddr = match (ipv6, outer_ipv6) {
         (false, false) => "198.19.0.2:9010",
         (true, false) => "198.19.0.2:9010",
         (false, true) => "[fd77:2::2]:9010",
         (true, true) => "[fd77:2::2]:9010",
-    }
-    .parse()?;
-    let reporter: IpAddr = if outer_ipv6 {
-        "fd77:1::1"
-    } else {
-        "198.18.0.1"
     }
     .parse()?;
     let (_, transport) = create_client(ipv6, remote)?;
@@ -104,6 +123,12 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
     client.transport.socket.set_nonblocking(true)?;
     client.transport.path_budget = PathBudget::new(1600, outer_ipv6)?;
     client.transport.socket.connect(remote)?;
+    Ok(client)
+}
+
+fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
+    let mut client = client(ipv6, outer_ipv6)?;
+    let reporter = reporter(outer_ipv6)?;
     let address = client.transport.socket.local_addr()?;
     let queue = ErrorQueue::enable_remote_probe(&client.transport.socket)?;
     let result = exchange(&mut client, &queue, ipv6, reporter);

@@ -59,7 +59,7 @@ impl Workers {
         workers.handles.push(
             thread::Builder::new()
                 .name("kernel-peer-tcp".into())
-                .spawn(move || tcp_server(listener, &stop, deadline, REQUEST, RESPONSE))?,
+                .spawn(move || tcp_server(&listener, &stop, deadline, REQUEST, RESPONSE))?,
         );
         let stop = workers.stop.clone();
         match thread::Builder::new()
@@ -91,7 +91,7 @@ impl Workers {
         let deadline = Instant::now() + Duration::from_secs(6);
         let handle = thread::Builder::new()
             .name("kernel-mtu-tcp".into())
-            .spawn(move || tcp_server(listener, &worker_stop, deadline, &request, response))?;
+            .spawn(move || tcp_server(&listener, &worker_stop, deadline, &request, response))?;
         Ok(Self {
             stop,
             handles: vec![handle],
@@ -119,6 +119,44 @@ impl Workers {
                     return Err(anyhow::Error::new(primary).context(match cleanup {
                         Ok(_) => "prior UDP workers joined".into(),
                         Err(error) => format!("UDP worker startup cleanup also failed: {error}"),
+                    }));
+                }
+            }
+        }
+        Ok(workers)
+    }
+
+    pub(super) fn start_router(
+        sockets: [UdpSocket; 2],
+        listeners: [TcpListener; 2],
+        request: Vec<u8>,
+        response: &'static [u8],
+    ) -> Result<Self> {
+        for listener in &listeners {
+            listener.set_nonblocking(true)?;
+        }
+        let mut workers = Self::start_udp(sockets)?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        for listener in listeners {
+            let stop = workers.stop.clone();
+            let request = request.clone();
+            match thread::Builder::new()
+                .name("router-peer-tcp".into())
+                .spawn(move || {
+                    let mut report = Report::default();
+                    for _ in 0..2 {
+                        let completed = tcp_server(&listener, &stop, deadline, &request, response)?;
+                        report.tcp += completed.tcp;
+                        report.bytes += completed.bytes;
+                    }
+                    Ok(report)
+                }) {
+                Ok(handle) => workers.handles.push(handle),
+                Err(primary) => {
+                    let cleanup = workers.finish();
+                    return Err(anyhow::Error::new(primary).context(match cleanup {
+                        Ok(_) => "prior router workers joined".into(),
+                        Err(error) => format!("router worker startup cleanup also failed: {error}"),
                     }));
                 }
             }
@@ -344,7 +382,7 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
 }
 
 fn tcp_server(
-    listener: TcpListener,
+    listener: &TcpListener,
     stop: &AtomicBool,
     deadline: Instant,
     expected_request: &[u8],
@@ -500,6 +538,37 @@ mod tests {
         assert!(workers.handles.is_empty());
         for address in addresses {
             UdpSocket::bind(address).unwrap();
+        }
+    }
+
+    #[test]
+    fn router_workers_join_incomplete_tcp_and_release_all_listeners() {
+        let sockets = [
+            UdpSocket::bind("127.0.0.1:0").unwrap(),
+            UdpSocket::bind("127.0.0.1:0").unwrap(),
+        ];
+        let listeners = [
+            TcpListener::bind("127.0.0.1:0").unwrap(),
+            TcpListener::bind("127.0.0.1:0").unwrap(),
+        ];
+        let udp_addresses = sockets
+            .each_ref()
+            .map(|socket| socket.local_addr().unwrap());
+        let tcp_addresses = listeners
+            .each_ref()
+            .map(|listener| listener.local_addr().unwrap());
+        let mut workers =
+            Workers::start_router(sockets, listeners, b"sample".to_vec(), b"reply").unwrap();
+        assert!(
+            workers.finish().is_err(),
+            "incomplete TCP cases cannot report router workload success"
+        );
+        assert!(workers.handles.is_empty());
+        for address in udp_addresses {
+            UdpSocket::bind(address).unwrap();
+        }
+        for address in tcp_addresses {
+            TcpListener::bind(address).unwrap();
         }
     }
 

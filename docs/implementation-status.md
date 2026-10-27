@@ -96,8 +96,13 @@ fixture now matches genuine remote-router IPv4/IPv6 MTU errors to one encrypted
 UDP operation in all four family combinations; it reduces the outer budget,
 prevents later oversized sends, delivers distinct safe messages and verifies
 peer counts plus independent namespace/interface cleanup
-(`target/evidence/phase-0/router-mtu/README.md`). Remote-driven TCP sizing,
-short quotes, general router trust, concurrent/physical-path policy and error propagation,
+(`target/evidence/phase-0/router-mtu/README.md`). The same routed scope now
+uses validated remote feedback to resize a retained TCP connection, preserving
+one 8192-byte write, FIN/response, original tuple and rejected-sequence retry in
+all four family combinations. Queue-busy retry retains the reservation until
+both budgets and sizing commit; kernel workers verify the combined workload
+(`target/evidence/phase-0/router-tcp/README.md`). Short quotes, general router
+trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 

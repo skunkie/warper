@@ -458,5 +458,21 @@ Private namespace forwarding, veth retirement, joined peer workers/processes and
 independent WireGuard removal establish controlled cleanup. No new unsafe code,
 fork or dependency is introduced. This is controlled correlation, not ICMP
 cryptographic authentication or a production router-trust policy. Remote-driven
-TCP, shorter quotes and concurrent/asymmetric physical paths keep the ADR open.
+TCP policy beyond this fixture, shorter quotes and concurrent/asymmetric
+physical paths keep the ADR open.
 See contract section 23 and `target/evidence/phase-0/router-mtu/README.md`.
+
+The routed fixture now includes retained TCP sizing after a remote report. The
+owner sends exactly one oversized segment, matches its public encrypted header,
+then validates and retires only queued attempts backed by the original TCP
+socket before resizing. The reservation commits after the shared sizing action
+commits the outer budget. Busy input permits retry without losing the matched
+reservation; invalid/unsupported reports preserve both budgets and output.
+All four inner/outer family combinations deliver one 8192-byte write with FIN,
+retry the rejected sequence, preserve the tuple and receive the exact response.
+The independent kernel peer verifies four TCP connections plus eight UDP
+messages, joins its workers and releases listeners. The same private routed
+namespace harness independently removes interfaces and links. This establishes
+controlled remote-path TCP recovery; short quotes, general trust/physical-path
+policy and production interface state/entropy remain unresolved. Contract
+section 24 and `target/evidence/phase-0/router-tcp/README.md` record the boundary.

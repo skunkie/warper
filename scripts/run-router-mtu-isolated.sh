@@ -108,7 +108,7 @@ nsenter --net="/proc/$server_anchor/ns/net" bash -eu -c '
 '
 helper=$(dirname "${BASH_SOURCE[0]}")/run-feasibility-isolated.sh
 timeout --signal=TERM --kill-after=2s 16s nsenter --net="/proc/$server_anchor/ns/net" \
-    bash "$helper" kernel "$probe" --router-mtu-peer "$control_directory" > "$control_directory/server.log" 2>&1 &
+    bash "$helper" kernel-mtu "$probe" --router-mtu-peer "$control_directory" > "$control_directory/server.log" 2>&1 &
 peer_process=$!
 ready=false
 for _ in {1..300}; do

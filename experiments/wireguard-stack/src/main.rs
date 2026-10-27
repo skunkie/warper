@@ -37,6 +37,8 @@ mod outer_remote;
 mod outer_tcp_probe;
 #[cfg(target_os = "linux")]
 mod router_mtu;
+#[cfg(target_os = "linux")]
+mod router_tcp;
 
 use std::{
     fmt, io,

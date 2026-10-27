@@ -6,7 +6,7 @@
 
 use crate::{
     Endpoint, create_pair_with_outer,
-    outer_errors::{ErrorQueue, LocalMtu},
+    outer_errors::ErrorQueue,
     packet_peer::Peer,
     path_mtu::PathBudget,
     pmtu_probe::{PathFixture, drain, plain_tcp},
@@ -39,12 +39,12 @@ impl std::error::Error for Error {}
 pub(super) fn apply_outer(
     peer: &mut Peer,
     budget: &mut PathBudget,
-    report: LocalMtu,
+    mtu: usize,
     now: Duration,
 ) -> Result<usize> {
     let tick = i64::try_from(now.as_millis())?;
     let mut candidate = *budget;
-    if !candidate.reduce(report.mtu)? {
+    if !candidate.reduce(mtu)? {
         return Ok(0);
     }
     let limit = candidate
@@ -192,7 +192,7 @@ fn transfer(
             let retired = apply_outer(
                 &mut client.peer,
                 &mut client.transport.path_budget,
-                report,
+                report.mtu,
                 now,
             )?;
             ensure!(
@@ -350,13 +350,7 @@ mod tests {
                 let mut budget = PathBudget::new(1600, outer_ipv6).unwrap();
                 let queued = peer.device.outgoing.len();
                 assert_eq!(
-                    apply_outer(
-                        &mut peer,
-                        &mut budget,
-                        LocalMtu { mtu: 1400 },
-                        Duration::ZERO
-                    )
-                    .unwrap(),
+                    apply_outer(&mut peer, &mut budget, 1400, Duration::ZERO).unwrap(),
                     queued
                 );
                 assert!(peer.device.outgoing.is_empty());
@@ -374,13 +368,7 @@ mod tests {
                     tuple
                 );
                 assert_eq!(
-                    apply_outer(
-                        &mut peer,
-                        &mut budget,
-                        LocalMtu { mtu: 1500 },
-                        Duration::ZERO
-                    )
-                    .unwrap(),
+                    apply_outer(&mut peer, &mut budget, 1500, Duration::ZERO).unwrap(),
                     0
                 );
                 assert_eq!(budget.outer_mtu(), 1400);
@@ -390,13 +378,7 @@ mod tests {
         peer.device.outgoing.clear();
         peer.device.configure_mtu(1280).unwrap();
         let mut budget = PathBudget::new(1600, false).unwrap();
-        apply_outer(
-            &mut peer,
-            &mut budget,
-            LocalMtu { mtu: 1400 },
-            Duration::ZERO,
-        )
-        .unwrap();
+        apply_outer(&mut peer, &mut budget, 1400, Duration::ZERO).unwrap();
         assert_eq!(peer.device.capabilities().max_transmission_unit, 1280);
     }
 
@@ -406,12 +388,12 @@ mod tests {
             for scenario in 0..8 {
                 let mut peer = pending_tcp(ipv6);
                 let mut budget = PathBudget::new(1600, false).unwrap();
-                let mut report = LocalMtu { mtu: 1400 };
+                let mut mtu = 1400;
                 let mut now = Duration::ZERO;
                 match scenario {
                     0 => peer.device.inject(vec![0]).unwrap(),
                     1 => {
-                        report.mtu = 1300;
+                        mtu = 1300;
                     }
                     2 => {
                         now = Duration::MAX;
@@ -453,7 +435,7 @@ mod tests {
                 let queued = peer.device.outgoing.clone();
                 let ingress = peer.device.has_ingress();
                 assert!(
-                    apply_outer(&mut peer, &mut budget, report, now).is_err(),
+                    apply_outer(&mut peer, &mut budget, mtu, now).is_err(),
                     "scenario {scenario}"
                 );
                 assert_eq!(budget.outer_mtu(), 1600, "scenario {scenario}");

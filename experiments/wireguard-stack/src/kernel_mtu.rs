@@ -153,7 +153,7 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue, payload: &[u8]) -> Result
                 apply_outer(
                     &mut client.peer,
                     &mut client.transport.path_budget,
-                    report,
+                    report.mtu,
                     now
                 )? > 0,
                 "kernel fixture did not retire pending TCP attempts"

@@ -142,6 +142,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link set routerc0 mtu 1600 up", commands)
         self.assertIn("link set routers0 mtu 1400 up", commands)
+        self.assertIn("link set dev wg-feasibility mtu 1500 up", commands)
         self.assertIn("link del dev routerc0", commands)
         self.assertIn("link del dev routers0", commands)
         forwarding = (evidence.parents[3] / "sysctl-commands.log").read_text()
@@ -153,7 +154,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertIn("namespace processes reaped", log)
         outcome = (evidence / "result.txt").read_text()
         self.assertIn("router_mtu_probe_exit=0", outcome)
-        self.assertIn("NOT RUN retained TCP sizing from remote errors", outcome)
+        self.assertIn("NOT RUN short-quote support", outcome)
 
     def test_router_failures_preserve_primary_exit_and_still_retire_links(self):
         for probe_exit, peer_exit, cleanup_exit, expected in [(7, 0, 0, 7), (0, 9, 0, 9), (7, 9, 0, 7), (0, 0, 9, 1)]:

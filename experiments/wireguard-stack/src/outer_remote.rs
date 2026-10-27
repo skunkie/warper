@@ -4,7 +4,7 @@
 
 //! One bounded, expiring correlation for a controlled router MTU error.
 
-use crate::{outer_errors::ReceivedError, path_mtu::PathBudget};
+use crate::{outer_errors::ReceivedError, packet_peer::Peer, path_mtu::PathBudget};
 use nix::{errno::Errno, sys::socket::MsgFlags};
 use std::{
     fmt,
@@ -87,6 +87,51 @@ impl Reservation {
         budget: &mut PathBudget,
         now: Duration,
     ) -> anyhow::Result<bool> {
+        let mtu = self.reduction(received, remote, now)?;
+        let changed = budget.reduce(mtu)?;
+        self.cancel();
+        Ok(changed)
+    }
+
+    pub fn apply_tcp(
+        &mut self,
+        received: &ReceivedError,
+        remote: SocketAddr,
+        peer: &mut Peer,
+        budget: &mut PathBudget,
+        now: Duration,
+    ) -> anyhow::Result<usize> {
+        let mtu = self.reduction(received, remote, now)?;
+        let retired = crate::outer_tcp_probe::apply_outer(peer, budget, mtu, now)?;
+        self.cancel();
+        Ok(retired)
+    }
+
+    pub fn advance(&mut self, now: Duration) -> Result<(), Error> {
+        if now < self.now || now.as_millis() > i64::MAX as u128 {
+            return Err(Error::InvalidTime);
+        }
+        self.now = now;
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| now >= pending.deadline)
+        {
+            self.cancel();
+            return Err(Error::Timeout);
+        }
+        Ok(())
+    }
+
+    pub fn cancel(&mut self) {
+        self.pending = None;
+    }
+    fn reduction(
+        &mut self,
+        received: &ReceivedError,
+        remote: SocketAddr,
+        now: Duration,
+    ) -> anyhow::Result<usize> {
         self.advance(now)?;
         let pending = self.pending.as_ref().ok_or(Error::MissingReservation)?;
         let record = &received.record;
@@ -115,31 +160,7 @@ impl Reservation {
         {
             return Err(Error::Unmatched.into());
         }
-        let mut candidate = *budget;
-        let changed = candidate.reduce(record.mtu as usize)?;
-        *budget = candidate;
-        self.cancel();
-        Ok(changed)
-    }
-
-    pub fn advance(&mut self, now: Duration) -> Result<(), Error> {
-        if now < self.now || now.as_millis() > i64::MAX as u128 {
-            return Err(Error::InvalidTime);
-        }
-        self.now = now;
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| now >= pending.deadline)
-        {
-            self.cancel();
-            return Err(Error::Timeout);
-        }
-        Ok(())
-    }
-
-    pub fn cancel(&mut self) {
-        self.pending = None;
+        Ok(record.mtu as usize)
     }
 }
 
@@ -283,6 +304,129 @@ mod tests {
                 assert!(reservation.pending.is_some());
                 assert_eq!(budget.outer_mtu(), 1600);
             }
+        }
+    }
+
+    #[test]
+    fn tcp_sizing_keeps_the_reservation_until_queue_busy_retry_commits() {
+        use smoltcp::{phy::Device, socket::tcp};
+        for ipv6 in [false, true] {
+            let (mut reservation, received, remote) = fixture(ipv6);
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            let target: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+            peer.sockets
+                .get_mut::<tcp::Socket>(peer.tcp)
+                .connect(peer.interface.context(), (target, 9000), (source, 40001))
+                .unwrap();
+            peer.poll(0);
+            let queued = peer.device.outgoing.clone();
+            let tuple = {
+                let socket = peer.sockets.get::<tcp::Socket>(peer.tcp);
+                (
+                    socket.local_endpoint(),
+                    socket.remote_endpoint(),
+                    socket.state(),
+                )
+            };
+            peer.device.inject(vec![0]).unwrap();
+            let mut budget = PathBudget::new(1600, ipv6).unwrap();
+            let error = reservation
+                .apply_tcp(&received, remote, &mut peer, &mut budget, Duration::ZERO)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            assert!(reservation.pending.is_some());
+            assert_eq!(budget.outer_mtu(), 1600);
+            assert_eq!(peer.device.outgoing, queued);
+            assert_eq!(peer.device.capabilities().max_transmission_unit, 1500);
+            peer.poll(1);
+            assert!(!peer.device.has_ingress());
+            assert_eq!(
+                reservation
+                    .apply_tcp(
+                        &received,
+                        remote,
+                        &mut peer,
+                        &mut budget,
+                        Duration::from_millis(1)
+                    )
+                    .unwrap(),
+                queued.len()
+            );
+            assert!(reservation.pending.is_none());
+            assert_eq!(budget.outer_mtu(), 1400);
+            assert_eq!(
+                peer.device.capabilities().max_transmission_unit,
+                if ipv6 { 1312 } else { 1328 }
+            );
+            let socket = peer.sockets.get::<tcp::Socket>(peer.tcp);
+            assert_eq!(
+                (
+                    socket.local_endpoint(),
+                    socket.remote_endpoint(),
+                    socket.state()
+                ),
+                tuple
+            );
+        }
+    }
+
+    #[test]
+    fn tcp_rejects_invalid_feedback_limits_or_time_before_retiring_attempts() {
+        use smoltcp::{phy::Device, socket::tcp};
+        for case in 0..5 {
+            let (mut reservation, mut received, remote) = fixture(false);
+            let source: IpAddr = "10.66.66.2".parse().unwrap();
+            let target: IpAddr = "10.66.66.10".parse().unwrap();
+            let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+            peer.sockets
+                .get_mut::<tcp::Socket>(peer.tcp)
+                .connect(peer.interface.context(), (target, 9000), (source, 40001))
+                .unwrap();
+            peer.poll(0);
+            let queued = peer.device.outgoing.clone();
+            match case {
+                0 => received.prefix[8] ^= 1,
+                1 => received.record.mtu = 1300,
+                2 => {
+                    received.record.mtu = 0;
+                }
+                3 | 4 => {}
+                _ => unreachable!(),
+            }
+            let mut budget = PathBudget::new(1600, false).unwrap();
+            let now = match case {
+                3 => Duration::from_secs(1),
+                4 => Duration::MAX,
+                _ => Duration::ZERO,
+            };
+            let error = reservation
+                .apply_tcp(&received, remote, &mut peer, &mut budget, now)
+                .unwrap_err();
+            if case == 1 {
+                assert_eq!(
+                    error.downcast_ref::<crate::path_mtu::Error>(),
+                    Some(&crate::path_mtu::Error::PathTooSmall)
+                );
+            } else {
+                let expected = match case {
+                    3 => Error::Timeout,
+                    4 => Error::InvalidTime,
+                    _ => Error::Unmatched,
+                };
+                assert_eq!(error.downcast_ref::<Error>(), Some(&expected));
+            }
+            assert_eq!(reservation.pending.is_some(), case != 3);
+            assert_eq!(peer.device.outgoing, queued);
+            assert_eq!(budget.outer_mtu(), 1600);
+            assert_eq!(peer.device.capabilities().max_transmission_unit, 1500);
         }
     }
 

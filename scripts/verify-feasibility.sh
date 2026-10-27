@@ -122,7 +122,7 @@ cat "$run_directory/probe.log"
     echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
     if [[ "$scope" == --router-mtu-check ]]; then
         echo "router_mtu_probe_exit=$status"
-        echo "NOT RUN retained TCP sizing from remote errors or general physical-path policy"
+        echo "NOT RUN short-quote support or general physical-path policy"
     fi
     if [[ "$scope" == --kernel-mtu-check ]]; then
         echo "kernel_mtu_probe_exit=$status"

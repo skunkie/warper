@@ -301,6 +301,7 @@ explicit no-fragment PROBE socket mode to measure remote errors independently
 of cached PMTU; the declared budget continues to guard sends. The internal
 `--router-mtu-peer DIRECTORY` mode is launched only by the harness in the peer
 namespace; its private ready/stop files contain no keys or payloads. It accepts
-no rekey combination and verifies one failed UDP operation without replay,
-matching a router report before reducing the budget. Remote-driven TCP sizing
-and general path trust remain unimplemented.
+no rekey combination. For each family combination it verifies a failed UDP
+operation without replay and a retained TCP connection across sizing, matching
+a router report before committing each reduction. General path trust and
+shorter quotes remain unresolved.

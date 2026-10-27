@@ -979,6 +979,37 @@ namespace/peer processes and verifies veth and WireGuard interface retirement
 on success or failure. Forwarding sysctls are changed only in the private
 router namespace. No resolver, bus or host configuration is changed.
 
-This probe does not yet resize retained TCP from remote errors or establish
-general router trust, concurrent/asymmetric physical paths, roaming, short
+Section 24 adds retained TCP sizing from the same remote classification.
+This does not establish general router trust, concurrent/asymmetric physical paths, roaming, short
 IPv4 quote support, sub-minimum MTU policy or full PMTU acceptance.
+
+## 24. Experimental Remote-Router Retained TCP Sizing
+
+The routed MTU scope adds one TCP connection per inner/outer family combination
+against the independent kernel peer. The peer's private WireGuard link uses
+MTU 1500; routed ingress/egress remain 1600/1400. Each connection writes 8192
+synthetic bytes once and closes sending. The owner encrypts and sends only its
+first oversized TCP segment, reserves the public WireGuard header and waits for
+a genuine matching remote report before processing any remaining output.
+The initial send must succeed locally; local EMSGSIZE is not substitute evidence.
+
+Remote classification is shared with UDP. The synchronous TCP operation
+validates the report, checks all queued packet attempts and resizes the original
+SocketSet/interface through the existing sizing action. Only after sizing and
+outer-budget commit succeed may the reservation be released. Queue-busy,
+foreign/mixed output, invalid quotes, unsupported MTU and invalid clocks leave
+budgets, queued attempts and the reservation intact (except explicit expiry).
+There is no await or application progress between validation and commit.
+
+After reduction, TCP generates fresh encrypted retries from its retained send
+buffer. The probe checks the rejected sequence, original tuple, exact request,
+FIN and response/EOF, no inner feedback, a final ACK pumping interval and joined
+peer workers. All outgoing retries must fit the new inner limit, including
+WireGuard overhead/padding in the outer budget. No application write or
+ciphertext is replayed by the owner. The peer verifies four TCP connections
+alongside the existing eight UDP messages, then releases listeners; the harness
+independently retires its interfaces, links and namespace processes.
+
+The single-operation, known-router, minimum-16-byte quote, explicit PROBE mode
+and interface-state/entropy restrictions remain. This is controlled routed TCP
+recovery, not general concurrent/asymmetric path or production trust policy.
