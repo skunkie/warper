@@ -167,6 +167,12 @@ queued datagram from that peer passes the source check in both families. The
 feedback reader token does not identify received datagram generations, so the
 experimental owner cannot yet safely attribute those datagrams across peer
 transitions (`target/evidence/phase-0/returned-peer-datagram/README.md`).
+A separate loopback experiment replaces the socket while the previous socket
+is still bound, then drops it before returning to the first peer. This discards
+the already-queued datagram in both families and uses a different local port
+for each immediate replacement. It does not address delayed datagrams after
+port reuse, route publication, failure recovery, or integration with the
+WireGuard transport (`target/evidence/phase-0/replaced-peer-socket/README.md`).
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
