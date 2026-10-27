@@ -601,9 +601,11 @@ kernel peer verifies that failed UDP payloads are not replayed.
 The Linux `outer_owner` experiment constructs a private socket and serializes
 operations through exclusive mutable access. Its peer transition revokes the
 old reservation and reader before creating a new socket on the same local IP
-and an ephemeral port; failed transitions stay unavailable until recovery.
-This changes the local port and does not protect against delayed packets after
-an older port is reused. Run its controlled loopback tests with
+and an ephemeral port; failed transitions stay unavailable until recovery. Up
+to eight retired sockets stay bound until the owner is dropped; the next
+transition returns a capacity error without changing the current flow. This
+bounded fixture policy does not protect packets delayed beyond owner lifetime
+or establish production retirement timing. Run its controlled loopback tests with
 `cargo test --locked -p wireguard-stack outer_owner::tests`. The routed fixture
 uses the owner for encrypted sends, genuine feedback, and a distinct application
 datagram exchange after recovery. The owner does not replace the general

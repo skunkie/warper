@@ -156,16 +156,17 @@ the WireGuard transport. The routed fixture now also completes a distinct UDP
 application exchange through that owner after recovery in all four family
 combinations (`target/evidence/phase-0/owned-exchange/README.md`). Concurrent
 transitions and production path attribution remain unverified.
-The owner now replaces its socket during peer transitions, retaining the old
-binding until the replacement is ready. This discards already-queued old-peer
-datagrams and changes the local port in both families; transition failures stay
-unavailable until recovery. The routed kernel-peer fixture still completes an
+The owner now replaces its socket during peer transitions and retains at most
+eight retired sockets until owner destruction. This prevents local port reuse
+within the owner lifetime, changes the local port in both families, and returns
+a typed capacity error before changing the active flow when full. Transition
+setup failures stay unavailable until recovery. The routed kernel-peer fixture completes an
 encrypted exchange after transition in all four family combinations
-(`target/evidence/phase-0/owner-replacement/README.md`). Earlier evidence showed
+(`target/evidence/phase-0/retired-socket/README.md`). Earlier evidence showed
 that reconnecting the same socket could accept a queued datagram after returning
-to the original peer. Replacement does not address delayed datagrams after
-port reuse, route publication, concurrent transitions, or integration with the
-general WireGuard transport.
+to the original peer. This bounded experiment has no timer-based retirement;
+delayed traffic after owner destruction, route publication, concurrent
+transitions, and general WireGuard transport integration remain unresolved.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

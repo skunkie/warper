@@ -16,9 +16,12 @@ use crate::{
     path_mtu::PathBudget,
 };
 
+const MAX_RETIRED_SOCKETS: usize = 8;
+
 #[derive(Debug, Eq, PartialEq)]
 enum Error {
     InvalidPeer,
+    RetiredSocketLimit,
     Unavailable,
 }
 
@@ -33,6 +36,7 @@ impl std::error::Error for Error {}
 pub(super) struct Owner {
     socket: UdpSocket,
     queue: Option<ErrorQueue>,
+    retired_sockets: Vec<UdpSocket>,
     reservation: Reservation,
     budget: PathBudget,
     remote_probe: bool,
@@ -67,6 +71,7 @@ impl Owner {
         Ok(Self {
             socket,
             queue: Some(queue),
+            retired_sockets: Vec::with_capacity(MAX_RETIRED_SOCKETS),
             reservation: Reservation::default(),
             budget,
             remote_probe,
@@ -124,8 +129,11 @@ impl Owner {
         let mut local = self.socket.local_addr()?;
         Self::validate_peer(local, remote)?;
         let budget = PathBudget::new(outer_mtu, remote.is_ipv6())?;
-        // Retire feedback first; retain the old socket until a replacement is
-        // ready so its queued datagrams cannot enter the new socket.
+        if self.retired_sockets.len() == MAX_RETIRED_SOCKETS {
+            return Err(Error::RetiredSocketLimit.into());
+        }
+        // Retire feedback first; keep old sockets bound until owner destruction
+        // so their local ports cannot receive traffic for a later generation.
         self.reservation.cancel();
         self.queue = None;
         local.set_port(0);
@@ -133,7 +141,8 @@ impl Owner {
         socket.set_nonblocking(true)?;
         connect(&socket, remote)?;
         let queue = Self::enable_queue(&socket, self.remote_probe)?;
-        self.socket = socket;
+        self.retired_sockets
+            .push(std::mem::replace(&mut self.socket, socket));
         self.budget = budget;
         self.queue = Some(queue);
         Ok(())
@@ -459,6 +468,65 @@ mod tests {
     }
 
     #[test]
+    fn retired_ports_remain_reserved_until_owner_drop_and_capacity_refusal_preserves_flow() {
+        for ipv6 in [false, true] {
+            let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let second = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut owner = Owner::new(
+                crate::loopback_address(ipv6),
+                first.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let mut addresses = vec![owner.local_addr().unwrap()];
+            for index in 0..MAX_RETIRED_SOCKETS {
+                let remote = if index % 2 == 0 { &second } else { &first };
+                owner.reconnect(remote.local_addr().unwrap(), 1600).unwrap();
+                let local = owner.local_addr().unwrap();
+                assert!(!addresses.contains(&local), "retained port was reused");
+                addresses.push(local);
+            }
+            let old_local = addresses[0];
+            assert_eq!(
+                UdpSocket::bind(old_local).unwrap_err().kind(),
+                io::ErrorKind::AddrInUse
+            );
+            first.send_to(b"delayed old datagram", old_local).unwrap();
+            assert!(owner.receive_datagram(&mut [0; 128]).unwrap().is_none());
+            let current = packet(42);
+            owner
+                .send_reserved(&current, reporter, Duration::ZERO)
+                .unwrap();
+            let feedback = report(&owner, &current, reporter);
+            let local = owner.local_addr().unwrap();
+            assert_eq!(
+                owner
+                    .reconnect(second.local_addr().unwrap(), 1600)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::RetiredSocketLimit)
+            );
+            assert_eq!(owner.local_addr().unwrap(), local);
+            assert!(owner.apply(&feedback, Duration::ZERO).unwrap());
+            assert_eq!(owner.outer_mtu(), 1400);
+            let mut buffer = [0; 128];
+            first
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let length = first.recv(&mut buffer).unwrap();
+            assert_eq!(&buffer[..length], &current);
+            drop(owner);
+            let sockets = addresses
+                .into_iter()
+                .map(UdpSocket::bind)
+                .collect::<io::Result<Vec<_>>>()
+                .unwrap();
+            drop(sockets);
+        }
+    }
+
+    #[test]
     fn replacing_socket_discards_queued_datagram_before_returning_to_peer() {
         for ipv6 in [false, true] {
             let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
@@ -611,6 +679,16 @@ mod tests {
                 Some(&crate::outer_remote::Error::Unmatched)
             );
             assert_eq!(owner.budget.outer_mtu(), 1600);
+            for _ in 1..MAX_RETIRED_SOCKETS {
+                owner.reconnect(other.local_addr().unwrap(), 1600).unwrap();
+            }
+            assert_eq!(
+                owner
+                    .reconnect(first.local_addr().unwrap(), 1600)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::RetiredSocketLimit)
+            );
             drop(owner);
             UdpSocket::bind(local).unwrap();
         }

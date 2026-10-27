@@ -1028,8 +1028,15 @@ explicit recovery. The socket, reader and validated path budget are published
 together on success. Loopback tests cover change and return, queued old-peer
 datagrams, stale feedback even with a matching header, validation refusal,
 and an injected failure after the replacement socket connects. The original
-error is preserved and recovery creates a new socket and reader. A previously
-used port may later be reused, so delayed datagrams remain a separate risk.
+error is preserved and recovery creates a new socket and reader. This experiment
+retains at most eight retired sockets, bound until owner destruction, so those
+local ports cannot be reused while this owner is active. An additional
+transition fails with a typed capacity error before invalidating the current
+reader or reservation. Failed replacement does not consume a retired slot.
+Each retained kernel socket has its own bounded receive buffer. This deliberately
+bounded experiment has no retirement timer and is not a production policy;
+traffic delayed beyond owner destruction and ports used before this owner remain
+outside the protection.
 The routed probe encrypts real inner traffic with BoringTun and sends it through
 the owner and completes a distinct UDP application exchange through it after
 recovery, verifying the returned payload and source tuple. The owner does not
