@@ -308,6 +308,28 @@ mod tests {
     }
 
     #[test]
+    fn every_short_quote_preserves_the_reservation_and_budget() {
+        for ipv6 in [false, true] {
+            for length in 0..16 {
+                let (mut reservation, mut received, remote) = fixture(ipv6);
+                received.quoted_len = length;
+                received.prefix[length..].fill(0);
+                let mut budget = PathBudget::new(1600, ipv6).unwrap();
+                assert_eq!(
+                    reservation
+                        .apply(&received, remote, &mut budget, Duration::ZERO)
+                        .unwrap_err()
+                        .downcast_ref::<Error>(),
+                    Some(&Error::Unmatched),
+                    "IPv6 {ipv6}, quote length {length}"
+                );
+                assert!(reservation.pending.is_some());
+                assert_eq!(budget.outer_mtu(), 1600);
+            }
+        }
+    }
+
+    #[test]
     fn tcp_sizing_keeps_the_reservation_until_queue_busy_retry_commits() {
         use smoltcp::{phy::Device, socket::tcp};
         for ipv6 in [false, true] {

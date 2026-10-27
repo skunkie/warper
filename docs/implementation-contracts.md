@@ -966,6 +966,11 @@ origin (IPv4 type 3/code 4 or IPv6 type 2/code 0), EMSGSIZE, the expected router
 nontruncated controls, matching data header and a quote length within the sent
 datagram. Quotes shorter than the data header are unsupported. This is bounded
 correlation with a controlled router, not cryptographic authentication of ICMP.
+A Linux synthetic loopback experiment shows that a quote ending at the UDP
+header returns no UDP payload through the error queue, for either IP family.
+Such a report lacks the WireGuard data header and cannot satisfy this
+reservation's correlation rule. See `scripts/probe-short-icmp.py`; this does not
+establish behavior on other kernels or safe correlation using other metadata.
 
 The owner confirms an empty error queue before reservation, serializes I/O,
 and waits no longer than its reservation deadline. Larger reports never grow

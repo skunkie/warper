@@ -545,6 +545,19 @@ expected router and quoted 16-byte public WireGuard data header. A single
 nonrenewing one-second reservation bounds retained metadata. Missing or shorter
 quotes, malformed/unrelated errors and unsupported paths cannot reduce budgets.
 
+A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
+and `ip`, with permission to create an isolated user and network namespace:
+
+```sh
+unshare --user --map-root-user --net sh -c 'ip link set lo up && python3 scripts/probe-short-icmp.py'
+```
+
+It injects ICMP errors on private loopback for both outer families and checks
+error-queue metadata for quotes containing 0, 4, 8, 15, or 16 payload bytes.
+The single-UID mapping guard does not itself verify network isolation; the
+command creates that isolation. This synthetic fixture does not prove router
+trust or support short-quote correlation.
+
 The fixture deliberately enables and reads back no-fragment PROBE mode to avoid
 cached PMTU suppressing repeated remote measurements; all sends still obey the
 declared transport budget. A distinct oversized send must then fail before

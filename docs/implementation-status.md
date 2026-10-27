@@ -101,8 +101,11 @@ uses validated remote feedback to resize a retained TCP connection, preserving
 one 8192-byte write, FIN/response, original tuple and rejected-sequence retry in
 all four family combinations. Queue-busy retry retains the reservation until
 both budgets and sizing commit; kernel workers verify the combined workload
-(`target/evidence/phase-0/router-tcp/README.md`). Short quotes, general router
-trust, concurrent/physical-path policy and error propagation,
+(`target/evidence/phase-0/router-tcp/README.md`). A synthetic Linux loopback
+probe shows that UDP-header-only ICMP quotes yield no UDP payload in the error
+queue in either outer family; all lengths below 16 bytes remain rejected
+(`target/evidence/phase-0/short-icmp/run.log`). Short-quote correlation, general
+router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 
