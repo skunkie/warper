@@ -43,13 +43,18 @@ crash recovery acceptance. The independent Linux kernel peer now also verifies
 controlled outbound loss in both inner families: TCP retry/FIN and exact bytes,
 no lost-UDP replay, worker joins, and independently verified interface removal
 (`target/evidence/phase-0/kernel-outage/README.md`). The independent workload
-now maintains outbound suppression for at least 1200 ms and observes the lost UDP packet and a repeated TCP sequence before
-recovery (`target/evidence/phase-0/sustained-outage/README.md`). A separate
-inbound blackout now covers the independent peer's response write and discards
+now maintains outbound suppression for at least 1200 ms and observes the lost
+UDP packet and a repeated TCP sequence before recovery
+(`target/evidence/phase-0/sustained-outage/README.md`). A separate inbound blackout now covers the independent peer's response write and discards
 a subsequent encrypted data datagram before exact response/EOF recovery in both
-families (`target/evidence/phase-0/inbound-outage/README.md`). Actual link down,
-general inbound failure handling, roaming, service recovery, and MTU/ICMP gates
-remain open.
+families (`target/evidence/phase-0/inbound-outage/README.md`). An isolated
+kernel-peer WireGuard interface down/up probe now verifies a completed new
+handshake, one TCP write with FIN, an unreplayed lost UDP datagram, a distinct
+post-recovery heartbeat and cleanup in both families. The helper explicitly
+restores the fixture IPv6 address lost on link-down
+(`target/evidence/phase-0/kernel-link/README.md`). Physical link down, general
+inbound failure handling, roaming, service recovery, and MTU/ICMP gates remain
+open.
 
 The explicit host MTU gate now reproduces oversized TCP retransmission after
 valid ICMP too-big feedback and missing fragment reassembly in both families

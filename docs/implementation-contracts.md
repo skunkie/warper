@@ -1077,3 +1077,27 @@ independently retires its interfaces, links and namespace processes.
 The single-operation, known-router, minimum-16-byte quote, explicit PROBE mode
 and interface-state/entropy restrictions remain. This is controlled routed TCP
 recovery, not general concurrent/asymmetric path or production trust policy.
+
+
+## 25. Experimental Kernel Peer Link Transition
+
+A separate Linux-only probe starts an established userspace WireGuard session
+against the independently configured kernel WireGuard peer. The disposable
+namespace helper creates and owns that peer interface and independently deletes
+it, even if the probe fails. The probe uses bounded commands and reads back the
+interface flags before treating each down/up transition as complete.
+
+While the kernel peer interface is down for at least 1200 ms, the client admits
+one TCP write and FIN plus one distinct UDP datagram and verifies that both
+are emitted. After the interface is brought up, the fixture explicitly restores
+its IPv6 address if the kernel removed it and checks the peer port. Recovery
+requires a new handshake completed after link-down, the exact TCP response and
+EOF, and a distinct heartbeat sent once after TCP recovery. Joined peer workers
+verify one TCP and two UDP messages; the down-time UDP payload is not replayed.
+The original error is retained if worker or socket cleanup also fails.
+
+The kernel peer interface, not the client's physical path or host TUN, is the
+link under test. Restoring its fixture-owned IPv6 address is explicit setup,
+not evidence of automatic platform recovery. This does not establish service
+outage detection, production route or address repair, inbound link loss on a
+separate physical path, or native macOS behavior.

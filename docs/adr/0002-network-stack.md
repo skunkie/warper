@@ -479,9 +479,18 @@ commits the outer budget. Busy input permits retry without losing the matched
 reservation; invalid/unsupported reports preserve both budgets and output.
 All four inner/outer family combinations deliver one 8192-byte write with FIN,
 retry the rejected sequence, preserve the tuple and receive the exact response.
-The independent kernel peer verifies four TCP connections plus eight UDP
+The independent kernel peer verifies four TCP connections plus twelve UDP
 messages, joins its workers and releases listeners. The same private routed
 namespace harness independently removes interfaces and links. This establishes
 controlled remote-path TCP recovery; short quotes, general trust/physical-path
 policy and production interface state/entropy remain unresolved. Contract
 section 24 and `target/evidence/phase-0/router-tcp/README.md` record the boundary.
+
+
+A separate disposable Linux kernel-peer link probe now lowers and restores the
+peer WireGuard interface, checks a newly completed handshake, and recovers an
+established TCP request and a later UDP heartbeat in both families. It verifies
+that the down-time UDP payload is not replayed. The fixture explicitly restores
+its IPv6 address after link-down; it does not establish physical-link, host TUN,
+production recovery, or macOS behavior. See contract section 25 and
+`target/evidence/phase-0/kernel-link/README.md`.

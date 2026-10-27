@@ -324,9 +324,10 @@ fn main() -> Result<()> {
             || arguments == ["--kernel-mtu-check"]
             || arguments == ["--router-mtu-check"]
             || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
+            || arguments == ["--kernel-link-check"]
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
     );
     if arguments == ["--router-mtu-check"] {
         #[cfg(target_os = "linux")]
@@ -342,6 +343,12 @@ fn main() -> Result<()> {
         return router_mtu::serve(std::path::Path::new(&arguments[1]));
         #[cfg(not(target_os = "linux"))]
         bail!("router MTU peer requires Linux disposable namespaces");
+    }
+    if arguments == ["--kernel-link-check"] {
+        #[cfg(target_os = "linux")]
+        return kernel_peer::run_link_check();
+        #[cfg(not(target_os = "linux"))]
+        bail!("kernel link probe requires Linux disposable namespaces");
     }
     if arguments == ["--kernel-mtu-check"] {
         #[cfg(target_os = "linux")]

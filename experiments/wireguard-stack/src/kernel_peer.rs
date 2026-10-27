@@ -293,6 +293,299 @@ pub fn run(rekey: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn run_link_check() -> Result<()> {
+    let (mut netlink, port) = configure()?;
+    for ipv6 in [false, true] {
+        let mut endpoint = loopback_address(ipv6);
+        endpoint.set_port(port);
+        link_exchange(ipv6, endpoint)?;
+        verify_handshake(&mut netlink, false)?;
+        println!("PASS kernel WireGuard link down and restored: IPv6={ipv6}");
+    }
+    Ok(())
+}
+
+fn link_exchange(ipv6: bool, endpoint: SocketAddr) -> Result<()> {
+    let address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
+    let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
+    let (mut client, mut transport) = create_client(ipv6, endpoint)?;
+    let socket_address = transport.socket.local_addr()?;
+    client
+        .sockets
+        .get_mut::<smoltcp::socket::tcp::Socket>(client.tcp)
+        .connect(client.interface.context(), (address, 9000), (source, 40001))?;
+    client
+        .sockets
+        .get_mut::<smoltcp::socket::udp::Socket>(client.udp)
+        .send_slice(&[0x31], (address, 9000))?;
+    let mut workers = Workers::start(
+        address,
+        Duration::from_secs(35),
+        Arc::new(AtomicBool::new(false)),
+    )?;
+    let result = link_workload(&mut client, &mut transport, address, ipv6);
+    let cleanup = workers.finish();
+    drop(transport);
+    drop(client);
+    let socket_cleanup = UdpSocket::bind(socket_address).map(drop);
+    finish_link(result, cleanup, socket_cleanup)
+}
+
+fn finish_link(
+    result: Result<()>,
+    cleanup: Result<Report>,
+    socket_cleanup: io::Result<()>,
+) -> Result<()> {
+    match (result, cleanup, socket_cleanup) {
+        (Err(primary), workers, socket) => {
+            let worker_status = match workers {
+                Ok(_) => "workers joined".into(),
+                Err(error) => format!("worker cleanup also failed: {error:#}"),
+            };
+            let socket_status = match socket {
+                Ok(()) => "outer socket rebound".into(),
+                Err(error) => format!("outer socket cleanup also failed: {error}"),
+            };
+            Err(primary.context(format!("{worker_status}; {socket_status}")))
+        }
+        (Ok(()), Err(error), socket) => {
+            let context = match socket {
+                Ok(()) => "outer socket rebound".into(),
+                Err(error) => format!("outer socket cleanup also failed: {error}"),
+            };
+            Err(error.context(context))
+        }
+        (Ok(()), Ok(report), socket) => {
+            socket.context("outer socket cleanup failed")?;
+            ensure!(
+                report.tcp == 1
+                    && report.udp == 2
+                    && report.bytes
+                        == REQUEST.len() + RESPONSE.len() + 2 * (1 + b"heartbeat".len()),
+                "link peer observed an unexpected workload"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn link_workload(
+    client: &mut super::packet_peer::Peer,
+    transport: &mut super::Transport,
+    address: IpAddr,
+    ipv6: bool,
+) -> Result<()> {
+    use smoltcp::socket::{tcp, udp};
+    let start = Instant::now();
+    let mut warm = false;
+    let mut down_since = None;
+    let mut initiations_before_down = 0;
+    let mut restored = false;
+    let mut lost_udp = false;
+    let mut sent_tcp = false;
+    let mut heartbeat = false;
+    let mut heartbeat_sent = false;
+    let mut response = Vec::new();
+    let mut done_since = None;
+    loop {
+        let now = start.elapsed();
+        ensure!(
+            now < Duration::from_secs(40),
+            "link recovery deadline exceeded (down={}, restored={}, heartbeat={}, response_bytes={}, initiations={})",
+            down_since.is_some(),
+            restored,
+            heartbeat,
+            response.len(),
+            transport.initiations
+        );
+        client.poll(i64::try_from(now.as_millis())?);
+        if down_since.is_some() && !restored {
+            for packet in &client.device.outgoing {
+                lost_udp |= super::is_lost_datagram(packet)?;
+                if let Some(frame) = super::pmtu_probe::plain_tcp(packet)? {
+                    let tcp = smoltcp::wire::TcpPacket::new_checked(frame.payload)?;
+                    sent_tcp |= !tcp.payload().is_empty();
+                }
+            }
+        }
+        transport.pump(client, now)?;
+        let tcp = client.sockets.get_mut::<tcp::Socket>(client.tcp);
+        if tcp.can_recv() {
+            tcp.recv(|bytes| {
+                response.extend_from_slice(bytes);
+                (bytes.len(), ())
+            })?;
+            ensure!(
+                response.len() <= RESPONSE.len(),
+                "link response exceeded expected length"
+            );
+        }
+        let established = tcp.can_send();
+        let ended = down_since.is_some() && !tcp.may_recv();
+        let udp = client.sockets.get_mut::<udp::Socket>(client.udp);
+        if udp.can_recv() {
+            let (payload, metadata) = udp.recv()?;
+            ensure!(
+                metadata.endpoint == SocketAddr::new(address, 9000).into(),
+                "link UDP tuple changed"
+            );
+            if !warm {
+                ensure!(payload == [0x31], "link warmup changed");
+                warm = true;
+            } else {
+                ensure!(
+                    restored && payload == b"heartbeat" && !heartbeat,
+                    "unexpected link UDP response"
+                );
+                heartbeat = true;
+            }
+        }
+        if warm && established && down_since.is_none() {
+            initiations_before_down = transport.initiations;
+            set_link(false)?;
+            println!("PASS isolated kernel link is down: IPv6={ipv6}");
+            ensure!(
+                client
+                    .sockets
+                    .get_mut::<tcp::Socket>(client.tcp)
+                    .send_slice(REQUEST)?
+                    == REQUEST.len(),
+                "partial link TCP request admission"
+            );
+            client.sockets.get_mut::<tcp::Socket>(client.tcp).close();
+            client
+                .sockets
+                .get_mut::<udp::Socket>(client.udp)
+                .send_slice(b"lost-datagram", (address, 9000))?;
+            down_since = Some(start.elapsed());
+        }
+        if let Some(down) = down_since
+            && !restored
+            && start.elapsed().saturating_sub(down) >= Duration::from_millis(1200)
+            && lost_udp
+            && sent_tcp
+        {
+            set_link(true)?;
+            restore_fixture_ipv6()?;
+            let mut netlink = WgSocket::connect()
+                .map_err(|_| anyhow::anyhow!("kernel WireGuard netlink unavailable"))?;
+            ensure!(
+                read_device(&mut netlink)?.listen_port == transport.remote.port(),
+                "kernel peer listening port changed after link restoration"
+            );
+            println!(
+                "PASS isolated kernel link is restored: IPv6={ipv6}, lost_udp_emitted={lost_udp}, tcp_emitted={sent_tcp}"
+            );
+            restored = true;
+        }
+        if restored && ended && !heartbeat_sent {
+            ensure!(response == RESPONSE, "link response or EOF changed");
+            ensure!(
+                transport.initiations > initiations_before_down,
+                "link recovery did not initiate a fresh handshake"
+            );
+            let handshake_age = transport
+                .tunnel
+                .stats()
+                .0
+                .context("link recovery has no completed handshake")?;
+            ensure!(
+                handshake_age
+                    < start
+                        .elapsed()
+                        .saturating_sub(down_since.context("missing link-down time")?),
+                "link recovery handshake predates the outage"
+            );
+            client
+                .sockets
+                .get_mut::<udp::Socket>(client.udp)
+                .send_slice(b"heartbeat", (address, 9000))?;
+            heartbeat_sent = true;
+        }
+        if restored && ended && heartbeat {
+            ensure!(response == RESPONSE, "link response or EOF changed");
+            let done = *done_since.get_or_insert_with(Instant::now);
+            if done.elapsed() >= Duration::from_millis(100) {
+                println!(
+                    "PASS isolated kernel link workload: IPv6={ipv6}, down_at_least_ms=1200, lost_udp_not_replayed=true, tcp_write_once=true"
+                );
+                return Ok(());
+            }
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn restore_fixture_ipv6() -> Result<()> {
+    use std::process::{Command, Stdio};
+    let expected: std::net::Ipv6Addr = "fd66:66::10".parse()?;
+    let present = || -> Result<bool> {
+        Ok(nix::ifaddrs::getifaddrs()?.any(|interface| {
+            interface.interface_name == INTERFACE
+                && interface
+                    .address
+                    .as_ref()
+                    .and_then(|address| address.as_sockaddr_in6())
+                    .is_some_and(|address| address.ip() == expected)
+        }))
+    };
+    if !present()? {
+        let status = Command::new("timeout")
+            .args([
+                "3s",
+                "ip",
+                "-6",
+                "addr",
+                "add",
+                "fd66:66::10/64",
+                "dev",
+                INTERFACE,
+                "nodad",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        ensure!(
+            status.success(),
+            "controlled IPv6 address restoration failed: {status}"
+        );
+        println!("PASS restored fixture IPv6 address after link transition");
+    }
+    ensure!(
+        present()?,
+        "controlled IPv6 address missing after restoration"
+    );
+    Ok(())
+}
+
+fn set_link(up: bool) -> Result<()> {
+    use nix::net::if_::InterfaceFlags;
+    use std::process::{Command, Stdio};
+    let status = Command::new("timeout")
+        .args([
+            "3s",
+            "ip",
+            "link",
+            "set",
+            "dev",
+            INTERFACE,
+            if up { "up" } else { "down" },
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    ensure!(status.success(), "controlled kernel link change failed");
+    let flags = nix::ifaddrs::getifaddrs()?
+        .find(|interface| interface.interface_name == INTERFACE)
+        .map(|interface| interface.flags)
+        .context("controlled kernel link missing after change")?;
+    ensure!(
+        flags.contains(InterfaceFlags::IFF_UP) == up,
+        "controlled kernel link readback mismatch"
+    );
+    Ok(())
+}
+
 pub(super) fn require_mapped_namespace() -> Result<()> {
     let mapping =
         fs::read_to_string("/proc/self/uid_map").context("cannot inspect namespace ownership")?;
@@ -528,6 +821,41 @@ fn udp_server(socket: UdpSocket, stop: &AtomicBool, deadline: Instant) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_cleanup_preserves_primary_and_reports_secondary_failures() {
+        let primary = io::Error::from(io::ErrorKind::PermissionDenied);
+        let worker = io::Error::from(io::ErrorKind::AddrInUse);
+        let socket = io::Error::from(io::ErrorKind::BrokenPipe);
+        let error = finish_link(Err(primary.into()), Err(worker.into()), Err(socket)).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("worker cleanup also failed"));
+        assert!(diagnostic.contains("outer socket cleanup also failed"));
+
+        let error = finish_link(
+            Ok(()),
+            Err(io::Error::from(io::ErrorKind::AddrInUse).into()),
+            Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::AddrInUse
+        );
+        assert!(format!("{error:#}").contains("outer socket cleanup also failed"));
+
+        let report = Report {
+            tcp: 1,
+            udp: 2,
+            bytes: REQUEST.len() + RESPONSE.len() + 2 * (1 + b"heartbeat".len()),
+        };
+        assert!(finish_link(Ok(()), Ok(report), Ok(())).is_ok());
+        assert!(finish_link(Ok(()), Ok(Report::default()), Ok(())).is_err());
+    }
 
     #[test]
     fn namespace_guard_rejects_initial_and_broad_uid_mappings() {

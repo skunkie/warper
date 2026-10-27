@@ -341,6 +341,21 @@ production shutdown guarantee. Long mode additionally checks at least 135
 seconds of exchange, a second initiation, recent completed handshake state
 on both implementations, and continuing heartbeat replies.
 
+The separate kernel peer link-transition probe must run through the disposable
+namespace helper; it changes only the helper-created WireGuard interface:
+
+```sh
+cargo build --locked -p wireguard-stack
+PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 90s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-feasibility-isolated.sh kernel "$PWD/target/debug/wireguard-stack" --kernel-link-check
+```
+
+It checks interface down/up readback, loss of one UDP datagram, a single TCP
+write with FIN, a post-outage handshake and recovery through the independent
+kernel peer. Link-down removes the fixture's IPv6 address on the tested kernel;
+the probe explicitly restores and verifies that address before proceeding. The
+helper independently deletes its interface on exit. This is not a physical-link
+or host TUN test. See contract section 25.
+
 The kernel-peer CLI refuses the initial/broad user namespace and a preexisting
 configured interface. It requires the helper-created single-UID namespace;
 the kernel additionally enforces CAP_NET_ADMIN in the target network
