@@ -24,6 +24,70 @@ fn public_udp_boundary_is_send() {
     assert_send::<Datagram>();
 }
 
+#[test]
+fn unrepresentable_new_association_deadline_preserves_existing_association() {
+    let invalid_limits = Limits {
+        max_age: Duration::from_millis(crate::MAX_CLOCK_MILLIS as u64 + 1),
+        ..Limits::default()
+    };
+    assert!(matches!(
+        UdpAdapter::new(invalid_limits, select_backend),
+        Err(Error::InvalidLimits)
+    ));
+    for ipv6 in [false, true] {
+        let limits = Limits {
+            idle_timeout: Duration::from_secs(1),
+            max_age: Duration::from_secs(1),
+            ..Limits::default()
+        };
+        let (mut host, mut accepted) = UdpAdapter::new(limits, select_backend).unwrap();
+        let maximum = Duration::from_millis(crate::MAX_CLOCK_MILLIS as u64);
+        let start = maximum - Duration::from_secs(1);
+        let address = |port| {
+            if ipv6 {
+                format!("[fd66:66::2]:{port}")
+            } else {
+                format!("10.66.66.2:{port}")
+            }
+            .parse::<SocketAddr>()
+            .unwrap()
+        };
+        let destination = if ipv6 {
+            "[fd66:66::91]:9000"
+        } else {
+            "10.66.66.91:9000"
+        }
+        .parse()
+        .unwrap();
+        let first = encode(address(40000), destination, b"first").unwrap();
+        let second = encode(address(40001), destination, b"second").unwrap();
+        assert_eq!(
+            host.poll(Duration::from_millis(i64::MAX as u64)),
+            Err(Error::InvalidTime)
+        );
+        host.poll(start).unwrap();
+        let id = host.inject(&first).unwrap();
+        let association = accepted.try_recv().unwrap();
+        host.poll(start + Duration::from_millis(1)).unwrap();
+        assert_eq!(host.inject(&second), Err(Error::InvalidTime));
+        assert_eq!(host.inject(&first), Ok(id));
+        assert_eq!(host.active_associations(), 1);
+        assert!(accepted.try_recv().is_err());
+        host.poll(maximum).unwrap();
+        assert_eq!(host.active_associations(), 0);
+        assert_eq!(
+            host.poll(maximum + Duration::from_millis(1)),
+            Err(Error::InvalidTime)
+        );
+        assert_eq!(
+            host.poll(Duration::from_millis(i64::MAX as u64)),
+            Err(Error::InvalidTime)
+        );
+        drop(association);
+        host.cancel();
+    }
+}
+
 #[tokio::test]
 async fn repeated_tuple_keeps_identity_and_backend_without_duplicate_publication() {
     let (mut host, mut accepted) = UdpAdapter::new(Limits::default(), select_backend).unwrap();

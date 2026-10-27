@@ -213,7 +213,9 @@ impl UdpAdapter {
             || !(1..=MAX_DATAGRAMS).contains(&limits.datagrams)
             || [limits.idle_timeout, limits.max_age]
                 .iter()
-                .any(|duration| duration.is_zero() || duration.as_millis() > i64::MAX as u128)
+                .any(|duration| {
+                    duration.is_zero() || duration.as_millis() > crate::MAX_CLOCK_MILLIS
+                })
         {
             return Err(Error::InvalidLimits);
         }
@@ -250,7 +252,7 @@ impl UdpAdapter {
         if self.cancelled {
             return Err(Error::Cancelled);
         }
-        if now < self.now || now.as_millis() > i64::MAX as u128 {
+        if now < self.now || now.as_millis() > crate::MAX_CLOCK_MILLIS {
             return Err(Error::InvalidTime);
         }
         self.now = now;
@@ -379,6 +381,13 @@ impl UdpAdapter {
             state.progress = self.now;
             self.statistics.received = self.statistics.received.saturating_add(1);
             return Ok(state.metadata.id);
+        }
+        if self
+            .now
+            .checked_add(self.limits.max_age)
+            .is_none_or(|deadline| deadline.as_millis() > crate::MAX_CLOCK_MILLIS)
+        {
+            return Err(Error::InvalidTime);
         }
         let backend = (self.select_backend)(destination).ok_or(Error::UnselectedDestination)?;
         let slot = self

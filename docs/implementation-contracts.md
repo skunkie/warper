@@ -259,11 +259,18 @@ reopen that window. Bounded counters replace completion history. No
 synchronous mutex is held across asynchronous work.
 
 The caller supplies monotonic elapsed `Duration`; backward/unrepresentable
-time is `InvalidTime`. Default setup/idle/absolute-age budgets are 10, 300,
+time is `InvalidTime`. The host TCP/UDP candidates cap elapsed time at
+`i64::MAX / 2000` milliseconds, leaving half the signed microsecond range
+available for the pinned stack's internal timers. This bound does not prove
+that every possible internal timer addition is safe. Default
+setup/idle/absolute-age budgets are 10, 300,
 and 86400 seconds, respectively. Limits are injectable for timer tests;
 invalid/unrepresentable limits fail construction. Expiry at the deadline
 aborts the socket and drops driver state, while consumer-held buffers
 remain charged. No application task is needed for timer-only tests.
+New flow admission rejects an unrepresentable absolute-age deadline before
+reserving flow resources. Existing flows retain their original absolute
+deadline when activity advances the idle clock.
 
 ### EOF, Errors, and Supervision
 
@@ -373,7 +380,10 @@ are never evicted to make room.
 Each poll rotates its starting slot, examines each slot once, and consumes
 at most one reply per slot,
 only with output capacity available. Successful ingress and reply conversion
-refresh idle time; rejected input does not. Absolute age never renews. Expiry
+refresh idle time; rejected input does not. Absolute age never renews. New
+associations whose absolute-age deadlines exceed the supported clock return
+`InvalidTime` before reserving resources; existing associations retain their
+original absolute deadline. Expiry
 at the exact deadline precedes reply processing, removes owned queued output,
 and reports `TimedOut` before closing the input sender. Application drop
 retires that tuple on the next poll. Cancellation is idempotent and reports

@@ -103,6 +103,76 @@ fn flow_capacity_rejects_new_source_without_displacing_existing_tuple() {
 }
 
 #[test]
+fn unrepresentable_new_flow_deadline_preserves_existing_flow() {
+    let invalid_limits = Limits {
+        max_age: Duration::from_millis(crate::MAX_CLOCK_MILLIS as u64 + 1),
+        ..Limits::default()
+    };
+    assert!(matches!(
+        HostAdapter::new(invalid_limits, select_backend),
+        Err(AdmissionError::InvalidLimits)
+    ));
+    for ipv6 in [false, true] {
+        let limits = Limits {
+            setup_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            max_age: Duration::from_secs(1),
+            ..Limits::default()
+        };
+        let (mut host, _receiver) = HostAdapter::new(limits, select_backend).unwrap();
+        let maximum = Duration::from_millis(crate::MAX_CLOCK_MILLIS as u64);
+        let start = maximum - Duration::from_secs(1);
+        let destination = SocketAddr::new(source(ipv6, 91).unwrap().ip(), 9100);
+        let first = syn(source(ipv6, 2).unwrap(), destination);
+        let second = syn(source(ipv6, 3).unwrap(), destination);
+        assert_eq!(
+            host.poll_io(
+                &mut Context::from_waker(Waker::noop()),
+                Duration::from_millis(i64::MAX as u64)
+            ),
+            Err(AdmissionError::InvalidTime)
+        );
+        poll(&mut host, start);
+        let id = host.inject(&first).unwrap();
+        poll(&mut host, start + Duration::from_millis(1));
+        assert_eq!(host.inject(&second), Err(AdmissionError::InvalidTime));
+        assert_eq!(host.inject(&first), Ok(id));
+        assert_eq!(host.active_flows(), 1);
+        poll(&mut host, maximum);
+        assert_eq!(host.active_flows(), 0);
+        assert_eq!(
+            host.poll_io(
+                &mut Context::from_waker(Waker::noop()),
+                maximum + Duration::from_millis(1)
+            ),
+            Err(AdmissionError::InvalidTime)
+        );
+        assert_eq!(
+            host.poll_io(
+                &mut Context::from_waker(Waker::noop()),
+                Duration::from_millis(i64::MAX as u64)
+            ),
+            Err(AdmissionError::InvalidTime)
+        );
+        host.cancel();
+    }
+}
+
+#[test]
+fn unrepresentable_stack_clock_returns_error_without_panicking() {
+    let (mut host, _receiver) = HostAdapter::new(Limits::default(), select_backend).unwrap();
+    assert_eq!(
+        host.poll_io(
+            &mut Context::from_waker(Waker::noop()),
+            Duration::from_millis(i64::MAX as u64)
+        ),
+        Err(AdmissionError::InvalidTime)
+    );
+    poll(&mut host, Duration::ZERO);
+    host.cancel();
+}
+
+#[test]
 fn packet_queue_exhaustion_rolls_back_slot_and_accept_reservation() {
     let (mut host, _receiver) = HostAdapter::new(Limits::default(), select_backend).unwrap();
     let first = selected_syn(2);

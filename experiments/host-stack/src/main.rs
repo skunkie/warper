@@ -40,6 +40,8 @@ use smoltcp::socket::{tcp, udp};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const DEADLINE: Duration = Duration::from_secs(2);
+// smoltcp stores microseconds in i64; retain half its range for internal timers.
+const MAX_CLOCK_MILLIS: u128 = i64::MAX as u128 / 2000;
 const REQUEST: &[u8] = b"synthetic-request-before-fin";
 const RESPONSE: &[u8] = b"synthetic-response-after-fin";
 

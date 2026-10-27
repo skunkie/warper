@@ -252,7 +252,7 @@ impl HostAdapter {
             || limits.max_age.is_zero()
             || [limits.setup_timeout, limits.idle_timeout, limits.max_age]
                 .iter()
-                .any(|duration| duration.as_millis() > i64::MAX as u128)
+                .any(|duration| duration.as_millis() > crate::MAX_CLOCK_MILLIS)
         {
             return Err(AdmissionError::InvalidLimits);
         }
@@ -325,10 +325,10 @@ impl HostAdapter {
         if self.cancelled {
             return Err(AdmissionError::Cancelled);
         }
-        let timestamp = i64::try_from(now.as_millis()).map_err(|_| AdmissionError::InvalidTime)?;
-        if now < self.now {
+        if now < self.now || now.as_millis() > crate::MAX_CLOCK_MILLIS {
             return Err(AdmissionError::InvalidTime);
         }
+        let timestamp = i64::try_from(now.as_millis()).map_err(|_| AdmissionError::InvalidTime)?;
         self.now = now;
         self.interface.poll(
             Instant::from_millis(timestamp),
@@ -483,6 +483,13 @@ impl HostAdapter {
         }
         if !syn {
             return Err(AdmissionError::UnknownFlow);
+        }
+        if self
+            .now
+            .checked_add(self.limits.max_age)
+            .is_none_or(|deadline| deadline.as_millis() > crate::MAX_CLOCK_MILLIS)
+        {
+            return Err(AdmissionError::InvalidTime);
         }
         let backend =
             (self.select_backend)(destination).ok_or(AdmissionError::UnselectedDestination)?;

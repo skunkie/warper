@@ -73,6 +73,11 @@ existing assemblies near the clock limit
 after authenticated WireGuard decryption and inner-address checks, with
 encrypted UDP fragment round trips, expiry, overlap rejection, and socket
 release (`target/evidence/phase-0/wireguard-fragments/README.md`).
+The host TCP/UDP candidates now reject unrepresentable absolute-age deadlines
+and bound their elapsed clock before converting to the stack's microsecond
+representation (`target/evidence/phase-0/host-clock-bound/README.md`). This
+does not establish all internal stack timer arithmetic or unify the separate
+fragment and WireGuard clock ranges.
 Real loopback IPv6 outer UDP transport now complements IPv4 transport. Packet
 probes cover all four inner/outer combinations; the independent kernel peer
 covers matching families and sustained rekey over IPv6 outer transport
