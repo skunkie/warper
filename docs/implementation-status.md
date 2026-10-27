@@ -156,6 +156,12 @@ the WireGuard transport. The routed fixture now also completes a distinct UDP
 application exchange through that owner after recovery in all four family
 combinations (`target/evidence/phase-0/owned-exchange/README.md`). Concurrent
 transitions and production path attribution remain unverified.
+An isolated loopback test also queues an old-peer UDP datagram before
+reconnection. In both outer families, the experimental owner rejects that
+retained datagram and accepts a subsequent datagram from the new peer
+(`target/evidence/phase-0/queued-peer/README.md`). This
+does not establish synchronization for concurrent transitions or production
+handling of the resulting error.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
