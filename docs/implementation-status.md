@@ -162,6 +162,11 @@ retained datagram and accepts a subsequent datagram from the new peer
 (`target/evidence/phase-0/queued-peer/README.md`). This
 does not establish synchronization for concurrent transitions or production
 handling of the resulting error.
+If the owner leaves and returns to the same peer before receiving, an older
+queued datagram from that peer passes the source check in both families. The
+feedback reader token does not identify received datagram generations, so the
+experimental owner cannot yet safely attribute those datagrams across peer
+transitions (`target/evidence/phase-0/returned-peer-datagram/README.md`).
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

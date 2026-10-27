@@ -417,6 +417,48 @@ mod tests {
     }
 
     #[test]
+    fn queued_datagram_survives_leaving_and_returning_to_the_same_peer() {
+        for ipv6 in [false, true] {
+            let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let second = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let mut owner = Owner::new(
+                crate::loopback_address(ipv6),
+                first.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let local = owner.local_addr().unwrap();
+            first.send_to(b"old generation", local).unwrap();
+            let mut buffer = [0; 128];
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            loop {
+                match owner.socket.peek_from(&mut buffer) {
+                    Ok((length, source)) => {
+                        assert_eq!(&buffer[..length], b"old generation");
+                        assert_eq!(source, first.local_addr().unwrap());
+                        break;
+                    }
+                    Err(error) => {
+                        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "old datagram was not queued"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            owner.reconnect(second.local_addr().unwrap(), 1600).unwrap();
+            owner.reconnect(first.local_addr().unwrap(), 1600).unwrap();
+            let length = owner.receive_datagram(&mut buffer).unwrap().unwrap();
+            assert_eq!(&buffer[..length], b"old generation");
+            assert!(owner.receive_datagram(&mut buffer).unwrap().is_none());
+            drop(owner);
+            UdpSocket::bind(local).unwrap();
+        }
+    }
+
+    #[test]
     fn failed_transition_retires_feedback_and_recovery_uses_new_reader() {
         for ipv6 in [false, true] {
             let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
