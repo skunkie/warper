@@ -321,7 +321,11 @@ bounded workload now keeps outbound ciphertext suppressed for at least 1200 ms
 and until the original TCP sequence is retried and a distinct UDP datagram is
 observed at the blackout boundary. It then checks recovery without application
 replay (`target/evidence/phase-0/sustained-outage/README.md`). The network link
-itself and inbound traffic remain available.
+itself remains available. A later controlled inbound suppression now spans the
+independent peer's TCP response write and discards a subsequent encrypted data
+datagram before exact response recovery in both families
+(`target/evidence/phase-0/inbound-outage/README.md`). The encrypted datagram's
+inner payload is not inspected.
 
 Outer transport is now selected independently of inner addresses. Actual IPv4
 and IPv6 loopback UDP sockets carry all four inner/outer combinations through

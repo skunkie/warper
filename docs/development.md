@@ -329,7 +329,11 @@ is replayed by the harness. In the non-rekey run, the controlled outbound
 blackout remains active for at least 1200 ms and until a TCP retry with the
 original sequence and the distinct lost UDP datagram have both been observed.
 A 25-second workload and worker bound covers subsequent retransmission and
-recovery. This is outbound ciphertext suppression, not a disabled link or a
+recovery. After the heartbeat, a separate inbound blackout remains active for
+at least 1200 ms; the kernel worker confirms its TCP response write, and the
+client discards a subsequent encrypted data datagram before receiving the exact
+response after restoration. The encrypted datagram is not identified by its
+inner payload. This is ciphertext suppression, not a disabled link or a
 production outage detector. After EOF it continues pumping for a 100 ms
 controlled loopback drain so delayed TCP acknowledgements are emitted before
 replacing the fixture session. This is experimental fixture timing, not a

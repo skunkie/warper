@@ -41,13 +41,18 @@ pub(super) struct Workers {
 }
 
 impl Workers {
-    fn start(address: IpAddr, duration: Duration) -> Result<Self> {
+    fn start(address: IpAddr, duration: Duration, response_sent: Arc<AtomicBool>) -> Result<Self> {
         let listener = TcpListener::bind((address, 9000))?;
         let udp = UdpSocket::bind((address, 9000))?;
-        Self::start_sockets(listener, udp, duration)
+        Self::start_sockets(listener, udp, duration, Some(response_sent))
     }
 
-    fn start_sockets(listener: TcpListener, udp: UdpSocket, duration: Duration) -> Result<Self> {
+    fn start_sockets(
+        listener: TcpListener,
+        udp: UdpSocket,
+        duration: Duration,
+        response_sent: Option<Arc<AtomicBool>>,
+    ) -> Result<Self> {
         listener.set_nonblocking(true)?;
         udp.set_nonblocking(true)?;
         let mut workers = Self {
@@ -59,7 +64,16 @@ impl Workers {
         workers.handles.push(
             thread::Builder::new()
                 .name("kernel-peer-tcp".into())
-                .spawn(move || tcp_server(&listener, &stop, deadline, REQUEST, RESPONSE))?,
+                .spawn(move || {
+                    tcp_server(
+                        &listener,
+                        &stop,
+                        deadline,
+                        REQUEST,
+                        RESPONSE,
+                        response_sent.as_deref(),
+                    )
+                })?,
         );
         let stop = workers.stop.clone();
         match thread::Builder::new()
@@ -91,7 +105,9 @@ impl Workers {
         let deadline = Instant::now() + Duration::from_secs(6);
         let handle = thread::Builder::new()
             .name("kernel-mtu-tcp".into())
-            .spawn(move || tcp_server(&listener, &worker_stop, deadline, &request, response))?;
+            .spawn(move || {
+                tcp_server(&listener, &worker_stop, deadline, &request, response, None)
+            })?;
         Ok(Self {
             stop,
             handles: vec![handle],
@@ -145,7 +161,8 @@ impl Workers {
                 .spawn(move || {
                     let mut report = Report::default();
                     for _ in 0..2 {
-                        let completed = tcp_server(&listener, &stop, deadline, &request, response)?;
+                        let completed =
+                            tcp_server(&listener, &stop, deadline, &request, response, None)?;
                         report.tcp += completed.tcp;
                         report.bytes += completed.bytes;
                     }
@@ -335,7 +352,8 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
         } else {
             Duration::ZERO
         };
-    let mut workers = Workers::start(address, worker_duration)?;
+    let response_sent = Arc::new(AtomicBool::new(false));
+    let mut workers = Workers::start(address, worker_duration, response_sent.clone())?;
     let result = run_client_with_outage(
         ipv6,
         duration,
@@ -343,6 +361,7 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
         &mut transport,
         None,
         inject_outage,
+        inject_outage.then_some(response_sent.as_ref()),
     );
     let cleanup = workers.finish();
     let report = match (result, cleanup) {
@@ -360,13 +379,17 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
     );
     if inject_outage {
         ensure!(
-            transport.dropped_packets >= 3 && !transport.blackhole,
+            transport.dropped_packets >= 3
+                && !transport.blackhole
+                && transport.dropped_inbound > 0
+                && !transport.inbound_blackhole,
             "kernel workload did not complete the controlled outage"
         );
         ensure!(
             report.udp == 5,
             "kernel peer did not receive exactly the original datagrams and recovery heartbeat"
         );
+        println!("PASS independent inbound blackout: response recovery, IPv6={ipv6}");
         println!(
             "PASS independent kernel outage: at least 1200ms blackout, TCP retry during outage and FIN, lost UDP not replayed, IPv6={ipv6}"
         );
@@ -393,6 +416,7 @@ fn tcp_server(
     deadline: Instant,
     expected_request: &[u8],
     response: &[u8],
+    response_sent: Option<&AtomicBool>,
 ) -> Result<Report> {
     let (mut connection, source) = loop {
         ensure!(
@@ -443,6 +467,9 @@ fn tcp_server(
     }
     ensure!(request == expected_request, "kernel TCP request changed");
     connection.write_all(response)?;
+    if let Some(flag) = response_sent {
+        flag.store(true, Ordering::Release);
+    }
     connection.shutdown(Shutdown::Write)?;
     Ok(Report {
         tcp: 1,
@@ -522,7 +549,7 @@ mod tests {
         let tcp_address = listener.local_addr().unwrap();
         let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
         let udp_address = udp.local_addr().unwrap();
-        let mut workers = Workers::start_sockets(listener, udp, Duration::ZERO).unwrap();
+        let mut workers = Workers::start_sockets(listener, udp, Duration::ZERO, None).unwrap();
         assert!(
             workers.finish().is_err(),
             "incomplete TCP work must not report peer success"

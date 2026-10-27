@@ -45,6 +45,7 @@ mod router_tcp;
 use std::{
     fmt, io,
     net::{IpAddr, SocketAddr, UdpSocket},
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -101,6 +102,8 @@ struct Transport {
     staged_packets: usize,
     blackhole: bool,
     dropped_packets: usize,
+    inbound_blackhole: bool,
+    dropped_inbound: usize,
 }
 
 impl Transport {
@@ -179,6 +182,12 @@ impl Transport {
                 Err(error) => return Err(error.into()),
             };
             ensure!(source == self.remote, "unexpected outer peer");
+            if self.inbound_blackhole {
+                if incoming[..length].starts_with(&[4, 0, 0, 0]) {
+                    self.dropped_inbound = self.dropped_inbound.saturating_add(1);
+                }
+                continue;
+            }
             let result =
                 self.tunnel
                     .decapsulate(Some(source.ip()), &incoming[..length], &mut output);
@@ -439,6 +448,8 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         staged_packets: 0,
         blackhole: false,
         dropped_packets: 0,
+        inbound_blackhole: false,
+        dropped_inbound: 0,
     };
     Ok((
         Endpoint {
@@ -487,6 +498,8 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         staged_packets: 0,
         blackhole: false,
         dropped_packets: 0,
+        inbound_blackhole: false,
+        dropped_inbound: 0,
     };
     Ok((client, transport))
 }
@@ -513,6 +526,7 @@ fn run_client(
         client_transport,
         server,
         false,
+        None,
     )
 }
 
@@ -523,6 +537,7 @@ fn run_client_with_outage(
     client_transport: &mut Transport,
     mut server: Option<(&mut Peer, &mut Transport)>,
     inject_outage: bool,
+    response_sent: Option<&AtomicBool>,
 ) -> Result<()> {
     let client_address: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let server_address: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
@@ -562,12 +577,21 @@ fn run_client_with_outage(
     let mut lost_udp_queued = false;
     let mut lost_udp_observed = false;
     let mut retried_during_outage = false;
+    let mut inbound_recovered = response_sent.is_none();
+    let mut inbound_started = None;
+    let mut response_drop_start = None;
     loop {
         ensure!(
             start.elapsed() < deadline,
             "controlled tunnel exchange exceeded deadline"
         );
         let elapsed_ms = i64::try_from(start.elapsed().as_millis())?;
+        if client_transport.inbound_blackhole
+            && response_drop_start.is_none()
+            && response_sent.is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            response_drop_start = Some(client_transport.dropped_inbound);
+        }
         client.poll(elapsed_ms);
         if client_transport.blackhole {
             for packet in &client.device.outgoing {
@@ -703,6 +727,33 @@ fn run_client_with_outage(
                     "unexpected heartbeat response"
                 );
                 heartbeat_pending = false;
+                if let Some(flag) = response_sent
+                    && !inbound_recovered
+                    && inbound_started.is_none()
+                {
+                    ensure!(
+                        !flag.load(Ordering::Acquire),
+                        "response preceded inbound blackout"
+                    );
+                    client_transport.inbound_blackhole = true;
+                    inbound_started = Some(start.elapsed());
+                }
+            }
+        }
+        if client_transport.inbound_blackhole {
+            ensure!(
+                response.is_empty(),
+                "response reached application during inbound blackout"
+            );
+            if let Some(initial) = response_drop_start
+                && client_transport.dropped_inbound > initial
+                && start
+                    .elapsed()
+                    .saturating_sub(inbound_started.context("missing inbound blackout start")?)
+                    >= Duration::from_millis(1200)
+            {
+                client_transport.inbound_blackhole = false;
+                inbound_recovered = true;
             }
         }
         if !inject_outage
@@ -716,6 +767,7 @@ fn run_client_with_outage(
         }
         if tcp_done
             && outage_recovered
+            && inbound_recovered
             && udp_received == payloads.len()
             && !heartbeat_pending
             && start.elapsed() >= minimum_duration
@@ -839,10 +891,42 @@ mod tests {
                 &mut client.transport,
                 Some((&mut server.peer, &mut server.transport)),
                 true,
+                None,
             )
             .unwrap();
             assert!(client.transport.dropped_packets >= 2);
             assert!(!client.transport.blackhole);
+        }
+    }
+
+    #[test]
+    fn inbound_blackout_discards_data_without_replaying_after_recovery() {
+        for ipv6 in [false, true] {
+            let sender = UdpSocket::bind(loopback_address(ipv6)).unwrap();
+            let (mut peer, mut transport) =
+                create_client(ipv6, sender.local_addr().unwrap()).unwrap();
+            let local = transport.socket.local_addr().unwrap();
+            transport.inbound_blackhole = true;
+            let mut data = [0; 32];
+            data[0] = 4;
+            for _ in 0..2 {
+                assert_eq!(sender.send_to(&data, local).unwrap(), data.len());
+            }
+            data[0] = 2;
+            assert_eq!(sender.send_to(&data, local).unwrap(), data.len());
+            transport.pump(&mut peer, Duration::ZERO).unwrap();
+            assert_eq!(transport.dropped_inbound, 2);
+            assert!(!peer.device.has_ingress());
+            transport.inbound_blackhole = false;
+            transport.pump(&mut peer, Duration::from_millis(1)).unwrap();
+            assert_eq!(transport.dropped_inbound, 2);
+            assert!(!peer.device.has_ingress());
+            assert_eq!(
+                transport.socket.recv_from(&mut data).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            drop(transport);
+            UdpSocket::bind(local).unwrap();
         }
     }
 

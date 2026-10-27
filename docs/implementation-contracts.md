@@ -688,7 +688,13 @@ sequence number while the blackout remains active for at least 1200 ms. After
 at least three encrypted packets are dropped, it restores transport and sends a
 separate recovery heartbeat. TCP retransmits through the stack; the application
 never resubmits request bytes or lost UDP.
-Completion requires the exact response after FIN and the recovery heartbeat.
+For the independent peer, the client then suppresses inbound ciphertext for
+at least 1200 ms while the kernel worker writes its response. The worker's
+atomic notification establishes that the write occurred; the client requires
+at least one subsequent WireGuard data datagram to be discarded, sees no
+application response during suppression, and then receives the exact response
+and EOF. The encrypted datagram is not inspected to identify its inner payload.
+Completion also requires the recovery heartbeat.
 
 The default Linux kernel-peer run applies this workload in both inner families.
 Its retained workers validate the exact TCP request and reject the lost UDP
@@ -696,9 +702,11 @@ payload if it appears. Exactly five UDP messages are expected: the four original
 messages and one recovery heartbeat. Automatic sustained heartbeats are disabled
 for this bounded case. A 25-second workload deadline and matching worker
 bound include handshake loss, the observed retransmission, and later TCP
-recovery; workers are stopped and joined on every result. The separate sustained rekey workload retains its periodic heartbeats.
-This establishes controlled outbound loss recovery against an independent peer,
-not full network outage detection, service crash recovery, or roaming.
+recovery; workers are stopped and joined on every result. The separate
+sustained rekey workload retains its periodic heartbeats.
+This establishes controlled outbound and inbound ciphertext suppression and
+recovery against an independent peer, not full network outage detection,
+service crash recovery, or roaming.
 
 ## 15. Experimental WireGuard Outer Address Families
 
