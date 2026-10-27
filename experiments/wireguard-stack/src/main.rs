@@ -32,7 +32,11 @@ mod outer_errors;
 #[cfg(target_os = "linux")]
 mod outer_mtu_probe;
 #[cfg(target_os = "linux")]
+mod outer_remote;
+#[cfg(target_os = "linux")]
 mod outer_tcp_probe;
+#[cfg(target_os = "linux")]
+mod router_mtu;
 
 use std::{
     fmt, io,
@@ -305,10 +309,27 @@ fn main() -> Result<()> {
             || arguments == ["--rekey"]
             || arguments == ["--outer-mtu-check"]
             || arguments == ["--kernel-mtu-check"]
+            || arguments == ["--router-mtu-check"]
+            || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --outer-mtu-check | --kernel-mtu-check | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
     );
+    if arguments == ["--router-mtu-check"] {
+        #[cfg(target_os = "linux")]
+        return router_mtu::run();
+        #[cfg(not(target_os = "linux"))]
+        bail!("router MTU probe requires Linux disposable namespaces");
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--router-mtu-peer")
+    {
+        #[cfg(target_os = "linux")]
+        return router_mtu::serve(std::path::Path::new(&arguments[1]));
+        #[cfg(not(target_os = "linux"))]
+        bail!("router MTU peer requires Linux disposable namespaces");
+    }
     if arguments == ["--kernel-mtu-check"] {
         #[cfg(target_os = "linux")]
         return kernel_mtu::run();

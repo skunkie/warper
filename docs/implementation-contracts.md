@@ -944,3 +944,41 @@ traffic evidence. No same-library receiver or generated inner feedback is used.
 This scope accepts no rekey option. It establishes independent-kernel local-path
 recovery only, without closing remote-router discovery, general concurrent or
 asymmetric path policy, physical-path validation or full PMTU acceptance.
+
+## 23. Experimental Remote-Router Outer MTU Feedback
+
+The Linux-only router MTU scope uses three disposable network namespaces in
+one mapped user namespace: client, forwarding router and independent kernel
+WireGuard peer. The ingress link is 1600 bytes and router egress is 1400.
+The explicit fixture socket uses no-fragment PROBE mode (with readback) so
+earlier PMTU cache entries do not turn later remote cases into local errors;
+the declared transport budget continues to guard every send. All four inner/outer family
+combinations first complete a real encrypted UDP exchange.
+
+Exactly one oversized encrypted UDP send must be accepted locally and rejected
+by the forwarding router. A bounded reservation retains only its 16-byte public
+WireGuard data header, encrypted length, explicit fixture router address and
+monotonic deadline. Error-queue decoding retains at most the first 16 quoted
+bytes plus quoted length in the returned metadata; its 2048-byte receive
+buffer is transient. No application/ciphertext payload enters the reservation
+or logs. Reduction requires exact connected socket/destination/family, ICMP
+origin (IPv4 type 3/code 4 or IPv6 type 2/code 0), EMSGSIZE, the expected router,
+nontruncated controls, matching data header and a quote length within the sent
+datagram. Quotes shorter than the data header are unsupported. This is bounded
+correlation with a controlled router, not cryptographic authentication of ICMP.
+
+The owner confirms an empty error queue before reservation, serializes I/O,
+and waits no longer than its reservation deadline. Larger reports never grow
+the budget; unsupported small paths fail before mutation. Matching alone does
+not consume the reservation: budget validation/mutation precedes commit.
+Expiry, cancellation and commit release retained metadata. No failed datagram
+or ciphertext is replayed. The reduced budget must reject a distinct oversized
+operation before send and deliver a distinct safe UDP message on the same tunnel.
+The joined peer verifies exact datagram counts; the independent harness joins
+namespace/peer processes and verifies veth and WireGuard interface retirement
+on success or failure. Forwarding sysctls are changed only in the private
+router namespace. No resolver, bus or host configuration is changed.
+
+This probe does not yet resize retained TCP from remote errors or establish
+general router trust, concurrent/asymmetric physical paths, roaming, short
+IPv4 quote support, sub-minimum MTU policy or full PMTU acceptance.

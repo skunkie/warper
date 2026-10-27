@@ -91,8 +91,13 @@ family combinations, without inner feedback or application replay
 MTU scope now repeats all four family combinations using real kernel TCP and
 WireGuard, verifies exact bytes/FIN/response and lost-sequence retry, joins its
 worker, rebinds sockets and independently retires the interface
-(`target/evidence/phase-0/kernel-mtu/README.md`). Remote router discovery,
-concurrent/physical-path TCP sizing and general error propagation,
+(`target/evidence/phase-0/kernel-mtu/README.md`). A three-namespace routed
+fixture now matches genuine remote-router IPv4/IPv6 MTU errors to one encrypted
+UDP operation in all four family combinations; it reduces the outer budget,
+prevents later oversized sends, delivers distinct safe messages and verifies
+peer counts plus independent namespace/interface cleanup
+(`target/evidence/phase-0/router-mtu/README.md`). Remote-driven TCP sizing,
+short quotes, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 

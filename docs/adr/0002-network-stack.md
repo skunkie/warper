@@ -443,3 +443,20 @@ receiver or generated inner feedback contributes. This is independent-kernel
 local recovery evidence; remote-router discovery, physical/concurrent path
 policy, native macOS and full PMTU acceptance remain open. See contract
 section 22 and `target/evidence/phase-0/kernel-mtu/README.md`.
+
+A routed Linux fixture now proves remote ICMP origin independently of local
+EMSGSIZE: an encrypted UDP send succeeds through a 1600-byte ingress link,
+then forwarding over a 1400-byte egress link generates a genuine router error.
+All four inner/outer combinations correlate the quoted public WireGuard header,
+fixed socket destination and expected router before reducing the outer budget.
+Only 16 header bytes and bounded operation metadata are retained. A distinct
+oversized operation fails before socket send, and a safe message arrives on the
+same tunnel. Kernel-peer counts prove no failed UDP payload was replayed.
+Explicit PROBE mode avoids cached PMTU replacing repeated remote measurements;
+its option readback and the declared budget remain mandatory in this fixture.
+Private namespace forwarding, veth retirement, joined peer workers/processes and
+independent WireGuard removal establish controlled cleanup. No new unsafe code,
+fork or dependency is introduced. This is controlled correlation, not ICMP
+cryptographic authentication or a production router-trust policy. Remote-driven
+TCP, shorter quotes and concurrent/asymmetric physical paths keep the ADR open.
+See contract section 23 and `target/evidence/phase-0/router-mtu/README.md`.

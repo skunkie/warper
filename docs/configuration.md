@@ -279,15 +279,28 @@ trust store, rather than an offline read of the developer's trust files.
 
 ## Development-Only Outer MTU Probes
 
-The experimental `wireguard-stack --outer-mtu-check` and
-`wireguard-stack --kernel-mtu-check` executables are separate from the installed
-service/CLI contract. Run either through `scripts/verify-feasibility.sh` with
+The experimental `wireguard-stack --outer-mtu-check`,
+`wireguard-stack --kernel-mtu-check` and
+`wireguard-stack --router-mtu-check` executables are separate from the installed
+service/CLI contract. Run any scope through `scripts/verify-feasibility.sh` with
 `wireguard-stack SCOPE` on Linux, choosing exactly one of those scopes.
 The harness creates disposable user/network/mount namespaces and sets that
-namespace's loopback MTU to 1400. The kernel scope also creates and removes
-an owned WireGuard interface with MTU 1500. The executable refuses an unmapped
+namespace's loopback MTU to 1400 for the local scopes. The kernel scope also
+creates and removes an owned WireGuard interface with MTU 1500. The executable refuses an unmapped
 namespace and requires the configured MTU fixture. No YAML fields or installed
-commands change. Combining either scope with `--rekey`, another scope, or the
+commands change. Combining any scope with `--rekey`, another scope, or the
 host-stack executable is invalid. Success establishes local UDP MTU-error
 handling and retained TCP recovery; the kernel scope uses an independent
 kernel peer. The full Phase 0/PMTU gate remains incomplete.
+
+The router scope instead creates client, forwarding-router and kernel-peer
+network namespaces with 1600-byte ingress and 1400-byte egress links. It requires
+`nsenter`, `sysctl`, `readlink` and `sleep` in addition to the usual harness tools
+(on systems with administrative tools outside PATH, add `/usr/sbin`). It uses
+explicit no-fragment PROBE socket mode to measure remote errors independently
+of cached PMTU; the declared budget continues to guard sends. The internal
+`--router-mtu-peer DIRECTORY` mode is launched only by the harness in the peer
+namespace; its private ready/stop files contain no keys or payloads. It accepts
+no rekey combination and verifies one failed UDP operation without replay,
+matching a router report before reducing the budget. Remote-driven TCP sizing
+and general path trust remain unimplemented.

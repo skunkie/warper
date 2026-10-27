@@ -140,6 +140,7 @@ cargo test --locked --workspace
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-peer
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-peer --rekey
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-mtu-check
+PATH=/usr/sbin:$PATH ./scripts/verify-feasibility.sh wireguard-stack --router-mtu-check
 ```
 
 Tests require permission to bind loopback UDP sockets. On Linux, the harness
@@ -534,3 +535,31 @@ This Linux-only scope has the ordinary 20-second global probe bound and
 per-connection six-second wall/worker deadlines plus 1000 controlled TCP steps. It does not run
 long-lived rekey or remote-router/physical-path MTU discovery. The full PMTU
 gate remains open; contract section 22 defines this evidence boundary.
+
+The Linux `--router-mtu-check` scope uses a private routed topology and an
+independent kernel WireGuard UDP peer. Client/router ingress is MTU1600;
+router/peer egress is MTU1400. The first oversized encrypted send must succeed
+locally before a real IPv4 fragmentation-required or IPv6 packet-too-big error
+arrives. Matching requires the exact socket/destination, remote error origin,
+expected router and quoted 16-byte public WireGuard data header. A single
+nonrenewing one-second reservation bounds retained metadata. Missing or shorter
+quotes, malformed/unrelated errors and unsupported paths cannot reduce budgets.
+
+The fixture deliberately enables and reads back no-fragment PROBE mode to avoid
+cached PMTU suppressing repeated remote measurements; all sends still obey the
+declared transport budget. A distinct oversized send must then fail before
+socket I/O, and a separate safe message must complete on the same tunnel. All
+four family combinations run; the peer verifies exactly eight UDP datagrams
+(four warmups and four safe messages). A 100ms gap between fresh sessions
+spaces initiations for the reused kernel peer identity. This is fixture pacing,
+not a production reconnection strategy.
+
+`run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links and
+the kernel-peer subprocess. Ready/stop files use a private temporary directory;
+a bounded supervisor and cleanup traps reap processes and verify link removal.
+The peer helper independently removes its WireGuard interface. IPv4/IPv6
+forwarding sysctls belong only to the private router network namespace. No host
+resolver, bus or physical configuration is touched. Supply `nsenter`, `sysctl`,
+`readlink` and `sleep` on PATH; `/usr/sbin` may be needed for sysctl. The full
+Phase0 gate remains open, especially remote-driven TCP, short quotes, router
+trust and concurrent/asymmetric physical paths. See contract section 23.

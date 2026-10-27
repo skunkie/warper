@@ -1,0 +1,246 @@
+// SPDX-FileCopyrightText: 2026 skunkie
+//
+// SPDX-License-Identifier: MIT
+
+//! Routed remote ICMP correlation for a single encrypted UDP operation.
+
+use crate::{
+    Endpoint, create_client, kernel_peer,
+    outer_errors::ErrorQueue,
+    outer_remote::Reservation,
+    packet_peer::Peer,
+    path_mtu::{self, PathBudget},
+};
+use anyhow::{Result, ensure};
+use boringtun::noise::TunnResult;
+use smoltcp::socket::udp;
+use std::{
+    fs,
+    net::{IpAddr, SocketAddr, UdpSocket},
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
+
+pub fn run() -> Result<()> {
+    kernel_peer::require_mapped_namespace()?;
+    for ipv6 in [false, true] {
+        for outer_ipv6 in [false, true] {
+            run_case(ipv6, outer_ipv6)?;
+            // Fresh synthetic sessions reuse one kernel peer identity. Space
+            // initiations beyond its anti-flood window; this is fixture pacing.
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    Ok(())
+}
+
+pub fn serve(directory: &Path) -> Result<()> {
+    let (mut netlink, port) = kernel_peer::configure_with_port(9010)?;
+    ensure!(port == 9010);
+    let mut workers = kernel_peer::Workers::start_udp([
+        UdpSocket::bind("10.66.66.10:9000")?,
+        UdpSocket::bind("[fd66:66::10]:9000")?,
+    ])?;
+    let result = (|| -> Result<()> {
+        fs::write(directory.join("ready"), b"ready\n")?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !directory.join("stop").try_exists()? {
+            ensure!(
+                Instant::now() < deadline,
+                "router peer control deadline exceeded"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        Ok(())
+    })();
+    let cleanup = workers.finish();
+    let report = match (result, cleanup) {
+        (Err(primary), cleanup) => {
+            return Err(primary.context(match cleanup {
+                Ok(_) => "router peer UDP workers joined".into(),
+                Err(error) => format!("router peer worker cleanup also failed: {error}"),
+            }));
+        }
+        (Ok(()), report) => report?,
+    };
+    ensure!(
+        report.tcp == 0 && report.udp == 8 && report.bytes == 9944,
+        "router peer did not verify exact UDP counts and bytes"
+    );
+    kernel_peer::verify_handshake(&mut netlink, false)?;
+    println!(
+        "PASS independent router peer: udp={}, application_bytes={}, workers_joined=true",
+        report.udp, report.bytes
+    );
+    Ok(())
+}
+
+fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
+    let remote: SocketAddr = match (ipv6, outer_ipv6) {
+        (false, false) => "198.19.0.2:9010",
+        (true, false) => "198.19.0.2:9010",
+        (false, true) => "[fd77:2::2]:9010",
+        (true, true) => "[fd77:2::2]:9010",
+    }
+    .parse()?;
+    let reporter: IpAddr = if outer_ipv6 {
+        "fd77:1::1"
+    } else {
+        "198.18.0.1"
+    }
+    .parse()?;
+    let (_, transport) = create_client(ipv6, remote)?;
+    let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
+    let mut client = Endpoint {
+        peer: Peer::with_mtu(source, 40000, 1500)?,
+        transport,
+    };
+    client.transport.socket = UdpSocket::bind(if outer_ipv6 {
+        "[fd77:1::2]:0"
+    } else {
+        "198.18.0.2:0"
+    })?;
+    client.transport.socket.set_nonblocking(true)?;
+    client.transport.path_budget = PathBudget::new(1600, outer_ipv6)?;
+    client.transport.socket.connect(remote)?;
+    let address = client.transport.socket.local_addr()?;
+    let queue = ErrorQueue::enable_remote_probe(&client.transport.socket)?;
+    let result = exchange(&mut client, &queue, ipv6, reporter);
+    drop(queue);
+    drop(client);
+    let cleanup = UdpSocket::bind(address).map(drop);
+    match (result, cleanup) {
+        (Err(primary), cleanup) => Err(primary.context(match cleanup {
+            Ok(()) => "router MTU outer socket rebound".into(),
+            Err(error) => format!("router MTU socket cleanup also failed: {error}"),
+        })),
+        (Ok(()), cleanup) => Ok(cleanup?),
+    }
+}
+
+fn exchange(client: &mut Endpoint, queue: &ErrorQueue, ipv6: bool, reporter: IpAddr) -> Result<()> {
+    let wall = Instant::now();
+    let destination: SocketAddr = if ipv6 {
+        "[fd66:66::10]:9000"
+    } else {
+        "10.66.66.10:9000"
+    }
+    .parse()?;
+    send_udp(client, destination, &[0x31])?;
+    receive_udp(client, destination, &[0x31], wall)?;
+    ensure!(
+        queue.read()?.is_none(),
+        "router MTU queue was not initially empty"
+    );
+    send_udp(
+        client,
+        destination,
+        &vec![0x61; if ipv6 { 1352 } else { 1372 }],
+    )?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    ensure!(
+        client.peer.device.outgoing.len() == 1,
+        "router probe needs exactly one outgoing packet"
+    );
+    let packet = client
+        .peer
+        .device
+        .outgoing
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("missing router-bound packet"))?;
+    ensure!(packet.len() == 1400);
+    let mut encrypted = [0; 1536];
+    let result = client.transport.tunnel.encapsulate(&packet, &mut encrypted);
+    let TunnResult::WriteToNetwork(packet) = result else {
+        anyhow::bail!("router MTU encryption was not immediately ready");
+    };
+    let encrypted_len = packet.len();
+    let mut reservation = Reservation::default();
+    reservation.reserve(packet, reporter, wall.elapsed(), Duration::from_secs(1))?;
+    // The send must succeed: local EMSGSIZE is not remote-router evidence.
+    client
+        .transport
+        .send_result(TunnResult::WriteToNetwork(packet), &mut client.peer)?;
+    let quoted_len = loop {
+        if let Some(received) = queue.receive()? {
+            ensure!(received.record.mtu == 1400, "unexpected remote path MTU");
+            ensure!(reservation.apply(
+                &received,
+                client.transport.remote,
+                &mut client.transport.path_budget,
+                wall.elapsed()
+            )?);
+            break received.quoted_len;
+        }
+        reservation.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    ensure!(client.transport.path_budget.outer_mtu() == 1400 && encrypted_len > 1400);
+    send_udp(
+        client,
+        destination,
+        &vec![0x62; if ipv6 { 1352 } else { 1372 }],
+    )?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    let error = match client.transport.pump(&mut client.peer, wall.elapsed()) {
+        Ok(()) => anyhow::bail!("reduced outer budget accepted oversized operation"),
+        Err(error) => error,
+    };
+    ensure!(error.downcast_ref::<path_mtu::Error>() == Some(&path_mtu::Error::PacketTooLarge));
+    ensure!(
+        queue.read()?.is_none(),
+        "budget rejection reached the socket"
+    );
+    let safe = vec![0x53; if ipv6 { 1232 } else { 1252 }];
+    send_udp(client, destination, &safe)?;
+    receive_udp(client, destination, &safe, wall)?;
+    ensure!(queue.read()?.is_none() && client.transport.staged_packets == 0);
+    println!(
+        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, failed_payload_replayed=false",
+        client.transport.remote.is_ipv6(),
+        quoted_len.min(16),
+        safe.len()
+    );
+    Ok(())
+}
+
+fn send_udp(client: &mut Endpoint, destination: SocketAddr, payload: &[u8]) -> Result<()> {
+    client
+        .peer
+        .sockets
+        .get_mut::<udp::Socket>(client.peer.udp)
+        .send_slice(payload, destination)?;
+    Ok(())
+}
+
+fn receive_udp(
+    client: &mut Endpoint,
+    destination: SocketAddr,
+    expected: &[u8],
+    wall: Instant,
+) -> Result<()> {
+    for _ in 0..2000 {
+        ensure!(
+            wall.elapsed() < Duration::from_secs(4),
+            "routed UDP deadline exceeded"
+        );
+        let now = wall.elapsed();
+        client.peer.poll(i64::try_from(now.as_millis())?);
+        client.transport.pump(&mut client.peer, now)?;
+        let socket = client.peer.sockets.get_mut::<udp::Socket>(client.peer.udp);
+        if socket.can_recv() {
+            let (payload, metadata) = socket.recv()?;
+            ensure!(
+                payload == expected
+                    && metadata.endpoint.addr == destination.ip().into()
+                    && metadata.endpoint.port == destination.port(),
+                "router peer UDP content or tuple changed"
+            );
+            ensure!(!socket.can_recv(), "extra router UDP datagram");
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    anyhow::bail!("routed UDP step deadline exceeded")
+}

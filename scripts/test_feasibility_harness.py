@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -21,6 +21,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         harness = root / "scripts/verify-feasibility.sh"
         shutil.copyfile(Path(__file__).with_name("verify-feasibility.sh"), harness)
         shutil.copyfile(Path(__file__).with_name("run-feasibility-isolated.sh"), root / "scripts/run-feasibility-isolated.sh")
+        shutil.copyfile(Path(__file__).with_name("run-router-mtu-isolated.sh"), root / "scripts/run-router-mtu-isolated.sh")
         (root / "Cargo.lock").write_text("# synthetic lockfile\n")
         tools = root / "tools"
         tools.mkdir()
@@ -28,9 +29,12 @@ class FeasibilityHarnessTests(unittest.TestCase):
             "cargo": f'if [[ "$1" == build ]]; then exit {build_exit}; fi\necho fixture-cargo\n',
             "rustc": "echo fixture-rustc\n",
             "git": 'if [[ "$1" == rev-parse ]]; then echo fixture-revision; fi\n',
-            # Only the namespace launcher is replaced. The real timeout still
-            # supervises a real child; these tests do not claim network isolation.
-            "unshare": 'while [[ "$1" != bash ]]; do shift; done\nexec "$@"\n',
+            # Network operations are replaced. Real timeout/child processes
+            # exercise supervision; these tests do not claim network isolation.
+            "unshare": 'if [[ "$1" == --net ]]; then shift; exec "$@"; fi\nwhile [[ "$1" != bash ]]; do shift; done\nexec "$@"\n',
+            "readlink": 'echo "$1"\n',
+            "sysctl": f'echo "$*" >> "{root}/sysctl-commands.log"\n',
+            "nsenter": f'echo "$*" >> "{root}/nsenter-commands.log"\nshift\nif [[ "$1" == bash && "$2" == -eu ]]; then exit 0; fi\nexec "$@"\n',
             "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\n',
             "cat": f'if [[ "$1" == /proc/self/uid_map ]]; then echo "{mapping}"; else exec /bin/cat "$@"; fi\n',
         }
@@ -40,7 +44,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
             path.chmod(0o700)
         executable = root / f"target/debug/{probe}"
         executable.parent.mkdir(parents=True)
-        executable.write_text(f'#!/bin/sh\necho fixture-probe "$@"\nexit {probe_exit}\n')
+        executable.write_text(f'#!/usr/bin/env bash\nset -eu\necho fixture-probe "$@"\nif [[ "${{1:-}}" == --router-mtu-peer ]]; then touch "$2/ready"; while [[ ! -f "$2/stop" ]]; do sleep 0.01; done; exit {peer_exit}; fi\nif [[ "{probe_killed}" == True ]]; then kill -KILL $$; fi\nexit {probe_exit}\n')
         executable.chmod(0o700)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
         arguments = ["bash", str(harness), probe]
@@ -131,6 +135,52 @@ class FeasibilityHarnessTests(unittest.TestCase):
         result, evidence = self.run_harness(scope="--kernel-mtu-check", mapping="0 0 4294967295")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
+
+    def test_router_scope_configures_private_forwarding_and_reaps_children(self):
+        result, evidence = self.run_harness(scope="--router-mtu-check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = (evidence.parents[3] / "ip-commands.log").read_text()
+        self.assertIn("link set routerc0 mtu 1600 up", commands)
+        self.assertIn("link set routers0 mtu 1400 up", commands)
+        self.assertIn("link del dev routerc0", commands)
+        self.assertIn("link del dev routers0", commands)
+        forwarding = (evidence.parents[3] / "sysctl-commands.log").read_text()
+        self.assertIn("net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1", forwarding)
+        log = (evidence / "probe.log").read_text()
+        self.assertIn("--router-mtu-check", log)
+        self.assertIn("--router-mtu-peer", log)
+        self.assertIn("CLEANUP independent kernel WireGuard interface removed and verified", log)
+        self.assertIn("namespace processes reaped", log)
+        outcome = (evidence / "result.txt").read_text()
+        self.assertIn("router_mtu_probe_exit=0", outcome)
+        self.assertIn("NOT RUN retained TCP sizing from remote errors", outcome)
+
+    def test_router_failures_preserve_primary_exit_and_still_retire_links(self):
+        for probe_exit, peer_exit, cleanup_exit, expected in [(7, 0, 0, 7), (0, 9, 0, 9), (7, 9, 0, 7), (0, 0, 9, 1)]:
+            result, evidence = self.run_harness(scope="--router-mtu-check", probe_exit=probe_exit, peer_exit=peer_exit, cleanup_exit=cleanup_exit)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            commands = (evidence.parents[3] / "ip-commands.log").read_text()
+            self.assertIn("link del dev routerc0", commands)
+            self.assertIn("link del dev routers0", commands)
+            self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_killed_router_client_still_stops_peer_and_reaps_namespaces(self):
+        result, evidence = self.run_harness(scope="--router-mtu-check", probe_killed=True)
+        self.assertEqual(result.returncode,137,result.stderr)
+        log=(evidence / "probe.log").read_text()
+        self.assertIn("CLEANUP independent kernel WireGuard interface removed and verified",log)
+        self.assertIn("namespace processes reaped",log)
+        self.assertNotIn("PASS",(evidence / "result.txt").read_text())
+
+    def test_router_scope_rejects_invalid_scope_and_initial_namespace(self):
+        harness = str(Path(__file__).with_name("verify-feasibility.sh"))
+        for arguments in [("host-stack", "--router-mtu-check"), ("wireguard-stack", "--router-mtu-check", "--rekey")]:
+            result = subprocess.run(["bash", harness, *arguments], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2, result.stderr)
+        result, evidence = self.run_harness(scope="--router-mtu-check", mapping="0 0 4294967295")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
+        self.assertFalse((evidence.parents[3] / "sysctl-commands.log").exists())
 
     def test_packet_success_cannot_pass_full_gate(self):
         result, evidence = self.run_harness(scope="")

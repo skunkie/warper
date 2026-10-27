@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Linux local UDP MTU errors for one serialized connected socket.
+//! Bounded Linux UDP error-queue decoding for one connected fixture socket.
 
 use std::{
     fmt,
     io::{self, IoSliceMut},
-    net::{SocketAddr, UdpSocket},
+    net::{IpAddr, SocketAddr, UdpSocket},
     os::fd::AsRawFd,
 };
 
@@ -15,7 +15,8 @@ use anyhow::{Result, ensure};
 use nix::{
     errno::Errno,
     sys::socket::{
-        ControlMessageOwned, MsgFlags, SockaddrStorage, getsockopt, recvmsg, setsockopt, sockopt,
+        ControlMessageOwned, MsgFlags, SockaddrIn, SockaddrIn6, SockaddrStorage, getsockopt,
+        recvmsg, setsockopt, sockopt,
     },
 };
 use rustix::net::sockopt::{self as options, Ipv4PathMtuDiscovery, Ipv6PathMtuDiscovery};
@@ -32,7 +33,7 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "local outer MTU feedback: {self:?}")
+        write!(formatter, "outer UDP error feedback: {self:?}")
     }
 }
 
@@ -49,13 +50,22 @@ pub struct LocalMtu {
     pub mtu: usize,
 }
 
-struct Record {
-    ipv6: bool,
-    errno: u32,
-    origin: u8,
-    kind: u8,
-    code: u8,
-    mtu: u32,
+pub(super) struct Record {
+    pub ipv6: bool,
+    pub errno: u32,
+    pub origin: u8,
+    pub kind: u8,
+    pub code: u8,
+    pub mtu: u32,
+    pub reporter: Option<IpAddr>,
+}
+
+pub(super) struct ReceivedError {
+    pub record: Record,
+    pub destination: Option<SocketAddr>,
+    pub flags: MsgFlags,
+    pub prefix: [u8; 16],
+    pub quoted_len: usize,
 }
 
 impl ErrorQueue {
@@ -89,6 +99,20 @@ impl ErrorQueue {
         Ok(queue)
     }
 
+    pub(super) fn enable_remote_probe(socket: &UdpSocket) -> Result<Self> {
+        let queue = Self::enable(socket)?;
+        // The fixture repeats a routed measurement without reusing the kernel's
+        // cached PMTU. The declared transport budget still guards every send.
+        if queue.remote.is_ipv6() {
+            options::set_ipv6_mtu_discover(socket, Ipv6PathMtuDiscovery::PROBE)?;
+            ensure!(options::ipv6_mtu_discover(socket)? == Ipv6PathMtuDiscovery::PROBE);
+        } else {
+            options::set_ip_mtu_discover(socket, Ipv4PathMtuDiscovery::PROBE)?;
+            ensure!(options::ip_mtu_discover(socket)? == Ipv4PathMtuDiscovery::PROBE);
+        }
+        Ok(queue)
+    }
+
     pub fn diagnose(&self, primary: anyhow::Error) -> Result<LocalMtu> {
         let Some(error) = primary.downcast_ref::<io::Error>() else {
             return Err(primary);
@@ -106,6 +130,18 @@ impl ErrorQueue {
     }
 
     pub fn read(&self) -> Result<Option<LocalMtu>> {
+        let Some(received) = self.receive()? else {
+            return Ok(None);
+        };
+        Ok(Some(classify(
+            &received.record,
+            received.destination,
+            self.remote,
+            received.flags,
+        )?))
+    }
+
+    pub(super) fn receive(&self) -> Result<Option<ReceivedError>> {
         let socket = &self.socket;
         if socket.local_addr()? != self.local || socket.peer_addr()? != self.remote {
             return Err(Error::WrongSocket.into());
@@ -137,12 +173,18 @@ impl ErrorQueue {
             }
         });
         let record = decode_controls(message.cmsgs()?)?;
-        Ok(Some(classify(
-            &record,
+        let quoted_len = message.bytes;
+        let flags = message.flags;
+        let mut prefix = [0; 16];
+        let retained = quoted_len.min(prefix.len());
+        prefix[..retained].copy_from_slice(&bytes[..retained]);
+        Ok(Some(ReceivedError {
+            record,
             destination,
-            self.remote,
-            message.flags,
-        )?))
+            flags,
+            prefix,
+            quoted_len,
+        }))
     }
 }
 
@@ -152,9 +194,25 @@ fn decode_controls(controls: impl Iterator<Item = ControlMessageOwned>) -> Resul
         if record.is_some() {
             return Err(Error::DuplicateControl);
         }
-        let (ipv6, error) = match control {
-            ControlMessageOwned::Ipv4RecvErr(error, _) => (false, error),
-            ControlMessageOwned::Ipv6RecvErr(error, _) => (true, error),
+        let (ipv6, error, reporter) = match control {
+            ControlMessageOwned::Ipv4RecvErr(error, address) => (
+                false,
+                error,
+                address.and_then(|address| {
+                    (address.sin_family == nix::libc::AF_INET as u16 && address.sin_port == 0)
+                        .then(|| IpAddr::V4(SockaddrIn::from(address).ip()))
+                }),
+            ),
+            ControlMessageOwned::Ipv6RecvErr(error, address) => (
+                true,
+                error,
+                address.and_then(|address| {
+                    (address.sin6_family == nix::libc::AF_INET6 as u16
+                        && address.sin6_port == 0
+                        && address.sin6_scope_id == 0)
+                        .then(|| IpAddr::V6(SockaddrIn6::from(address).ip()))
+                }),
+            ),
             _ => return Err(Error::UnexpectedControl),
         };
         record = Some(Record {
@@ -164,6 +222,7 @@ fn decode_controls(controls: impl Iterator<Item = ControlMessageOwned>) -> Resul
             kind: error.ee_type,
             code: error.ee_code,
             mtu: error.ee_info,
+            reporter,
         });
     }
     record.ok_or(Error::MissingControl)
@@ -245,6 +304,7 @@ mod tests {
                 kind: 0,
                 code: 0,
                 mtu: 1400,
+                reporter: None,
             };
             let flags = MsgFlags::MSG_ERRQUEUE;
             assert_eq!(
@@ -345,6 +405,63 @@ mod tests {
                 .unwrap()
                 .ipv6
         );
+    }
+
+    #[test]
+    fn ancillary_router_addresses_require_matching_family_and_unscoped_zero_port() {
+        let error = nix::libc::sock_extended_err {
+            ee_errno: Errno::EMSGSIZE as u32,
+            ee_origin: nix::libc::SO_EE_ORIGIN_ICMP,
+            ee_type: 3,
+            ee_code: 4,
+            ee_pad: 0,
+            ee_info: 1400,
+            ee_data: 0,
+        };
+        let address: std::net::SocketAddrV4 = "198.18.0.1:0".parse().unwrap();
+        let mut raw: nix::libc::sockaddr_in = SockaddrIn::from(address).into();
+        let record =
+            decode_controls([ControlMessageOwned::Ipv4RecvErr(error, Some(raw))].into_iter())
+                .unwrap();
+        assert_eq!(record.reporter, Some(IpAddr::V4(*address.ip())));
+        raw.sin_port = 1;
+        assert!(
+            decode_controls([ControlMessageOwned::Ipv4RecvErr(error, Some(raw))].into_iter())
+                .unwrap()
+                .reporter
+                .is_none()
+        );
+        raw.sin_port = 0;
+        raw.sin_family = nix::libc::AF_UNSPEC as u16;
+        assert!(
+            decode_controls([ControlMessageOwned::Ipv4RecvErr(error, Some(raw))].into_iter())
+                .unwrap()
+                .reporter
+                .is_none()
+        );
+        let address: std::net::SocketAddrV6 = "[fd77:1::1]:0".parse().unwrap();
+        let raw: nix::libc::sockaddr_in6 = SockaddrIn6::from(address).into();
+        let record =
+            decode_controls([ControlMessageOwned::Ipv6RecvErr(error, Some(raw))].into_iter())
+                .unwrap();
+        assert_eq!(record.reporter, Some(IpAddr::V6(*address.ip())));
+        for case in 0..3 {
+            let mut invalid = raw;
+            match case {
+                0 => invalid.sin6_scope_id = 1,
+                1 => invalid.sin6_port = 1,
+                2 => invalid.sin6_family = nix::libc::AF_UNSPEC as u16,
+                _ => unreachable!(),
+            }
+            assert!(
+                decode_controls(
+                    [ControlMessageOwned::Ipv6RecvErr(error, Some(invalid))].into_iter()
+                )
+                .unwrap()
+                .reporter
+                .is_none()
+            );
+        }
     }
 
     #[test]

@@ -98,6 +98,34 @@ impl Workers {
         })
     }
 
+    pub(super) fn start_udp(sockets: [UdpSocket; 2]) -> Result<Self> {
+        for socket in &sockets {
+            socket.set_nonblocking(true)?;
+        }
+        let mut workers = Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            handles: Vec::with_capacity(2),
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        for socket in sockets {
+            let stop = workers.stop.clone();
+            match thread::Builder::new()
+                .name("router-peer-udp".into())
+                .spawn(move || udp_server(socket, &stop, deadline))
+            {
+                Ok(handle) => workers.handles.push(handle),
+                Err(primary) => {
+                    let cleanup = workers.finish();
+                    return Err(anyhow::Error::new(primary).context(match cleanup {
+                        Ok(_) => "prior UDP workers joined".into(),
+                        Err(error) => format!("UDP worker startup cleanup also failed: {error}"),
+                    }));
+                }
+            }
+        }
+        Ok(workers)
+    }
+
     pub(super) fn finish(&mut self) -> Result<Report> {
         self.stop.store(true, Ordering::Release);
         let mut report = Report::default();
@@ -127,6 +155,10 @@ impl Drop for Workers {
 }
 
 pub(super) fn configure() -> Result<(WgSocket, u16)> {
+    configure_with_port(0)
+}
+
+pub(super) fn configure_with_port(port: u16) -> Result<(WgSocket, u16)> {
     require_mapped_namespace()?;
     let mut netlink =
         WgSocket::connect().map_err(|_| anyhow::anyhow!("kernel WireGuard netlink unavailable"))?;
@@ -151,7 +183,7 @@ pub(super) fn configure() -> Result<(WgSocket, u16)> {
             set::Device::from_ifname(INTERFACE)
                 .flags(vec![set::WgDeviceF::ReplacePeers])
                 .private_key(&private_key)
-                .listen_port(0)
+                .listen_port(port)
                 .peers(vec![peer]),
         )
         .map_err(|_| anyhow::anyhow!("kernel WireGuard configuration failed"))?;
@@ -161,6 +193,7 @@ pub(super) fn configure() -> Result<(WgSocket, u16)> {
     ensure!(
         configured.public_key == Some(server_public)
             && configured.listen_port != 0
+            && (port == 0 || configured.listen_port == port)
             && configured.peers.len() == 1
             && configured.peers[0].public_key == client_key,
         "kernel WireGuard configuration readback mismatch"
@@ -451,6 +484,23 @@ mod tests {
         );
         assert!(std::net::TcpStream::connect_timeout(&tcp_address, READ_TIMEOUT).is_err());
         UdpSocket::bind(udp_address).unwrap();
+    }
+
+    #[test]
+    fn udp_only_workers_join_and_release_both_listeners() {
+        let sockets = [
+            UdpSocket::bind("127.0.0.1:0").unwrap(),
+            UdpSocket::bind("127.0.0.1:0").unwrap(),
+        ];
+        let addresses = sockets
+            .each_ref()
+            .map(|socket| socket.local_addr().unwrap());
+        let mut workers = Workers::start_udp(sockets).unwrap();
+        assert_eq!(workers.finish().unwrap().udp, 0);
+        assert!(workers.handles.is_empty());
+        for address in addresses {
+            UdpSocket::bind(address).unwrap();
+        }
     }
 
     #[test]
