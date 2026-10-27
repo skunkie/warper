@@ -139,6 +139,7 @@ cargo test --locked --workspace
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-peer
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-peer --rekey
+./scripts/verify-feasibility.sh wireguard-stack --kernel-mtu-check
 ```
 
 Tests require permission to bind loopback UDP sockets. On Linux, the harness
@@ -516,3 +517,20 @@ queued input, mixed UDP, foreign flows, invalid checksums and clocks fail before
 mutation. No inner feedback is generated. This is one serialized local path,
 not remote/physical discovery or concurrent flow sizing. The full PMTU gate
 remains open.
+
+Use `scripts/verify-feasibility.sh wireguard-stack --kernel-mtu-check` to
+repeat local outer-feedback TCP sizing against Linux kernel WireGuard rather
+than another BoringTun peer. The dedicated private fixture has loopback MTU
+1400 and WireGuard link MTU 1500. All four inner/outer family combinations
+establish TCP, submit 8192 bytes once, recover through TCP retransmission after
+validated EMSGSIZE/MTU 1400, preserve the tuple and complete FIN/response.
+The joined kernel worker verifies exact request bytes and EOF; socket rebinding
+and kernel handshake/counter readback accompany independently verified interface
+removal. No synthetic inner feedback or larger same-library receive admission
+participates. Wrong probe/scope/rekey combinations fail before build or setup;
+probe failures still clean up, and cleanup failures cannot report success.
+
+This Linux-only scope has the ordinary 20-second global probe bound and
+per-connection six-second wall/worker deadlines plus 1000 controlled TCP steps. It does not run
+long-lived rekey or remote-router/physical-path MTU discovery. The full PMTU
+gate remains open; contract section 22 defines this evidence boundary.

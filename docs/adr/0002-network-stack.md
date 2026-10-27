@@ -429,3 +429,17 @@ No inner too-big feedback contributes. Invalid pending traffic leaves queues
 and both budgets unchanged. This remains the interface-wide controlled fixture
 with its state/entropy limitations, not a general production migration API.
 See contract section 21 and `target/evidence/phase-0/outer-tcp/README.md`.
+
+A separate `--kernel-mtu-check` scope now establishes the same retained TCP
+recovery against Linux kernel WireGuard in a private loopback-MTU-1400,
+WireGuard-MTU-1500 fixture. All four family combinations observe genuine local
+EMSGSIZE/MTU 1400, retransmit the rejected TCP sequence, preserve the tuple and
+deliver one 8192-byte write with FIN and exact response. The joined kernel
+reader checks bytes and EOF, and kernel readback verifies a completed
+bidirectional handshake. Listener/outer-socket rebinding and independent
+interface removal verify retirement. Reusing the existing setup/worker code
+keeps baseline interoperability and outage coverage applicable. No same-library
+receiver or generated inner feedback contributes. This is independent-kernel
+local recovery evidence; remote-router discovery, physical/concurrent path
+policy, native macOS and full PMTU acceptance remain open. See contract
+section 22 and `target/evidence/phase-0/kernel-mtu/README.md`.

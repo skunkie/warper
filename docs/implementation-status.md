@@ -87,7 +87,11 @@ socket, and delivers a distinct safe message without replay
 applies local outer feedback to a retained TCP connection, preserving 8 KiB,
 FIN/response, tuple and retry sequence across interface sizing in all four
 family combinations, without inner feedback or application replay
-(`target/evidence/phase-0/outer-tcp/README.md`). Remote router discovery,
+(`target/evidence/phase-0/outer-tcp/README.md`). A dedicated Linux kernel-peer
+MTU scope now repeats all four family combinations using real kernel TCP and
+WireGuard, verifies exact bytes/FIN/response and lost-sequence retry, joins its
+worker, rebinds sockets and independently retires the interface
+(`target/evidence/phase-0/kernel-mtu/README.md`). Remote router discovery,
 concurrent/physical-path TCP sizing and general error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

@@ -96,6 +96,42 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
 
+    def test_kernel_mtu_scope_sets_private_limits_and_verifies_cleanup(self):
+        result, evidence = self.run_harness(scope="--kernel-mtu-check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fixture-probe --kernel-mtu-check", (evidence / "probe.log").read_text())
+        commands = (evidence.parents[3] / "ip-commands.log").read_text()
+        self.assertIn("link set lo mtu 1400", commands)
+        self.assertIn("link set dev wg-feasibility mtu 1500 up", commands)
+        self.assertIn("link del dev wg-feasibility", commands)
+        self.assertIn("-j link show", commands)
+        self.assertIn("CLEANUP independent kernel WireGuard interface removed and verified", result.stdout)
+        outcome = (evidence / "result.txt").read_text()
+        self.assertIn("kernel_mtu_probe_exit=0", outcome)
+        self.assertIn("kernel_peer_probe_exit=0", outcome)
+        self.assertNotIn("NOT RUN independent WireGuard implementation", outcome)
+        self.assertIn("NOT RUN remote router MTU discovery", outcome)
+
+    def test_kernel_mtu_probe_and_cleanup_failures_preserve_primary_exit(self):
+        for probe_exit, cleanup_exit, expected in [(7, 0, 7), (0, 9, 1), (7, 9, 7)]:
+            result, evidence = self.run_harness(scope="--kernel-mtu-check", probe_exit=probe_exit, cleanup_exit=cleanup_exit)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            commands = (evidence.parents[3] / "ip-commands.log").read_text()
+            self.assertIn("link del dev wg-feasibility", commands)
+            self.assertIn(f"kernel_mtu_probe_exit={expected}", (evidence / "result.txt").read_text())
+            self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_kernel_mtu_scope_rejects_wrong_probe_and_rekey_before_build(self):
+        harness = str(Path(__file__).with_name("verify-feasibility.sh"))
+        for arguments in [("host-stack", "--kernel-mtu-check"), ("wireguard-stack", "--kernel-mtu-check", "--rekey")]:
+            result = subprocess.run(["bash", harness, *arguments], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_kernel_mtu_scope_rejects_initial_namespace_before_mutation(self):
+        result, evidence = self.run_harness(scope="--kernel-mtu-check", mapping="0 0 4294967295")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
+
     def test_packet_success_cannot_pass_full_gate(self):
         result, evidence = self.run_harness(scope="")
         self.assertEqual(result.returncode, 1, result.stderr)

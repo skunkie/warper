@@ -36,7 +36,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-fn apply_outer(
+pub(super) fn apply_outer(
     peer: &mut Peer,
     budget: &mut PathBudget,
     report: LocalMtu,

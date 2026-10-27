@@ -7,13 +7,13 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--kernel-peer|--mtu-check|--outer-mtu-check] [--rekey]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--kernel-peer|--mtu-check|--outer-mtu-check|--kernel-mtu-check] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
@@ -25,11 +25,11 @@ if [[ "$scope" == --mtu-check && "$probe" != host-stack ]]; then
     echo "--mtu-check requires host-stack" >&2
     exit 2
 fi
-if [[ "$scope" == --outer-mtu-check && "$probe" != wireguard-stack ]]; then
-    echo "--outer-mtu-check requires wireguard-stack" >&2
+if [[ ( "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check ) && "$probe" != wireguard-stack ]]; then
+    echo "$scope requires wireguard-stack" >&2
     exit 2
 fi
-if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate || "$scope" == --outer-mtu-check ) ]]; then
+if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate || "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check ) ]]; then
     echo "--rekey requires wireguard-stack with a packet or kernel probe scope" >&2
     exit 2
 fi
@@ -43,6 +43,10 @@ fi
 if [[ "$scope" == --kernel-peer ]]; then
     probe_arguments+=(--kernel-peer)
     isolation_mode=kernel
+fi
+if [[ "$scope" == --kernel-mtu-check ]]; then
+    probe_arguments+=(--kernel-mtu-check)
+    isolation_mode=kernel-mtu
 fi
 timeout_seconds=20
 if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=50; fi
@@ -106,7 +110,11 @@ cat "$run_directory/probe.log"
     fi
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
     echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
-    if [[ "$scope" == --kernel-peer ]]; then
+    if [[ "$scope" == --kernel-mtu-check ]]; then
+        echo "kernel_mtu_probe_exit=$status"
+        echo "NOT RUN remote router MTU discovery or concurrent physical-path TCP sizing"
+    fi
+    if [[ "$scope" == --kernel-peer || "$scope" == --kernel-mtu-check ]]; then
         echo "kernel_peer_probe_exit=$status"
     else
         echo "NOT RUN independent WireGuard implementation"

@@ -922,3 +922,25 @@ The receiver's scoped larger-TCP admission must generate no inner feedback.
 All four inner/outer combinations run. This remains one serialized local-path
 operation, with the prior interface-wide/state/entropy restrictions; remote
 router discovery, concurrent flows and general physical-path policy stay open.
+
+## 22. Experimental Independent-Kernel Outer MTU Recovery
+
+The Linux-only `wireguard-stack --kernel-mtu-check` scope requires a disposable
+single-UID user/network namespace. Its harness creates only a private WireGuard
+interface (MTU 1500), addresses and loopback path (MTU 1400); it verifies interface
+removal after either success or failure. It does not touch resolver or bus state.
+
+The configured kernel peer owns a real TCP listener. In each inner/outer family
+combination, one client connection writes 8192 synthetic bytes once and closes
+sending. The existing validated local EMSGSIZE/error-queue operation reduces
+outer/inner budgets while retaining its TCP socket. TCP must retry the rejected
+sequence, preserve its tuple, deliver exact bytes and FIN, and receive the exact
+response and EOF. The kernel reader rejects changed source tuples and excess or
+incorrect bytes. Both sides have bounded deadlines; the owner cancels and joins
+the worker, preserving the primary failure if cleanup also fails. Endpoint
+rebinding and kernel handshake/counter readback supply independent cleanup and
+traffic evidence. No same-library receiver or generated inner feedback is used.
+
+This scope accepts no rekey option. It establishes independent-kernel local-path
+recovery only, without closing remote-router discovery, general concurrent or
+asymmetric path policy, physical-path validation or full PMTU acceptance.

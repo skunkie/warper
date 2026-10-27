@@ -29,13 +29,13 @@ const WORKER_POLL: Duration = Duration::from_millis(2);
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
-struct Report {
-    tcp: usize,
-    udp: usize,
-    bytes: usize,
+pub(super) struct Report {
+    pub tcp: usize,
+    pub udp: usize,
+    pub bytes: usize,
 }
 
-struct Workers {
+pub(super) struct Workers {
     stop: Arc<AtomicBool>,
     handles: Vec<JoinHandle<Result<Report>>>,
 }
@@ -59,7 +59,7 @@ impl Workers {
         workers.handles.push(
             thread::Builder::new()
                 .name("kernel-peer-tcp".into())
-                .spawn(move || tcp_server(listener, &stop, deadline))?,
+                .spawn(move || tcp_server(listener, &stop, deadline, REQUEST, RESPONSE))?,
         );
         let stop = workers.stop.clone();
         match thread::Builder::new()
@@ -80,7 +80,25 @@ impl Workers {
         Ok(workers)
     }
 
-    fn finish(&mut self) -> Result<Report> {
+    pub(super) fn start_tcp(
+        listener: TcpListener,
+        request: Vec<u8>,
+        response: &'static [u8],
+    ) -> Result<Self> {
+        listener.set_nonblocking(true)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let handle = thread::Builder::new()
+            .name("kernel-mtu-tcp".into())
+            .spawn(move || tcp_server(listener, &worker_stop, deadline, &request, response))?;
+        Ok(Self {
+            stop,
+            handles: vec![handle],
+        })
+    }
+
+    pub(super) fn finish(&mut self) -> Result<Report> {
         self.stop.store(true, Ordering::Release);
         let mut report = Report::default();
         let mut errors = Vec::new();
@@ -108,7 +126,7 @@ impl Drop for Workers {
     }
 }
 
-pub fn run(rekey: bool) -> Result<()> {
+pub(super) fn configure() -> Result<(WgSocket, u16)> {
     require_mapped_namespace()?;
     let mut netlink =
         WgSocket::connect().map_err(|_| anyhow::anyhow!("kernel WireGuard netlink unavailable"))?;
@@ -159,9 +177,14 @@ pub fn run(rekey: bool) -> Result<()> {
         allowed == expected,
         "kernel WireGuard allowed-address readback mismatch"
     );
+    Ok((netlink, configured.listen_port))
+}
+
+pub fn run(rekey: bool) -> Result<()> {
+    let (mut netlink, port) = configure()?;
     for ipv6 in [false, true] {
         let mut endpoint = loopback_address(ipv6);
-        endpoint.set_port(configured.listen_port);
+        endpoint.set_port(port);
         exchange(ipv6, Duration::ZERO, endpoint)?;
         verify_handshake(&mut netlink, false)?;
         super::udp_feedback_probe::run_kernel(ipv6, endpoint)?;
@@ -172,7 +195,7 @@ pub fn run(rekey: bool) -> Result<()> {
     }
     if rekey {
         let mut endpoint = loopback_address(true);
-        endpoint.set_port(configured.listen_port);
+        endpoint.set_port(port);
         exchange(false, REKEY_DURATION, endpoint)?;
         verify_handshake(&mut netlink, true)?;
         println!(
@@ -210,7 +233,7 @@ fn read_device(netlink: &mut WgSocket) -> Result<wireguard_uapi::get::Device> {
         .map_err(|_| anyhow::anyhow!("kernel WireGuard state read failed"))
 }
 
-fn verify_handshake(netlink: &mut WgSocket, rekey: bool) -> Result<()> {
+pub(super) fn verify_handshake(netlink: &mut WgSocket, rekey: bool) -> Result<()> {
     let device = read_device(netlink)?;
     ensure!(device.peers.len() == 1, "kernel peer count changed");
     let peer = &device.peers[0];
@@ -287,7 +310,13 @@ fn exchange(ipv6: bool, duration: Duration, endpoint: SocketAddr) -> Result<()> 
     Ok(())
 }
 
-fn tcp_server(listener: TcpListener, stop: &AtomicBool, deadline: Instant) -> Result<Report> {
+fn tcp_server(
+    listener: TcpListener,
+    stop: &AtomicBool,
+    deadline: Instant,
+    expected_request: &[u8],
+    response: &[u8],
+) -> Result<Report> {
     let (mut connection, source) = loop {
         ensure!(
             !stop.load(Ordering::Acquire) && Instant::now() < deadline,
@@ -311,7 +340,7 @@ fn tcp_server(listener: TcpListener, stop: &AtomicBool, deadline: Instant) -> Re
     );
     connection.set_read_timeout(Some(READ_TIMEOUT))?;
     connection.set_write_timeout(Some(READ_TIMEOUT))?;
-    let mut request = Vec::with_capacity(REQUEST.len());
+    let mut request = Vec::with_capacity(expected_request.len());
     let mut bytes = [0; 128];
     loop {
         ensure!(
@@ -322,7 +351,7 @@ fn tcp_server(listener: TcpListener, stop: &AtomicBool, deadline: Instant) -> Re
             Ok(0) => break,
             Ok(count) => {
                 ensure!(
-                    request.len() + count <= REQUEST.len(),
+                    request.len() + count <= expected_request.len(),
                     "kernel TCP request exceeded budget"
                 );
                 request.extend_from_slice(&bytes[..count]);
@@ -335,13 +364,13 @@ fn tcp_server(listener: TcpListener, stop: &AtomicBool, deadline: Instant) -> Re
             Err(error) => return Err(error.into()),
         }
     }
-    ensure!(request == REQUEST, "kernel TCP request changed");
-    connection.write_all(RESPONSE)?;
+    ensure!(request == expected_request, "kernel TCP request changed");
+    connection.write_all(response)?;
     connection.shutdown(Shutdown::Write)?;
     Ok(Report {
         tcp: 1,
         udp: 0,
-        bytes: REQUEST.len() + RESPONSE.len(),
+        bytes: expected_request.len() + response.len(),
     })
 }
 
@@ -422,6 +451,52 @@ mod tests {
         );
         assert!(std::net::TcpStream::connect_timeout(&tcp_address, READ_TIMEOUT).is_err());
         UdpSocket::bind(udp_address).unwrap();
+    }
+
+    #[test]
+    fn single_tcp_worker_cancels_and_releases_its_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut workers = Workers::start_tcp(listener, b"sample".to_vec(), b"reply").unwrap();
+        assert!(
+            workers.finish().is_err(),
+            "cancellation cannot claim completed TCP work"
+        );
+        assert!(workers.handles.is_empty());
+        TcpListener::bind(address).unwrap();
+    }
+
+    #[test]
+    fn single_tcp_worker_rejects_foreign_source_and_joins_its_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut workers = Workers::start_tcp(listener, b"sample".to_vec(), b"reply").unwrap();
+        let mut client = std::net::TcpStream::connect_timeout(&address, READ_TIMEOUT).unwrap();
+        client.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
+        if let Err(error) = client.write_all(b"sample") {
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ));
+        }
+        if let Err(error) = client.shutdown(Shutdown::Write) {
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::NotConnected | io::ErrorKind::ConnectionReset
+            ));
+        }
+        let received = client.read(&mut [0; 32]);
+        assert!(
+            matches!(received, Ok(0))
+                || matches!(received, Err(ref error) if error.kind() == io::ErrorKind::ConnectionReset)
+        );
+        assert!(
+            workers.finish().is_err(),
+            "worker validation failures must reach the owner"
+        );
+        assert!(workers.handles.is_empty());
+        drop(client);
+        TcpListener::bind(address).unwrap();
     }
 
     #[test]

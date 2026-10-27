@@ -277,14 +277,17 @@ It is declarative test input; no production parser/CLI has validated it yet.
 Missing SSH trust is represented as a preflight failure with a nonexistent
 trust store, rather than an offline read of the developer's trust files.
 
-## Development-Only Outer MTU Probe
+## Development-Only Outer MTU Probes
 
-The experimental `wireguard-stack --outer-mtu-check` executable is separate
-from the installed service/CLI contract. Run it through
-`scripts/verify-feasibility.sh wireguard-stack --outer-mtu-check` on Linux.
-The harness creates disposable user/network/mount namespaces and sets only
-that namespace's loopback MTU to 1400. The executable refuses an unmapped
-namespace and requires that exact fixture MTU. No YAML fields or installed
-commands change. Combining this scope with `--rekey`, another scope, or the
+The experimental `wireguard-stack --outer-mtu-check` and
+`wireguard-stack --kernel-mtu-check` executables are separate from the installed
+service/CLI contract. Run either through `scripts/verify-feasibility.sh` with
+`wireguard-stack SCOPE` on Linux, choosing exactly one of those scopes.
+The harness creates disposable user/network/mount namespaces and sets that
+namespace's loopback MTU to 1400. The kernel scope also creates and removes
+an owned WireGuard interface with MTU 1500. The executable refuses an unmapped
+namespace and requires the configured MTU fixture. No YAML fields or installed
+commands change. Combining either scope with `--rekey`, another scope, or the
 host-stack executable is invalid. Success establishes local UDP MTU-error
-handling only; the full Phase 0/PMTU gate remains incomplete.
+handling and retained TCP recovery; the kernel scope uses an independent
+kernel peer. The full Phase 0/PMTU gate remains incomplete.

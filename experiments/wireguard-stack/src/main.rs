@@ -24,6 +24,8 @@ mod udp_feedback;
 mod udp_feedback_probe;
 
 #[cfg(target_os = "linux")]
+mod kernel_mtu;
+#[cfg(target_os = "linux")]
 mod kernel_peer;
 #[cfg(target_os = "linux")]
 mod outer_errors;
@@ -302,10 +304,17 @@ fn main() -> Result<()> {
         arguments.is_empty()
             || arguments == ["--rekey"]
             || arguments == ["--outer-mtu-check"]
+            || arguments == ["--kernel-mtu-check"]
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --outer-mtu-check | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --outer-mtu-check | --kernel-mtu-check | --rekey]"
     );
+    if arguments == ["--kernel-mtu-check"] {
+        #[cfg(target_os = "linux")]
+        return kernel_mtu::run();
+        #[cfg(not(target_os = "linux"))]
+        bail!("kernel MTU probe requires Linux disposable namespaces");
+    }
     if arguments == ["--outer-mtu-check"] {
         #[cfg(target_os = "linux")]
         return outer_mtu_probe::run();
