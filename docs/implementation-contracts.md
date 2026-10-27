@@ -985,11 +985,13 @@ checks cover delayed reports after commit, cancellation and expiry: a different
 header is indistinguishable from a current report, even after cancellation;
 uniqueness across sessions and attribution on real paths remain unproven. A
 synthetic loopback error queue retains the quoted old header after a later send;
-this does not establish header uniqueness. The routed kernel-peer fixture holds
-one genuine router report after it is read, rejects it against the second
-socket's distinct reservation, and commits each socket's own report. A copy of
-the first report with the second packet's header tests the socket check in
-isolation. This tests delayed processing rather than delayed packet delivery.
+this does not establish header uniqueness. The routed kernel-peer fixture
+rejects feedback from a distinct socket against the experimental owner. It
+then holds a genuine report from the owner, changes and restores its peer,
+and rejects the retired report both before and after a new reservation. A
+modified copy with the new packet's header isolates reader generation from
+header matching. A new genuine router report commits the new path budget.
+This tests delayed processing rather than delayed packet delivery.
 A real loopback rebinding test verifies that a new reader at the same local
 tuple cannot match an old reservation. The token identifies an error-reader
 instance, not a physical path: two independent readers for one socket have
@@ -1006,7 +1008,7 @@ of such reconfiguration. A production adapter must exclusively own socket
 reconfiguration and serialize it with send, reservation and feedback handling;
 it must retire the old reader generation and invalidate its pending feedback
 before publishing a changed peer, even when a previous tuple is later restored.
-A separate Linux test-only owner constructs and privately owns a nonblocking
+A separate Linux experimental owner constructs and privately owns a nonblocking
 socket and its error reader. Peer replacement validates first, cancels pending
 feedback and drops the old reader before reconnecting; if reconnect or reader
 creation fails, feedback and sends stay unavailable until explicit recovery.
@@ -1014,9 +1016,11 @@ A fresh reader and separately validated path budget are published together on
 success. Loopback tests cover change and return, stale feedback even with a
 matching header, validation refusal, and an injected failure after the peer has
 already changed. The old error is preserved and recovery creates a new reader.
-This prototype does not own the existing WireGuard transport or exercise actual
-routed ICMP, concurrency, cancellation during transition, or production path
-selection. Production ownership and path policy remain open.
+The routed probe encrypts real inner traffic with BoringTun and sends it through
+the owner, but does not complete an application exchange through it after
+recovery. The owner does not replace the existing WireGuard transport.
+Concurrency, cancellation during transition, and production path selection
+remain unverified. Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram

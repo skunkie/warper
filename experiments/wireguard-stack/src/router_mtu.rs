@@ -7,6 +7,7 @@
 use crate::{
     Endpoint, create_client, kernel_peer,
     outer_errors::ErrorQueue,
+    outer_owner::Owner,
     outer_remote::Reservation,
     packet_peer::Peer,
     path_mtu::{self, PathBudget},
@@ -131,17 +132,18 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
     let reporter = reporter(outer_ipv6)?;
     let address = client.transport.socket.local_addr()?;
     let queue = ErrorQueue::enable_remote_probe(&client.transport.socket)?;
-    let second = UdpSocket::bind(SocketAddr::new(address.ip(), 0))?;
-    second.connect(client.transport.remote)?;
-    let second_address = second.local_addr()?;
+    let mut owner = Owner::new_remote_probe(
+        SocketAddr::new(address.ip(), 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let second_address = owner.local_addr()?;
     ensure!(
         second_address != address,
         "outer sockets must have distinct local tuples"
     );
-    let second_queue = ErrorQueue::enable_remote_probe(&second)?;
-    let result = exchange(&mut client, &queue, &second, &second_queue, ipv6, reporter);
-    drop(second_queue);
-    drop(second);
+    let result = exchange(&mut client, &queue, &mut owner, ipv6, reporter);
+    drop(owner);
     drop(queue);
     drop(client);
     let cleanup = UdpSocket::bind(address)
@@ -158,8 +160,7 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
 fn exchange(
     client: &mut Endpoint,
     queue: &ErrorQueue,
-    second: &UdpSocket,
-    second_queue: &ErrorQueue,
+    owner: &mut Owner,
     ipv6: bool,
     reporter: IpAddr,
 ) -> Result<()> {
@@ -244,28 +245,10 @@ fn exchange(
         packet[..16] != stale.prefix,
         "successive WireGuard headers repeated"
     );
-    let mut second_reservation = Reservation::default();
-    let mut second_budget = PathBudget::new(1600, second.local_addr()?.is_ipv6())?;
-    second_reservation.reserve(
-        packet,
-        second_queue,
-        reporter,
-        wall.elapsed(),
-        Duration::from_secs(1),
-    )?;
+    owner.send_reserved(packet, reporter, wall.elapsed())?;
     let mut wrong_owner = stale.clone();
     wrong_owner.prefix.copy_from_slice(&packet[..16]);
-    client.transport.path_budget.check_datagram(packet.len())?;
-    ensure!(
-        second.send(packet)? == packet.len(),
-        "partial second outer datagram"
-    );
-    let error = match second_reservation.apply(
-        second_queue,
-        &wrong_owner,
-        &mut second_budget,
-        wall.elapsed(),
-    ) {
+    let error = match owner.apply(&wrong_owner, wall.elapsed()) {
         Ok(_) => anyhow::bail!("wrong socket feedback matched a reservation"),
         Err(error) => error,
     };
@@ -274,42 +257,101 @@ fn exchange(
             == Some(&crate::outer_remote::Error::Unmatched)
     );
     ensure!(
-        second_budget.outer_mtu() == 1600,
+        owner.outer_mtu() == 1600,
         "wrong socket changed path budget"
     );
-    let error =
-        match second_reservation.apply(second_queue, &stale, &mut second_budget, wall.elapsed()) {
-            Ok(_) => anyhow::bail!("stale feedback matched a later reservation"),
-            Err(error) => error,
-        };
+    let old_report = loop {
+        if let Some(received) = owner.receive()? {
+            ensure!(
+                received.record.mtu == 1400,
+                "unexpected owned remote path MTU"
+            );
+            break received;
+        }
+        owner.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    let remote = client.transport.remote;
+    let mut alternate = remote;
+    alternate.set_port(
+        remote
+            .port()
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("invalid fixture peer port"))?,
+    );
+    owner.reconnect(alternate, 1600)?;
+    owner.reconnect(remote, 1600)?;
+    let error = match owner.apply(&old_report, wall.elapsed()) {
+        Ok(_) => anyhow::bail!("retired feedback matched after peer transition"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_remote::Error>()
+            == Some(&crate::outer_remote::Error::MissingReservation)
+    );
+    send_udp(
+        client,
+        destination,
+        &vec![0x64; if ipv6 { 1352 } else { 1372 }],
+    )?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    ensure!(
+        client.peer.device.outgoing.len() == 1,
+        "expected one post-transition datagram"
+    );
+    let packet = client
+        .peer
+        .device
+        .outgoing
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("missing post-transition packet"))?;
+    ensure!(packet.len() == 1400);
+    let result = client.transport.tunnel.encapsulate(&packet, &mut encrypted);
+    let TunnResult::WriteToNetwork(packet) = result else {
+        anyhow::bail!("post-transition encryption was not immediately ready");
+    };
+    let mut same_header_old_report = old_report.clone();
+    same_header_old_report.prefix.copy_from_slice(&packet[..16]);
+    owner.send_reserved(packet, reporter, wall.elapsed())?;
+    let error = match owner.apply(&same_header_old_report, wall.elapsed()) {
+        Ok(_) => anyhow::bail!("retired reader matched the new reservation"),
+        Err(error) => error,
+    };
     ensure!(
         error.downcast_ref::<crate::outer_remote::Error>()
             == Some(&crate::outer_remote::Error::Unmatched)
     );
     ensure!(
-        second_budget.outer_mtu() == 1600,
-        "stale feedback changed path budget"
+        owner.outer_mtu() == 1600,
+        "retired reader changed the new path budget"
+    );
+    let error = match owner.apply(&old_report, wall.elapsed()) {
+        Ok(_) => anyhow::bail!("retired feedback matched the new reservation"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_remote::Error>()
+            == Some(&crate::outer_remote::Error::Unmatched)
+    );
+    ensure!(
+        owner.outer_mtu() == 1600,
+        "retired feedback changed the new path budget"
     );
     let quoted_len = loop {
-        if let Some(received) = second_queue.receive()? {
+        if let Some(received) = owner.receive()? {
             ensure!(
                 received.record.mtu == 1400,
-                "unexpected later remote path MTU"
+                "unexpected post-transition remote path MTU"
             );
-            ensure!(second_reservation.apply(
-                second_queue,
-                &received,
-                &mut second_budget,
-                wall.elapsed()
-            )?);
+            ensure!(owner.apply(&received, wall.elapsed())?);
             break received.quoted_len;
         }
-        second_reservation.advance(wall.elapsed())?;
+        owner.advance(wall.elapsed())?;
         thread::sleep(Duration::from_millis(1));
     };
     ensure!(
-        second_budget.outer_mtu() == 1400,
-        "second budget did not commit"
+        owner.outer_mtu() == 1400,
+        "post-transition budget did not commit"
     );
     ensure!(
         reservation.apply(
@@ -341,7 +383,7 @@ fn exchange(
     receive_udp(client, destination, &safe, wall)?;
     ensure!(queue.read()?.is_none() && client.transport.staged_packets == 0);
     println!(
-        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, stale_rejected=true, wrong_socket_rejected=true, failed_payload_replayed=false",
+        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, retired_feedback_rejected=true, wrong_socket_rejected=true, peer_transition=true, failed_payload_replayed=false",
         client.transport.remote.is_ipv6(),
         quoted_len.min(16),
         safe.len()

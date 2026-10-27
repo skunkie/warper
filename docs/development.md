@@ -544,29 +544,25 @@ arrives. Matching requires the exact socket/destination, remote error origin,
 expected router and quoted 16-byte public WireGuard data header. A single
 nonrenewing one-second reservation bounds retained metadata. Missing or shorter
 quotes, malformed/unrelated errors and unsupported paths cannot reduce budgets.
-The fixture holds the first genuine report, sends a distinct oversized
-datagram from a second connected socket, and maintains separate reservations
-and budgets. It rejects the first socket's report against the second, including
-a synthetic copy with the second packet's header, then commits each socket's
-own genuine report. Both oversized datagrams are dropped; neither application
-payload is replayed. Each error-queue reader also supplies an opaque lifetime
-token to its reservations and decoded reports. A socket-rebinding test checks
-that a new reader at the same local tuple cannot match an old reservation.
-Reservations take the error reader itself so the local tuple, connected
-destination and token come from the same reader. The owner must choose the
-correct reader; independently created readers have different tokens even when
-they refer to the same socket. Reservation and feedback application check the
-live socket tuple before mutation. These point-in-time checks do not detect a
-peer changed and restored between checks or concurrent reconfiguration. A
-loopback test demonstrates this by delivering a synthetic datagram to another
-peer, restoring the original connection, and applying matching synthetic cached
-feedback. This is evidence of a limitation, not a production-safe transition.
-The separate Linux test-only `outer_owner` experiment constructs a private
-socket and serializes operations through exclusive mutable access. Its peer
-transition revokes the old reservation and reader before reconnecting; failed
-transitions stay unavailable until recovery. Run its controlled loopback tests
-with `cargo test --locked -p wireguard-stack outer_owner::tests`. It is not
-integrated with the WireGuard transport or a native macOS implementation.
+The fixture sends distinct oversized encrypted datagrams through the original
+transport and a separate socket owner. It rejects the original socket's report
+against the owner, including a synthetic copy with the owner's packet header.
+It then holds a genuine report received by the owner, changes and restores the
+owner's peer, and verifies that report cannot change the new path budget. A
+new genuine report commits the new budget. A synthetic copy with the new
+header also checks reader generation independently of header matching. The
+kernel peer verifies that failed UDP payloads are not replayed.
+
+The Linux `outer_owner` experiment constructs a private socket and serializes
+operations through exclusive mutable access. Its peer transition revokes the
+old reservation and reader before reconnecting; failed transitions stay
+unavailable until recovery. Run its controlled loopback tests with
+`cargo test --locked -p wireguard-stack outer_owner::tests`. The routed fixture
+uses the owner for encrypted sends and genuine feedback, but does not complete
+an application exchange through that owner after recovery. The owner does not
+replace the general WireGuard transport or a native macOS implementation.
+The original reader's snapshot checks still cannot detect an unowned socket
+peer changed and restored between checks or concurrently reconfigured.
 
 A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
 and `ip`, with permission to create an isolated user and network namespace:

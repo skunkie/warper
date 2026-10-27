@@ -30,30 +30,50 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-struct Owner {
+pub(super) struct Owner {
     socket: UdpSocket,
     queue: Option<ErrorQueue>,
     reservation: Reservation,
     budget: PathBudget,
+    remote_probe: bool,
 }
 
 impl Owner {
+    #[cfg(test)]
     fn new(local: SocketAddr, remote: SocketAddr, outer_mtu: usize) -> anyhow::Result<Self> {
+        Self::new_with_mode(local, remote, outer_mtu, false)
+    }
+
+    pub(super) fn new_remote_probe(
+        local: SocketAddr,
+        remote: SocketAddr,
+        outer_mtu: usize,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_mode(local, remote, outer_mtu, true)
+    }
+
+    fn new_with_mode(
+        local: SocketAddr,
+        remote: SocketAddr,
+        outer_mtu: usize,
+        remote_probe: bool,
+    ) -> anyhow::Result<Self> {
         Self::validate_peer(local, remote)?;
         let budget = PathBudget::new(outer_mtu, remote.is_ipv6())?;
         let socket = UdpSocket::bind(local)?;
         socket.set_nonblocking(true)?;
         socket.connect(remote)?;
-        let queue = ErrorQueue::enable(&socket)?;
+        let queue = Self::enable_queue(&socket, remote_probe)?;
         Ok(Self {
             socket,
             queue: Some(queue),
             reservation: Reservation::default(),
             budget,
+            remote_probe,
         })
     }
 
-    fn send_reserved(
+    pub(super) fn send_reserved(
         &mut self,
         packet: &[u8],
         reporter: IpAddr,
@@ -86,12 +106,12 @@ impl Owner {
         }
     }
 
-    fn apply(&mut self, report: &ReceivedError, now: Duration) -> anyhow::Result<bool> {
+    pub(super) fn apply(&mut self, report: &ReceivedError, now: Duration) -> anyhow::Result<bool> {
         let queue = self.queue.as_ref().ok_or(Error::Unavailable)?;
         self.reservation.apply(queue, report, &mut self.budget, now)
     }
 
-    fn reconnect(&mut self, remote: SocketAddr, outer_mtu: usize) -> anyhow::Result<()> {
+    pub(super) fn reconnect(&mut self, remote: SocketAddr, outer_mtu: usize) -> anyhow::Result<()> {
         self.reconnect_with(remote, outer_mtu, |socket, address| socket.connect(address))
     }
 
@@ -107,10 +127,35 @@ impl Owner {
         self.reservation.cancel();
         self.queue = None;
         connect(&self.socket, remote)?;
-        let queue = ErrorQueue::enable(&self.socket)?;
+        let queue = Self::enable_queue(&self.socket, self.remote_probe)?;
         self.budget = budget;
         self.queue = Some(queue);
         Ok(())
+    }
+
+    pub(super) fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    pub(super) fn outer_mtu(&self) -> usize {
+        self.budget.outer_mtu()
+    }
+
+    pub(super) fn receive(&self) -> anyhow::Result<Option<ReceivedError>> {
+        self.queue.as_ref().ok_or(Error::Unavailable)?.receive()
+    }
+
+    pub(super) fn advance(&mut self, now: Duration) -> anyhow::Result<()> {
+        self.reservation.advance(now)?;
+        Ok(())
+    }
+
+    fn enable_queue(socket: &UdpSocket, remote_probe: bool) -> anyhow::Result<ErrorQueue> {
+        if remote_probe {
+            ErrorQueue::enable_remote_probe(socket)
+        } else {
+            ErrorQueue::enable(socket)
+        }
     }
 
     fn validate_peer(local: SocketAddr, remote: SocketAddr) -> Result<(), Error> {

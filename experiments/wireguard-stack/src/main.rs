@@ -31,7 +31,7 @@ mod kernel_peer;
 mod outer_errors;
 #[cfg(target_os = "linux")]
 mod outer_mtu_probe;
-#[cfg(all(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 mod outer_owner;
 #[cfg(target_os = "linux")]
 mod outer_remote;
