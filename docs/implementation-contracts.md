@@ -861,3 +861,39 @@ not physical outer-UDP PMTU discovery, independent-kernel PMTU, path attribution
 concurrent/asymmetric routing, sub-minimum paths or a production migration API.
 Remote router-address admission remains unproven under the experiment's exact
 inner-source policy.
+
+## 20. Experimental Local Outer UDP MTU Feedback
+
+Linux-only candidate using safe nix error-queue decoding and rustix socket
+options. A dedicated connected UDP socket explicitly enables reliable error
+reporting and no-fragment path discovery, with option readback. The owner
+serializes I/O, keeps its local/remote tuple fixed, and confirms an empty error
+queue before one application datagram can fail. A local MTU report is usable
+only alongside that synchronous EMSGSIZE and matching error-queue destination,
+family, LOCAL origin, EMSGSIZE errno, zero type/code and nonzero bounded MTU.
+Remote ICMP errors do not satisfy this local attribution contract. The reader
+owns one duplicate socket descriptor, so it cannot outlive the underlying
+socket or consume errors from a replacement descriptor. The owner drops this
+reader before socket rebinding/retirement; a peer change is rejected.
+
+One nonblocking recvmsg reads at most 2048 payload bytes and 256 ancillary
+bytes; truncation, missing/duplicate/unknown controls or endpoint changes fail
+without changing the path budget. No packet payload is logged, retained or
+replayed. A validated report can reduce the declared outer budget only; an
+unsupported small path is typed failure and a larger report cannot grow it.
+The initial probe does not yet resize active TCP from outer feedback.
+
+The isolated 1400-byte loopback fixture carries real BoringTun traffic. After
+handshake/warmup, one oversized encrypted UDP datagram must fail locally and
+never reach the peer. Its kernel error reduces the budget; the same size is
+then rejected before send. A distinct safe datagram must arrive intact over
+the same tunnel. Both inner/outer families are tested. Endpoint destruction
+and address rebinding prove cleanup. This is local enforcement, not remote
+router/path-change discovery, physical-path validation or full PMTU acceptance.
+
+Implementation: `wireguard-stack/src/outer_errors.rs` reads one bounded
+nonblocking error record; `outer_mtu_probe.rs` owns the serialized operation,
+expected failed-send diagnosis, budget reduction and cleanup. Safe APIs are
+pinned nix 0.31.3 (net/uio) and rustix 1.1.5 (net/time), Linux-only. Dedicated
+socket ownership means these option changes need no host-state rollback.
+No generic transport path enables the option automatically in this increment.

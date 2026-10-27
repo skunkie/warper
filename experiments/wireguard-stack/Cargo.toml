@@ -16,6 +16,8 @@ boringtun.workspace = true
 smoltcp.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true
+rustix.workspace = true
 wireguard-uapi.workspace = true
 
 [lints]

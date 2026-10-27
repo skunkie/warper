@@ -74,6 +74,28 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("--mtu-check requires host-stack", result.stderr)
 
+    def test_outer_mtu_scope_configures_only_private_loopback(self):
+        result, evidence = self.run_harness(scope="--outer-mtu-check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fixture-probe --outer-mtu-check", (evidence / "probe.log").read_text())
+        commands = (evidence.parents[3] / "ip-commands.log").read_text()
+        self.assertIn("link set lo mtu 1400", commands)
+        self.assertNotIn("link add", commands)
+        outcome = (evidence / "result.txt").read_text()
+        self.assertIn("outer_local_mtu_probe_exit=0", outcome)
+        self.assertIn("NOT RUN remote router MTU discovery", outcome)
+
+    def test_outer_mtu_scope_rejects_wrong_probe_and_rekey(self):
+        harness = str(Path(__file__).with_name("verify-feasibility.sh"))
+        for arguments in [("host-stack", "--outer-mtu-check"), ("wireguard-stack", "--outer-mtu-check", "--rekey")]:
+            result = subprocess.run(["bash", harness, *arguments], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_outer_mtu_scope_rejects_initial_namespace_before_mutation(self):
+        result, evidence = self.run_harness(scope="--outer-mtu-check", mapping="0 0 4294967295")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
+
     def test_packet_success_cannot_pass_full_gate(self):
         result, evidence = self.run_harness(scope="")
         self.assertEqual(result.returncode, 1, result.stderr)

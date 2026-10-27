@@ -497,3 +497,15 @@ The scoped larger-TCP fixture validates checksums/headers and cannot bypass
 ordinary UDP size checks. These are inner feedback probes, not physical outer
 PMTU discovery or independent-kernel PMTU evidence. Exact-source admission of
 other inner routers and production state/path policy remain unresolved.
+
+Use `scripts/verify-feasibility.sh wireguard-stack --outer-mtu-check` for the
+Linux local outer-MTU scope. The guarded namespace helper sets only private
+loopback MTU to 1400. Explicit no-fragment discovery and error-queue options
+are read back on a dedicated connected socket. In all inner/outer family
+combinations, one encrypted datagram must fail with local EMSGSIZE, a matching
+kernel report must provide 1400, and the reduced budget must reject a distinct
+oversized operation before socket send. A separate safe datagram must arrive
+unchanged; failed application data is never replayed. Socket rebinding checks
+cleanup. This scope rejects `--rekey` and requires wireguard-stack. Its success
+is local enforcement evidence, not remote/physical path discovery or active
+TCP adaptation from outer feedback. The full PMTU gate remains open.

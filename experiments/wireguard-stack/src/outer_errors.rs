@@ -1,0 +1,318 @@
+// SPDX-FileCopyrightText: 2026 skunkie
+//
+// SPDX-License-Identifier: MIT
+
+//! Linux local UDP MTU errors for one serialized connected socket.
+
+use std::{
+    fmt,
+    io::IoSliceMut,
+    net::{SocketAddr, UdpSocket},
+    os::fd::AsRawFd,
+};
+
+use anyhow::{Result, ensure};
+use nix::{
+    errno::Errno,
+    sys::socket::{
+        ControlMessageOwned, MsgFlags, SockaddrStorage, getsockopt, recvmsg, setsockopt, sockopt,
+    },
+};
+use rustix::net::sockopt::{self as options, Ipv4PathMtuDiscovery, Ipv6PathMtuDiscovery};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    WrongSocket,
+    Truncated,
+    MissingControl,
+    DuplicateControl,
+    UnexpectedControl,
+    InvalidRecord,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "local outer MTU feedback: {self:?}")
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub struct ErrorQueue {
+    socket: UdpSocket,
+    local: SocketAddr,
+    remote: SocketAddr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalMtu {
+    pub mtu: usize,
+}
+
+struct Record {
+    ipv6: bool,
+    errno: u32,
+    origin: u8,
+    kind: u8,
+    code: u8,
+    mtu: u32,
+}
+
+impl ErrorQueue {
+    pub fn enable(socket: &UdpSocket) -> Result<Self> {
+        let queue = Self {
+            socket: socket.try_clone()?,
+            local: socket.local_addr()?,
+            remote: socket.peer_addr()?,
+        };
+        ensure!(
+            queue.local.is_ipv6() == queue.remote.is_ipv6(),
+            "outer socket family mismatch"
+        );
+        if queue.remote.is_ipv6() {
+            setsockopt(socket, sockopt::Ipv6RecvErr, &true)?;
+            options::set_ipv6_mtu_discover(socket, Ipv6PathMtuDiscovery::DO)?;
+            ensure!(
+                getsockopt(socket, sockopt::Ipv6RecvErr)?
+                    && options::ipv6_mtu_discover(socket)? == Ipv6PathMtuDiscovery::DO,
+                "IPv6 error reporting readback failed"
+            );
+        } else {
+            setsockopt(socket, sockopt::Ipv4RecvErr, &true)?;
+            options::set_ip_mtu_discover(socket, Ipv4PathMtuDiscovery::DO)?;
+            ensure!(
+                getsockopt(socket, sockopt::Ipv4RecvErr)?
+                    && options::ip_mtu_discover(socket)? == Ipv4PathMtuDiscovery::DO,
+                "IPv4 error reporting readback failed"
+            );
+        }
+        Ok(queue)
+    }
+
+    pub fn read(&self) -> Result<Option<LocalMtu>> {
+        let socket = &self.socket;
+        if socket.local_addr()? != self.local || socket.peer_addr()? != self.remote {
+            return Err(Error::WrongSocket.into());
+        }
+        let mut bytes = [0; 2048];
+        let mut iov = [IoSliceMut::new(&mut bytes)];
+        let mut ancillary = [0; 256];
+        let message = match recvmsg::<SockaddrStorage>(
+            socket.as_raw_fd(),
+            &mut iov,
+            Some(&mut ancillary),
+            MsgFlags::MSG_ERRQUEUE | MsgFlags::MSG_DONTWAIT,
+        ) {
+            Ok(message) => message,
+            Err(Errno::EAGAIN) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if message
+            .flags
+            .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC)
+        {
+            return Err(Error::Truncated.into());
+        }
+        let destination = message.address.and_then(|address| {
+            if let Some(ip) = address.as_sockaddr_in() {
+                Some(SocketAddr::from(*ip))
+            } else {
+                address.as_sockaddr_in6().map(|ip| SocketAddr::from(*ip))
+            }
+        });
+        let record = decode_controls(message.cmsgs()?)?;
+        Ok(Some(classify(
+            &record,
+            destination,
+            self.remote,
+            message.flags,
+        )?))
+    }
+}
+
+fn decode_controls(controls: impl Iterator<Item = ControlMessageOwned>) -> Result<Record, Error> {
+    let mut record = None;
+    for control in controls {
+        if record.is_some() {
+            return Err(Error::DuplicateControl);
+        }
+        let (ipv6, error) = match control {
+            ControlMessageOwned::Ipv4RecvErr(error, _) => (false, error),
+            ControlMessageOwned::Ipv6RecvErr(error, _) => (true, error),
+            _ => return Err(Error::UnexpectedControl),
+        };
+        record = Some(Record {
+            ipv6,
+            errno: error.ee_errno,
+            origin: error.ee_origin,
+            kind: error.ee_type,
+            code: error.ee_code,
+            mtu: error.ee_info,
+        });
+    }
+    record.ok_or(Error::MissingControl)
+}
+
+fn classify(
+    record: &Record,
+    destination: Option<SocketAddr>,
+    remote: SocketAddr,
+    flags: MsgFlags,
+) -> Result<LocalMtu, Error> {
+    if flags.intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC) {
+        return Err(Error::Truncated);
+    }
+    if !flags.contains(MsgFlags::MSG_ERRQUEUE)
+        || destination != Some(remote)
+        || record.ipv6 != remote.is_ipv6()
+        || record.errno != Errno::EMSGSIZE as u32
+        || record.origin != nix::libc::SO_EE_ORIGIN_LOCAL
+        || record.kind != 0
+        || record.code != 0
+        || record.mtu == 0
+        || record.mtu > 65535
+    {
+        return Err(Error::InvalidRecord);
+    }
+    Ok(LocalMtu {
+        mtu: record.mtu as usize,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_records_require_exact_destination_family_origin_and_error() {
+        for ipv6 in [false, true] {
+            let peer: SocketAddr = if ipv6 { "[::1]:9000" } else { "127.0.0.1:9000" }
+                .parse()
+                .unwrap();
+            let record = || Record {
+                ipv6,
+                errno: Errno::EMSGSIZE as u32,
+                origin: nix::libc::SO_EE_ORIGIN_LOCAL,
+                kind: 0,
+                code: 0,
+                mtu: 1400,
+            };
+            let flags = MsgFlags::MSG_ERRQUEUE;
+            assert_eq!(
+                classify(&record(), Some(peer), peer, flags),
+                Ok(LocalMtu { mtu: 1400 })
+            );
+            for field in ["family", "errno", "origin", "type", "code", "zero", "large"] {
+                let mut invalid = record();
+                match field {
+                    "family" => invalid.ipv6 = !ipv6,
+                    "errno" => invalid.errno = Errno::ECONNREFUSED as u32,
+                    "origin" => invalid.origin = if ipv6 { 3 } else { 2 },
+                    "type" => invalid.kind = 1,
+                    "code" => invalid.code = 1,
+                    "zero" => invalid.mtu = 0,
+                    "large" => invalid.mtu = 65536,
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    classify(&invalid, Some(peer), peer, flags),
+                    Err(Error::InvalidRecord),
+                    "field {field}"
+                );
+            }
+            assert_eq!(
+                classify(&record(), None, peer, flags),
+                Err(Error::InvalidRecord)
+            );
+            let mut wrong = peer;
+            wrong.set_port(9001);
+            assert_eq!(
+                classify(&record(), Some(wrong), peer, flags),
+                Err(Error::InvalidRecord)
+            );
+            assert_eq!(
+                classify(&record(), Some(peer), peer, MsgFlags::empty()),
+                Err(Error::InvalidRecord)
+            );
+            for flag in [MsgFlags::MSG_TRUNC, MsgFlags::MSG_CTRUNC] {
+                assert_eq!(
+                    classify(&record(), Some(peer), peer, flags | flag),
+                    Err(Error::Truncated)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn enabled_socket_reads_empty_queue_without_blocking_and_rejects_peer_changes() {
+        for ipv6 in [false, true] {
+            let receiver = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let sender = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            sender.connect(receiver.local_addr().unwrap()).unwrap();
+            let unconnected = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            assert!(ErrorQueue::enable(&unconnected).is_err());
+            let queue = ErrorQueue::enable(&sender).unwrap();
+            assert_eq!(queue.read().unwrap(), None);
+            let other = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            sender.connect(other.local_addr().unwrap()).unwrap();
+            assert_eq!(
+                queue.read().unwrap_err().downcast_ref::<Error>(),
+                Some(&Error::WrongSocket)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_unknown_or_duplicate_ancillary_controls_are_rejected() {
+        let error = || nix::libc::sock_extended_err {
+            ee_errno: Errno::EMSGSIZE as u32,
+            ee_origin: nix::libc::SO_EE_ORIGIN_LOCAL,
+            ee_type: 0,
+            ee_code: 0,
+            ee_pad: 0,
+            ee_info: 1400,
+            ee_data: 0,
+        };
+        assert!(matches!(
+            decode_controls(std::iter::empty()),
+            Err(Error::MissingControl)
+        ));
+        assert!(matches!(
+            decode_controls([ControlMessageOwned::ScmRights(Vec::new())].into_iter()),
+            Err(Error::UnexpectedControl)
+        ));
+        assert!(matches!(
+            decode_controls(
+                [
+                    ControlMessageOwned::Ipv4RecvErr(error(), None),
+                    ControlMessageOwned::Ipv4RecvErr(error(), None)
+                ]
+                .into_iter()
+            ),
+            Err(Error::DuplicateControl)
+        ));
+        assert!(
+            decode_controls([ControlMessageOwned::Ipv6RecvErr(error(), None)].into_iter())
+                .unwrap()
+                .ipv6
+        );
+    }
+
+    #[test]
+    fn error_reader_retains_its_socket_until_the_reader_is_dropped() {
+        for ipv6 in [false, true] {
+            let receiver = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let sender = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            sender.connect(receiver.local_addr().unwrap()).unwrap();
+            let address = sender.local_addr().unwrap();
+            let queue = ErrorQueue::enable(&sender).unwrap();
+            drop(sender);
+            assert!(
+                UdpSocket::bind(address).is_err(),
+                "reserved socket must survive its original descriptor"
+            );
+            drop(queue);
+            UdpSocket::bind(address).unwrap();
+        }
+    }
+}

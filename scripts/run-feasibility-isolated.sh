@@ -5,8 +5,8 @@
 
 # Internal namespace child. Never configure networking in the invoking host.
 set -euo pipefail
-if [[ $# -lt 2 || ! "$1" =~ ^(packet|kernel)$ ]]; then
-    echo "usage: run-feasibility-isolated.sh {packet|kernel} PROBE [ARG...]" >&2
+if [[ $# -lt 2 || ! "$1" =~ ^(packet|kernel|outer)$ ]]; then
+    echo "usage: run-feasibility-isolated.sh {packet|kernel|outer} PROBE [ARG...]" >&2
     exit 2
 fi
 mode=$1
@@ -20,6 +20,11 @@ fi
 # A newly mapped user namespace has no CAP_NET_ADMIN in the host network
 # namespace. The parent also creates a new net/mount namespace with unshare.
 ip link set lo up
+if [[ "$mode" == outer ]]; then
+    ip link set lo mtu 1400
+    echo "FIXTURE private loopback MTU set to 1400"
+    exec "$@"
+fi
 if [[ "$mode" == packet ]]; then
     exec "$@"
 fi

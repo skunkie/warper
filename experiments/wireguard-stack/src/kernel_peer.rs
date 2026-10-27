@@ -182,12 +182,12 @@ pub fn run(rekey: bool) -> Result<()> {
     Ok(())
 }
 
-fn require_mapped_namespace() -> Result<()> {
+pub(super) fn require_mapped_namespace() -> Result<()> {
     let mapping =
         fs::read_to_string("/proc/self/uid_map").context("cannot inspect namespace ownership")?;
     ensure!(
         single_uid_mapping(&mapping),
-        "kernel peer requires an isolated single-UID user/network namespace"
+        "network fixture requires an isolated single-UID user/network namespace"
     );
     Ok(())
 }

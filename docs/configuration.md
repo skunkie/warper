@@ -276,3 +276,15 @@ migration/error expectations, and the required backend capability matrix.
 It is declarative test input; no production parser/CLI has validated it yet.
 Missing SSH trust is represented as a preflight failure with a nonexistent
 trust store, rather than an offline read of the developer's trust files.
+
+## Development-Only Outer MTU Probe
+
+The experimental `wireguard-stack --outer-mtu-check` executable is separate
+from the installed service/CLI contract. Run it through
+`scripts/verify-feasibility.sh wireguard-stack --outer-mtu-check` on Linux.
+The harness creates disposable user/network/mount namespaces and sets only
+that namespace's loopback MTU to 1400. The executable refuses an unmapped
+namespace and requires that exact fixture MTU. No YAML fields or installed
+commands change. Combining this scope with `--rekey`, another scope, or the
+host-stack executable is invalid. Success establishes local UDP MTU-error
+handling only; the full Phase 0/PMTU gate remains incomplete.

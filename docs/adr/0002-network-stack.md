@@ -390,3 +390,30 @@ peer-addressed inner feedback, not physical outer-UDP discovery or independent
 kernel PMTU. Real router-source admission, per-path/concurrent/asymmetric
 routing, production interface state/entropy and below-minimum paths remain
 open. The stack ADR and full MTU gate remain unaccepted.
+
+Linux outer-error feasibility now uses safe nix 0.31.3 socket/error-queue APIs
+(the version already used by BoringTun, enabling net/uio) and pinned rustix
+1.1.5 net/time socket options. The time feature satisfies that release's Linux
+networking timespec dependency. No local unsafe boundary or stack fork is
+introduced. Existing dependency versions remain unchanged; compatible Windows
+transitives reuse the existing lock entry.
+
+An explicit isolated scope configures private loopback MTU 1400 and dedicated
+connected sockets with error reporting and no-fragment discovery. Genuine
+EMSGSIZE/local error-queue records carry the reported MTU and destination;
+validation rejects wrong sockets/families/destinations, remote origins,
+malformed controls and truncation. The budget only decreases after validation.
+A second, distinct oversized operation is rejected before send, while a safe
+new datagram succeeds on the same BoringTun session. All four inner/outer
+family combinations pass without replaying failed data. The private fixture's
+negative control removes explicit no-fragment discovery and must fail because
+its oversized send is then accepted, rather than reported as a local MTU error.
+
+This establishes local kernel enforcement for the connected UDP transport,
+not remote router attribution, physical route changes or active TCP adaptation
+from outer feedback. The owner must serialize one operation with an initially
+empty error queue; LOCAL reports do not include a ciphertext quote. See
+[recvmsg(2)](https://man7.org/linux/man-pages/man2/recvmsg.2.html),
+[ip(7)](https://man7.org/linux/man-pages/man7/ip.7.html), and
+[udp(7)](https://man7.org/linux/man-pages/man7/udp.7.html) for Linux semantics.
+Those remaining contracts and networking evidence keep this ADR proposed.

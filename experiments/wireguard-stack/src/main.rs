@@ -25,6 +25,10 @@ mod udp_feedback_probe;
 
 #[cfg(target_os = "linux")]
 mod kernel_peer;
+#[cfg(target_os = "linux")]
+mod outer_errors;
+#[cfg(target_os = "linux")]
+mod outer_mtu_probe;
 
 use std::{
     fmt, io,
@@ -295,10 +299,17 @@ fn main() -> Result<()> {
     ensure!(
         arguments.is_empty()
             || arguments == ["--rekey"]
+            || arguments == ["--outer-mtu-check"]
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer] [--rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --outer-mtu-check | --rekey]"
     );
+    if arguments == ["--outer-mtu-check"] {
+        #[cfg(target_os = "linux")]
+        return outer_mtu_probe::run();
+        #[cfg(not(target_os = "linux"))]
+        bail!("outer MTU errors require Linux disposable namespaces");
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == "--kernel-peer")

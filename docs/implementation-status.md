@@ -79,7 +79,12 @@ inner too-big feedback through encrypted WireGuard in all inner/outer family
 combinations, preserving exact TCP bytes/FIN and retiring reservations on expiry
 or cancellation (`target/evidence/phase-0/wireguard-pmtu/README.md`). The larger
 TCP/outer budgets exist only in a controlled fixture; ordinary UDP/fragment
-limits remain tested. Physical outer PMTU and general error propagation,
+limits remain tested. A Linux-only isolated outer probe now reads genuine local
+EMSGSIZE/error-queue MTU reports for encrypted UDP, validates socket/destination
+metadata, reduces the outer budget, rejects later oversized sends before the
+socket, and delivers a distinct safe message without replay
+(`target/evidence/phase-0/outer-errors/README.md`). Remote router discovery,
+outer-feedback TCP resizing and general error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 
