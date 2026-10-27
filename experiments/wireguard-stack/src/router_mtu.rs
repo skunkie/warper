@@ -206,6 +206,7 @@ fn exchange(
         reporter,
         wall.elapsed(),
         Duration::from_secs(1),
+        queue.identity(),
     )?;
     // The send must succeed: local EMSGSIZE is not remote-router evidence.
     client
@@ -252,6 +253,7 @@ fn exchange(
         reporter,
         wall.elapsed(),
         Duration::from_secs(1),
+        second_queue.identity(),
     )?;
     let mut wrong_owner = stale.clone();
     wrong_owner.prefix.copy_from_slice(&packet[..16]);

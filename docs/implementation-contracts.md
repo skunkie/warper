@@ -957,13 +957,15 @@ combinations first complete a real encrypted UDP exchange.
 
 Two oversized encrypted UDP sends on distinct connected sockets must be accepted
 locally and rejected by the forwarding router. Each bounded reservation retains
-its local socket tuple, 16-byte public WireGuard data header, encrypted length,
-explicit fixture router address and monotonic deadline. Error-queue decoding retains at most the first 16 quoted
+its error-reader lifetime token, local socket tuple, 16-byte public WireGuard
+data header, encrypted length, explicit fixture router address and monotonic
+deadline. Error-queue decoding retains at most the first 16 quoted
 bytes plus quoted length in the returned metadata; its 2048-byte receive
 buffer is transient. No application/ciphertext payload enters the reservation
 or logs. The error reader attaches its checked local tuple to every decoded
-report; the reservation owner supplies the tuple from the corresponding socket.
-Reduction requires matching local tuple, connected destination and family, ICMP
+report, along with an opaque token unique to that reader's lifetime. The owner
+supplies that reader's token and local tuple when reserving. Reduction requires
+the same reader token and local tuple, connected destination and family, ICMP
 origin (IPv4 type 3/code 4 or IPv6 type 2/code 0), EMSGSIZE, the expected router,
 nontruncated controls, matching data header and a quote length within the sent
 datagram. Quotes shorter than the data header are unsupported. This is bounded
@@ -986,9 +988,11 @@ one genuine router report after it is read, rejects it against the second
 socket's distinct reservation, and commits each socket's own report. A copy of
 the first report with the second packet's header tests the socket check in
 isolation. This tests delayed processing rather than delayed packet delivery.
-A local tuple is not a durable socket identity after close and reuse, or a proof
-of physical-path attribution; the owner must use the queue belonging to the
-reserved socket. Stronger production ownership and path policy remain open.
+A real loopback rebinding test verifies that a new reader at the same local
+tuple cannot match an old reservation. The token identifies an error-reader
+instance, not a physical path: two independent readers for one socket have
+separate tokens, and owners must bind reservations to the correct reader.
+Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
 not consume the reservation: budget validation/mutation precedes commit.
 Expiry, cancellation and commit release retained metadata. No failed datagram

@@ -107,6 +107,7 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue) -> Result<()> {
                 reporter,
                 wall.elapsed(),
                 Duration::from_secs(1),
+                queue.identity(),
             )?;
             // Send exactly one attempt; no remaining TCP output is encrypted
             // until its remote report has been validated and sizing committed.

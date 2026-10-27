@@ -116,7 +116,10 @@ delivery and cross-session header uniqueness remain unverified. The current
 routed fixture also uses two connected sockets and distinct budgets; matching
 checks the local socket tuple and rejects a wrong-socket report even when its
 header is made to match (`target/evidence/phase-0/router-sockets/README.md`).
-Socket tuple reuse and production path attribution remain unresolved.
+A reader-lifetime token now distinguishes a new reader when a socket is closed
+and its local tuple rebound; a loopback test exercises both families
+(`target/evidence/phase-0/queue-generation/README.md`). Production ownership,
+physical-path attribution, and reader replacement policy remain unresolved.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

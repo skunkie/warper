@@ -549,8 +549,11 @@ datagram from a second connected socket, and maintains separate reservations
 and budgets. It rejects the first socket's report against the second, including
 a synthetic copy with the second packet's header, then commits each socket's
 own genuine report. Both oversized datagrams are dropped; neither application
-payload is replayed. Local socket tuples are not durable identities across
-socket reuse, and the owner must bind reservations to the correct queue.
+payload is replayed. Each error-queue reader also supplies an opaque lifetime
+token to its reservations and decoded reports. A socket-rebinding test checks
+that a new reader at the same local tuple cannot match an old reservation.
+The owner must bind reservations to the correct reader; independently created
+readers have different tokens even when they refer to the same socket.
 
 A separate synthetic short-quote probe requires Linux, Python 3, `unshare`,
 and `ip`, with permission to create an isolated user and network namespace:

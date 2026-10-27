@@ -9,6 +9,7 @@ use std::{
     io::{self, IoSliceMut},
     net::{IpAddr, SocketAddr, UdpSocket},
     os::fd::AsRawFd,
+    sync::Arc,
 };
 
 use anyhow::{Result, ensure};
@@ -43,6 +44,7 @@ pub struct ErrorQueue {
     socket: UdpSocket,
     local: SocketAddr,
     remote: SocketAddr,
+    identity: Arc<()>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +65,7 @@ pub(super) struct Record {
 
 #[derive(Clone)]
 pub(super) struct ReceivedError {
+    pub identity: Arc<()>,
     pub local: SocketAddr,
     pub record: Record,
     pub destination: Option<SocketAddr>,
@@ -77,6 +80,7 @@ impl ErrorQueue {
             socket: socket.try_clone()?,
             local: socket.local_addr()?,
             remote: socket.peer_addr()?,
+            identity: Arc::new(()),
         };
         ensure!(
             queue.local.is_ipv6() == queue.remote.is_ipv6(),
@@ -100,6 +104,10 @@ impl ErrorQueue {
             );
         }
         Ok(queue)
+    }
+
+    pub(super) fn identity(&self) -> &Arc<()> {
+        &self.identity
     }
 
     pub(super) fn enable_remote_probe(socket: &UdpSocket) -> Result<Self> {
@@ -182,6 +190,7 @@ impl ErrorQueue {
         let retained = quoted_len.min(prefix.len());
         prefix[..retained].copy_from_slice(&bytes[..retained]);
         Ok(Some(ReceivedError {
+            identity: Arc::clone(&self.identity),
             local: self.local,
             record,
             destination,

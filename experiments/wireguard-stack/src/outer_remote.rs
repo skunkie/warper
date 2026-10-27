@@ -9,6 +9,7 @@ use nix::{errno::Errno, sys::socket::MsgFlags};
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
@@ -31,6 +32,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 struct Pending {
+    identity: Arc<()>,
     local: SocketAddr,
     prefix: [u8; 16],
     encrypted_len: usize,
@@ -52,6 +54,7 @@ impl Reservation {
         reporter: IpAddr,
         now: Duration,
         lifetime: Duration,
+        identity: &Arc<()>,
     ) -> Result<(), Error> {
         self.advance(now)?;
         if self.pending.is_some() {
@@ -78,6 +81,7 @@ impl Reservation {
         let mut prefix = [0; 16];
         prefix.copy_from_slice(&packet[..16]);
         self.pending = Some(Pending {
+            identity: Arc::clone(identity),
             local,
             prefix,
             encrypted_len: packet.len(),
@@ -152,6 +156,7 @@ impl Reservation {
                 .flags
                 .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC)
             || record.ipv6 != remote.is_ipv6()
+            || !Arc::ptr_eq(&received.identity, &pending.identity)
             || received.local != pending.local
             || received.destination != Some(remote)
             || record.errno != Errno::EMSGSIZE as u32
@@ -199,6 +204,7 @@ mod tests {
         }
         .parse()
         .unwrap();
+        let identity = Arc::new(());
         let mut reservation = Reservation::default();
         reservation
             .reserve(
@@ -207,11 +213,13 @@ mod tests {
                 reporter,
                 Duration::ZERO,
                 Duration::from_secs(1),
+                &identity,
             )
             .unwrap();
         let mut prefix = [0; 16];
         prefix.copy_from_slice(&packet[..16]);
         let received = ReceivedError {
+            identity: Arc::clone(&identity),
             local,
             record: Record {
                 ipv6,
@@ -389,6 +397,7 @@ mod tests {
                         stale.record.reporter.unwrap(),
                         now,
                         Duration::from_secs(1),
+                        &stale.identity,
                     )
                     .unwrap();
                 assert_eq!(
@@ -402,6 +411,7 @@ mod tests {
                 assert_eq!(budget.outer_mtu(), 1600);
                 assert!(reservation.pending.is_some());
                 let (_, mut current, _) = fixture(ipv6);
+                current.identity = Arc::clone(&stale.identity);
                 current.prefix.copy_from_slice(&packet[..16]);
                 assert!(
                     reservation
@@ -440,6 +450,61 @@ mod tests {
     }
 
     #[test]
+    fn rebound_socket_at_same_address_cannot_match_previous_queue_generation() {
+        use crate::outer_errors::ErrorQueue;
+        use std::net::UdpSocket;
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            first.connect(peer.local_addr().unwrap()).unwrap();
+            let local = first.local_addr().unwrap();
+            let first_queue = ErrorQueue::enable(&first).unwrap();
+            let identity = Arc::clone(first_queue.identity());
+            let (_, mut received, _) = fixture(ipv6);
+            let mut packet = [0; 1432];
+            packet[..16].copy_from_slice(&received.prefix);
+            let mut reservation = Reservation::default();
+            reservation
+                .reserve(
+                    &packet,
+                    local,
+                    received.record.reporter.unwrap(),
+                    Duration::ZERO,
+                    Duration::from_secs(1),
+                    &identity,
+                )
+                .unwrap();
+            drop(first_queue);
+            drop(first);
+            let second = UdpSocket::bind(local).unwrap();
+            second.connect(peer.local_addr().unwrap()).unwrap();
+            let second_queue = ErrorQueue::enable(&second).unwrap();
+            received.local = local;
+            received.identity = Arc::clone(second_queue.identity());
+            let remote = peer.local_addr().unwrap();
+            received.destination = Some(remote);
+            let mut budget = PathBudget::new(1600, ipv6).unwrap();
+            assert_eq!(
+                reservation
+                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unmatched)
+            );
+            assert_eq!(budget.outer_mtu(), 1600);
+            received.identity = identity;
+            assert!(
+                reservation
+                    .apply(&received, remote, &mut budget, Duration::ZERO)
+                    .unwrap()
+            );
+            drop(second_queue);
+            drop(second);
+            UdpSocket::bind(local).unwrap();
+        }
+    }
+
+    #[test]
     fn invalid_local_socket_identity_cannot_reserve() {
         let mut packet = [0; 64];
         packet[0] = 4;
@@ -455,7 +520,8 @@ mod tests {
                     local.parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
-                    Duration::from_secs(1)
+                    Duration::from_secs(1),
+                    &Arc::new(()),
                 ),
                 Err(Error::InvalidPacket),
                 "{local}"
@@ -477,6 +543,7 @@ mod tests {
                     received.record.reporter.unwrap(),
                     Duration::ZERO,
                     Duration::from_secs(1),
+                    &received.identity,
                 )
                 .unwrap();
             let mut budget = PathBudget::new(1600, ipv6).unwrap();
@@ -623,7 +690,8 @@ mod tests {
                 "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
                 Duration::ZERO,
-                Duration::from_secs(1)
+                Duration::from_secs(1),
+                &Arc::new(()),
             ),
             Err(Error::Busy)
         );
@@ -646,7 +714,8 @@ mod tests {
                     "198.18.0.2:40000".parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
-                    lifetime
+                    lifetime,
+                    &Arc::new(()),
                 ),
                 Err(Error::InvalidTime)
             );
@@ -658,7 +727,8 @@ mod tests {
                     "198.18.0.2:40000".parse().unwrap(),
                     "198.18.0.1".parse().unwrap(),
                     Duration::ZERO,
-                    Duration::from_secs(1)
+                    Duration::from_secs(1),
+                    &Arc::new(()),
                 ),
                 Err(Error::InvalidPacket)
             );
@@ -676,7 +746,8 @@ mod tests {
                     .unwrap(),
                     reporter.parse().unwrap(),
                     Duration::ZERO,
-                    Duration::from_secs(1)
+                    Duration::from_secs(1),
+                    &Arc::new(()),
                 ),
                 Err(Error::InvalidPacket)
             );
@@ -687,7 +758,8 @@ mod tests {
                 "198.18.0.2:40000".parse().unwrap(),
                 "198.18.0.1".parse().unwrap(),
                 Duration::from_millis(i64::MAX as u64),
-                Duration::from_secs(1)
+                Duration::from_secs(1),
+                &Arc::new(()),
             ),
             Err(Error::InvalidTime)
         );
@@ -699,6 +771,7 @@ mod tests {
                 "198.18.0.1".parse().unwrap(),
                 Duration::ZERO,
                 Duration::from_secs(1),
+                &Arc::new(()),
             )
             .unwrap();
         reservation.cancel();
