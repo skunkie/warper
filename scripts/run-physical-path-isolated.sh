@@ -32,7 +32,12 @@ cleanup() {
     trap - EXIT
     if [[ -n "$client_process" ]]; then
         if kill -0 "$client_process" 2>/dev/null; then
-            if ! kill -- -"$client_process" 2>/dev/null; then failed=true; fi
+            # The timeout process may have exited between the liveness check
+            # and the group signal. Its bounded wait below determines whether
+            # cleanup actually succeeded; fall back to signalling timeout itself.
+            if ! kill -- -"$client_process" 2>/dev/null; then
+                kill "$client_process" 2>/dev/null || :
+            fi
         fi
         child_status=0
         wait "$client_process" || child_status=$?
@@ -41,7 +46,9 @@ cleanup() {
     if [[ -n "$peer_process" ]]; then
         : > "$control_directory/peer.stop"
         if kill -0 "$peer_process" 2>/dev/null; then
-            if ! kill -- -"$peer_process" 2>/dev/null; then failed=true; fi
+            if ! kill -- -"$peer_process" 2>/dev/null; then
+                kill "$peer_process" 2>/dev/null || :
+            fi
         fi
         child_status=0
         wait "$peer_process" || child_status=$?

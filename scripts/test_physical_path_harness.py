@@ -13,7 +13,7 @@ import unittest
 
 
 class PhysicalPathHarnessTests(unittest.TestCase):
-    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False, families=("4",)):
+    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False, fail_group_signal=False, families=("4",)):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -75,6 +75,8 @@ exit 2
 ''')
         probe.chmod(0o700)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
+        if fail_group_signal:
+            environment["BASH_FUNC_kill%%"] = '() { if [[ "$1" == -- && "$2" == -* ]]; then return 1; fi; builtin kill "$@"; }'
         result = subprocess.run(
             ["bash", str(scripts / "run-physical-path-isolated.sh"), str(probe), *families],
             env=environment, capture_output=True, text=True, timeout=12,
@@ -110,7 +112,7 @@ exit 2
             result, root = self.run_harness(client_exit=client_exit, peer_exit=peer_exit)
             self.assertEqual(result.returncode, expected, result.stderr)
             self.assertIn("link del dev routers0", (root / "ip.log").read_text())
-            self.assertIn("CLEANUP physical-path links removed and verified", result.stdout)
+            self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
 
     def test_early_child_failures_preserve_status_and_cleanup(self):
         for arguments, expected in [
@@ -120,13 +122,13 @@ exit 2
             result, root = self.run_harness(**arguments)
             self.assertEqual(result.returncode, expected, result.stderr)
             self.assertIn("link del dev routers0", (root / "ip.log").read_text())
-            self.assertIn("CLEANUP physical-path links removed and verified", result.stdout)
+            self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
 
     def test_abrupt_client_termination_cleans_up(self):
         result, root = self.run_harness(kill_client=True)
         self.assertEqual(result.returncode, 137, result.stderr)
         self.assertIn("link del dev routers0", (root / "ip.log").read_text())
-        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout)
+        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
 
     def test_link_and_cleanup_failures_are_reported(self):
         result, root = self.run_harness(fail_down=True)
@@ -138,6 +140,13 @@ exit 2
         result, _ = self.run_harness(fail_down=True, fail_cleanup=True)
         self.assertEqual(result.returncode, 9)
         self.assertIn("FAIL independent physical-path cleanup", result.stderr)
+
+    def test_group_signal_failure_still_reaps_children_and_preserves_primary_error(self):
+        result, root = self.run_harness(fail_down=True, fail_group_signal=True)
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIn("link del dev routers0", (root / "ip.log").read_text())
+        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
+        self.assertNotIn("FAIL independent physical-path cleanup", result.stderr)
 
     def test_broad_namespace_is_rejected_before_mutation(self):
         result, root = self.run_harness(mapping="0 0 4294967295")
