@@ -482,3 +482,18 @@ resize; busy device queues preserve the reservation for retry within its
 original deadline. Successful interface replacement consumes it once. This
 still leaves production path attribution, multiple/asymmetric flows, outer
 WireGuard PMTU and physical-path handling open; `--mtu-check` remains nonzero.
+
+Default WireGuard packet probes now include encrypted inner PMTU feedback.
+Shared matching, controlled ICMP construction and interface replacement live
+in `experiments/{pmtu_feedback,pmtu_fixture,mtu_reduction}.rs`. A TCP-only path
+fixture uses 1500-byte peers and a declared 1600-byte outer budget, drops
+oversized decrypted data, and returns one encrypted too-big message from the
+configured inner peer. The client applies 1280/1400 reductions to its existing
+connection. All eight inner/outer-family/MTU combinations check exact 8 KiB
+request, lost-sequence retry, FIN and response. TCP clock steps are controlled
+at five milliseconds; loopback I/O and BoringTun timers remain real. Reservation
+expiry/cancellation releases endpoint sockets and preserves typed failures.
+The scoped larger-TCP fixture validates checksums/headers and cannot bypass
+ordinary UDP size checks. These are inner feedback probes, not physical outer
+PMTU discovery or independent-kernel PMTU evidence. Exact-source admission of
+other inner routers and production state/path policy remain unresolved.

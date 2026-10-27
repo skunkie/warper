@@ -12,18 +12,20 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use smoltcp::{
-    iface::{Config, Interface, PollIngressSingleResult},
+    iface::PollIngressSingleResult,
     phy::{ChecksumCapabilities, Device},
     socket::{tcp, udp},
     time::Instant,
     wire::{
-        HardwareAddress, Icmpv4DstUnreachable, Icmpv4Packet, Icmpv4Repr, Icmpv6DstUnreachable,
-        Icmpv6Packet, Icmpv6Repr, IpProtocol, Ipv4Packet, Ipv4Repr, Ipv6FragmentHeader,
-        Ipv6FragmentRepr, Ipv6Packet, Ipv6Repr, TcpPacket,
+        Icmpv4DstUnreachable, Icmpv4Packet, Icmpv4Repr, Icmpv6DstUnreachable, Icmpv6Packet,
+        Icmpv6Repr, IpProtocol, Ipv4Packet, Ipv4Repr, Ipv6FragmentHeader, Ipv6FragmentRepr,
+        Ipv6Packet, Ipv6Repr, TcpPacket,
     },
 };
 
+use crate::mtu_reduction::apply_feedback;
 use crate::packet_peer::{MTU, Peer};
+use crate::pmtu_fixture::too_big as too_big_with_mtu;
 
 #[derive(Debug)]
 pub struct UnsupportedPmtu;
@@ -339,148 +341,8 @@ fn drain_ingress(peer: &mut Peer, now: i64) -> Result<()> {
     anyhow::bail!("ingress drain exceeded bounded device capacity")
 }
 
-fn apply_feedback(
-    peer: &mut Peer,
-    tracker: &mut crate::pmtu_feedback::Tracker,
-    packet: &[u8],
-    now: Duration,
-) -> Result<bool> {
-    let Some(mtu) = tracker.reduction(packet, now)? else {
-        return Ok(false);
-    };
-    if mtu >= peer.device.capabilities().max_transmission_unit {
-        return Ok(false);
-    }
-    rebuild_interface(peer, mtu, i64::try_from(now.as_millis())?)?;
-    tracker.commit();
-    Ok(true)
-}
-
-fn rebuild_interface(peer: &mut Peer, mtu: usize, now: i64) -> Result<()> {
-    let addresses = peer.interface.ip_addrs().to_vec();
-    let any_ip = peer.interface.any_ip();
-    let mut routes = None;
-    peer.interface
-        .routes_mut()
-        .update(|entries| routes = Some(entries.clone()));
-    let routes = routes.context("route snapshot not captured")?;
-    // Device validation occurs before mutation and refuses both queue kinds.
-    peer.device.configure_mtu(mtu)?;
-    let mut config = Config::new(HardwareAddress::Ip);
-    config.random_seed = 0x5361;
-    let mut interface = Interface::new(config, &mut peer.device, Instant::from_millis(now));
-    interface.update_ip_addrs(|entries| {
-        for address in addresses {
-            // The source and destination tables have identical fixed capacity.
-            entries
-                .push(address)
-                .expect("previously admitted interface addresses");
-        }
-    });
-    interface.routes_mut().update(|entries| *entries = routes);
-    interface.set_any_ip(any_ip);
-    peer.interface = interface;
-    Ok(())
-}
-
 pub(super) fn too_big(quote: &[u8], ipv6: bool) -> Result<Vec<u8>> {
     too_big_with_mtu(quote, ipv6, MTU)
-}
-
-fn too_big_with_mtu(quote: &[u8], ipv6: bool, mtu: usize) -> Result<Vec<u8>> {
-    ensure!((MTU..=1500).contains(&mtu), "unsupported fixture MTU");
-    ensure!(
-        quote.len() > mtu,
-        "PTB fixture requires a genuinely oversized quote"
-    );
-    let checksums = ChecksumCapabilities::default();
-    let (source, destination) = addresses(ipv6)?;
-    if ipv6 {
-        let ip = Ipv6Packet::new_checked(quote)?;
-        let header = Ipv6Repr::parse(&ip)?;
-        let repr = Icmpv6Repr::PktTooBig {
-            mtu: mtu as u32,
-            header,
-            data: &ip.payload()[..1192],
-        };
-        let mut bytes = vec![0; 40 + repr.buffer_len()];
-        Ipv6Repr {
-            src_addr: match destination {
-                IpAddr::V6(value) => value,
-                _ => unreachable!("fixed family"),
-            },
-            dst_addr: match source {
-                IpAddr::V6(value) => value,
-                _ => unreachable!("fixed family"),
-            },
-            next_header: IpProtocol::Icmpv6,
-            payload_len: repr.buffer_len(),
-            hop_limit: 64,
-        }
-        .emit(&mut Ipv6Packet::new_unchecked(&mut bytes[..]));
-        repr.emit(
-            &ip.dst_addr(),
-            &ip.src_addr(),
-            &mut Icmpv6Packet::new_unchecked(&mut bytes[40..]),
-            &checksums,
-        );
-        bytes[48..].copy_from_slice(&quote[..1232]);
-        Icmpv6Packet::new_unchecked(&mut bytes[40..]).fill_checksum(&ip.dst_addr(), &ip.src_addr());
-        let ip = Ipv6Packet::new_checked(&bytes[..])?;
-        let icmp = Icmpv6Packet::new_checked(ip.payload())?;
-        ensure!(
-            u8::from(icmp.msg_type()) == 2
-                && icmp.msg_code() == 0
-                && icmp.pkt_too_big_mtu() == mtu as u32
-                && icmp.payload() == &quote[..1232]
-                && icmp.verify_checksum(&ip.src_addr(), &ip.dst_addr()),
-            "PTB fixture checksum, MTU, or exact quote changed"
-        );
-        Ok(bytes)
-    } else {
-        let ip = Ipv4Packet::new_checked(quote)?;
-        let header = Ipv4Repr::parse(&ip, &checksums)?;
-        let repr = Icmpv4Repr::DstUnreachable {
-            reason: Icmpv4DstUnreachable::FragRequired,
-            header,
-            data: &ip.payload()[..8],
-        };
-        let mut bytes = vec![0; 20 + repr.buffer_len()];
-        Ipv4Repr {
-            src_addr: match destination {
-                IpAddr::V4(value) => value,
-                _ => unreachable!("fixed family"),
-            },
-            dst_addr: match source {
-                IpAddr::V4(value) => value,
-                _ => unreachable!("fixed family"),
-            },
-            next_header: IpProtocol::Icmp,
-            payload_len: repr.buffer_len(),
-            hop_limit: 64,
-        }
-        .emit(&mut Ipv4Packet::new_unchecked(&mut bytes[..]), &checksums);
-        repr.emit(
-            &mut Icmpv4Packet::new_unchecked(&mut bytes[20..]),
-            &checksums,
-        );
-        bytes[28..].copy_from_slice(&quote[..28]);
-        // The pinned ICMPv4 representation omits RFC 1191's next-hop MTU.
-        // Set that non-cryptographic wire field, then use the library checksum.
-        bytes[26..28].copy_from_slice(&(mtu as u16).to_be_bytes());
-        Icmpv4Packet::new_unchecked(&mut bytes[20..]).fill_checksum();
-        let ip = Ipv4Packet::new_checked(&bytes[..])?;
-        let icmp = Icmpv4Packet::new_checked(ip.payload())?;
-        ensure!(
-            u8::from(icmp.msg_type()) == 3
-                && icmp.msg_code() == 4
-                && icmp.data() == &quote[..28]
-                && icmp.verify_checksum()
-                && u16::from_be_bytes([bytes[26], bytes[27]]) == mtu as u16,
-            "IPv4 too-big checksum, MTU, or exact quote changed"
-        );
-        Ok(bytes)
-    }
 }
 
 fn fragments_not_reassembled(ipv6: bool) -> Result<()> {
@@ -621,6 +483,7 @@ fn port_unreachable(ipv6: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mtu_reduction::rebuild_interface;
 
     #[test]
     fn retained_tcp_transfer_completes_after_interface_mtu_reduction() {

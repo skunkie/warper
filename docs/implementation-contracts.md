@@ -180,7 +180,7 @@ above remain open.
   handshake loss is deliberate in the short IPv4 case. A 100 ms packet/timer
   drain after completion flushes delayed TCP acknowledgements before fixture
   session replacement. Normal harness runs have a 20-second outer deadline;
-  independent-peer rekey runs have 180 seconds. Worker deadlines add ten
+  independent-peer rekey runs have 200 seconds. Worker deadlines add ten
   seconds to the requested traffic duration. Errors preserve initial and
   cleanup failures without dumping key-bearing netlink objects.
 
@@ -769,8 +769,8 @@ then reduces the interface to 1280. It must deliver the complete original
 byte sequence exactly once, preserve endpoints and FIN/half-close, and keep
 all subsequent packets within 1280. Existing raw ICMP behavior remains a
 negative control. Production feedback validation/attribution, per-path state and expiry,
-UDP errors for queued output, smaller physical paths, and WireGuard integration
-remain separate work; the MTU gate still returns unsupported and ADR 0002
+UDP errors for queued output, smaller physical paths, and production WireGuard
+integration remain separate work; the MTU gate still returns unsupported and ADR 0002
 remains proposed.
 
 ## 18. Experimental Matched TCP PMTU Feedback
@@ -803,11 +803,13 @@ from matched feedback, rather than passing a literal MTU to the rebuild helper.
 Both 1280 and 1400 advertisements are exercised in each family; an advertisement
 cannot increase a device already configured at a smaller MTU.
 Per-path caches/expiry, changing routes, concurrent flows, asymmetric/outer
-paths, below-minimum handling, production entropy/state transfer and WireGuard
-propagation are still open. The full MTU gate remains unsupported.
+paths, below-minimum handling, production entropy/state transfer and feedback from WireGuard's outer path
+are still open. The full MTU gate remains unsupported.
 
-Sources: `experiments/host-stack/src/pmtu_feedback.rs` and its adjacent tests;
-`mtu_probe.rs` owns synchronous classification, interface replacement and commit.
+Sources: shared `experiments/pmtu_feedback.rs`, with validation tests under
+`experiments/host-stack/src/pmtu_feedback_tests.rs`. Shared
+`experiments/mtu_reduction.rs` owns synchronous classification, interface
+replacement and commit; `experiments/pmtu_fixture.rs` builds controlled feedback.
 The concrete tracker API is:
 
 ```text
@@ -830,3 +832,32 @@ a reservation; the owning synchronous apply operation commits only after its
 mutation succeeds. No await or other flow progress intervenes between those
 steps in this candidate. The owner must retire accepted ACKs and must not reuse
 a reservation for a different flow or operation.
+
+## 19. Experimental Encrypted Inner PMTU Feedback
+
+Status: same-library WireGuard integration of the bounded TCP sizing candidate.
+Default transports retain the 1280-byte inner limit and 1500-byte declared outer
+budget. A controlled TCP-only fixture uses 1500-byte peers and a 1600-byte
+outer budget; it validates decrypted plain TCP before either delivering it or
+dropping oversized packets and returning one encrypted too-big message. Its
+larger TCP admission is scoped to this fixture and does not expand ordinary
+fragment/UDP support. The reporting address is the configured inner peer. IPv4 oversized fixture
+packets must have DF set before fragmentation-required feedback is generated.
+
+The client reserves one emitted outstanding TCP data segment. Authenticated
+source/local-recipient checks precede quote matching and synchronous interface
+replacement. A successful replacement commits the reservation once; malformed
+or unrelated feedback cannot resize. The owner supplies accepted ACK retirement
+and the pump checks reservation expiry even without further packets. Busy or
+unsupported mutations follow the experiment's typed fatal-error policy; no
+new hidden retry queue is introduced. All state remains owned by the endpoint
+and is cancelled/dropped with its socket and tunnel.
+
+Probes cover both inner/outer families and 1280/1400 advertisements, preserving
+one application write, exact bytes, lost-sequence retry and FIN/response across
+the same established TCP connection. The peer must process the final ACK before
+fixture retirement. They establish encrypted inner feedback,
+not physical outer-UDP PMTU discovery, independent-kernel PMTU, path attribution,
+concurrent/asymmetric routing, sub-minimum paths or a production migration API.
+Remote router-address admission remains unproven under the experiment's exact
+inner-source policy.

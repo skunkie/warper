@@ -4,7 +4,21 @@
 
 //! Too-big quote, lifetime and admission boundaries.
 
-use super::*;
+use crate::pmtu_feedback::*;
+use smoltcp::wire::{
+    Icmpv4Packet, Icmpv6Packet, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket, TcpSeqNumber,
+};
+use std::{net::IpAddr, time::Duration};
+
+fn packet_addresses(packet: &[u8], ipv6: bool) -> (IpAddr, IpAddr) {
+    if ipv6 {
+        let ip = Ipv6Packet::new_checked(packet).unwrap();
+        (ip.src_addr().into(), ip.dst_addr().into())
+    } else {
+        let ip = Ipv4Packet::new_checked(packet).unwrap();
+        (ip.src_addr().into(), ip.dst_addr().into())
+    }
+}
 
 pub(super) fn sample(ipv6: bool) -> (Vec<u8>, Vec<u8>) {
     let packet = crate::mtu_probe::tcp_sample(ipv6, 1500).unwrap();
@@ -296,8 +310,7 @@ fn invalid_packets_lifetimes_and_deadline_overflow_do_not_reserve_capacity() {
         }
         for source_port in [false, true] {
             let mut zero_port = packet.clone();
-            let ip = parse_ip(&zero_port, false).unwrap();
-            let (source, destination) = (ip.source, ip.destination);
+            let (source, destination) = packet_addresses(&zero_port, ipv6);
             let mut tcp = TcpPacket::new_unchecked(&mut zero_port[if ipv6 { 40 } else { 20 }..]);
             if source_port {
                 tcp.set_src_port(0);
@@ -344,8 +357,7 @@ fn accepted_ack_retires_only_the_complete_segment_across_sequence_wrap() {
         ] {
             let mut packet = packet.clone();
             let ip_len = if ipv6 { 40 } else { 20 };
-            let ip = parse_ip(&packet, false).unwrap();
-            let (source, destination) = (ip.source, ip.destination);
+            let (source, destination) = packet_addresses(&packet, ipv6);
             let mut tcp = TcpPacket::new_unchecked(&mut packet[ip_len..]);
             tcp.set_seq_number(TcpSeqNumber(sequence as i32));
             tcp.set_fin(fin);

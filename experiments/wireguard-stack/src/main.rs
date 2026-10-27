@@ -7,10 +7,17 @@
 #[path = "../../fragment_fixture.rs"]
 mod fragment_fixture;
 mod fragment_probe;
+#[path = "../../mtu_reduction.rs"]
+mod mtu_reduction;
 mod outage;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
 mod path_mtu;
+#[path = "../../pmtu_feedback.rs"]
+mod pmtu_feedback;
+#[path = "../../pmtu_fixture.rs"]
+mod pmtu_fixture;
+mod pmtu_probe;
 #[path = "../../reassembly.rs"]
 mod reassembly;
 mod udp_feedback;
@@ -67,6 +74,9 @@ struct Transport {
     path_budget: path_mtu::PathBudget,
     reassembly: reassembly::Reassembler,
     udp_feedback: Option<udp_feedback::Reservation>,
+    pmtu_feedback: Option<pmtu_feedback::Tracker>,
+    pmtu_fixture: Option<pmtu_probe::PathFixture>,
+    pmtu_reductions: usize,
     now: Duration,
     initiations: usize,
     encrypted_packets: usize,
@@ -125,6 +135,9 @@ impl Transport {
     fn pump(&mut self, peer: &mut Peer, now: Duration) -> Result<()> {
         self.reassembly.advance(now)?;
         self.now = now;
+        if let Some(tracker) = self.pmtu_feedback.as_mut() {
+            tracker.reduction(&[], now)?;
+        }
         let mut output = [0; MTU + 256];
         while !peer.device.outgoing.is_empty() {
             if self.staged_packets >= PACKET_CAPACITY {
@@ -172,6 +185,23 @@ impl Transport {
         Ok(())
     }
 
+    fn watch_pmtu(&mut self, packet: &[u8], now: Duration) -> Result<()> {
+        if now < self.now {
+            return Err(pmtu_feedback::Error::InvalidTime.into());
+        }
+        if self
+            .pmtu_feedback
+            .as_ref()
+            .is_some_and(|tracker| tracker.next_deadline().is_some())
+        {
+            return Err(pmtu_feedback::Error::Busy.into());
+        }
+        let mut tracker = pmtu_feedback::Tracker::default();
+        tracker.reserve(packet, now, Duration::from_secs(1))?;
+        self.pmtu_feedback = Some(tracker);
+        Ok(())
+    }
+
     fn watch_udp(&mut self, packet: &[u8]) -> Result<()> {
         if self.udp_feedback.is_some() {
             return Err(udp_feedback::Error::Busy.into());
@@ -189,6 +219,34 @@ impl Transport {
             .any(|address| address.address() == destination.into())
         {
             return Err(TransportFailure::InnerDestination.into());
+        }
+        if let Some(tracker) = self.pmtu_feedback.as_mut()
+            && mtu_reduction::apply_feedback(peer, tracker, packet, self.now)?
+        {
+            self.pmtu_reductions += 1;
+            return Ok(());
+        }
+        if let Some(fixture) = self.pmtu_fixture.as_mut() {
+            match fixture.inspect(packet)? {
+                pmtu_probe::Action::Pass => {}
+                pmtu_probe::Action::Deliver => {
+                    peer.device.inject(packet.to_vec())?;
+                    return Ok(());
+                }
+                pmtu_probe::Action::Drop => {
+                    return Ok(());
+                }
+                pmtu_probe::Action::Feedback(feedback) => {
+                    let mut encrypted = [0; MTU + 256];
+                    let result = self.tunnel.encapsulate(&feedback, &mut encrypted);
+                    ensure!(
+                        is_application_data(&result),
+                        "controlled feedback could not be encrypted immediately"
+                    );
+                    self.send_result(result, peer)?;
+                    return Ok(());
+                }
+            }
         }
         if self
             .udp_feedback
@@ -220,6 +278,9 @@ impl Transport {
 impl Drop for Transport {
     fn drop(&mut self) {
         self.reassembly.cancel();
+        if let Some(tracker) = self.pmtu_feedback.as_mut() {
+            tracker.cancel();
+        }
     }
 }
 
@@ -260,6 +321,8 @@ fn main() -> Result<()> {
         );
         udp_feedback_probe::run_probe(ipv6)?;
         println!("PASS reserved UDP port-unreachable propagation, IPv6={ipv6}");
+        pmtu_probe::run_probe(ipv6)?;
+        println!("PASS encrypted inner TCP PMTU feedback, IPv6={ipv6}");
         fragment_probe::run_probe(ipv6)?;
         println!(
             "PASS encrypted fragment input: both orders, UDP round trip, expiry and cleanup, IPv6={ipv6}"
@@ -318,6 +381,9 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         path_budget: path_mtu::PathBudget::new(1500, outer_ipv6)?,
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         udp_feedback: None,
+        pmtu_feedback: None,
+        pmtu_fixture: None,
+        pmtu_reductions: 0,
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
@@ -363,6 +429,9 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         path_budget,
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         udp_feedback: None,
+        pmtu_feedback: None,
+        pmtu_fixture: None,
+        pmtu_reductions: 0,
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,

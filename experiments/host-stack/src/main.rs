@@ -11,9 +11,16 @@ mod direct;
 mod fragment_fixture;
 mod fragment_probe;
 mod mtu_probe;
+#[path = "../../mtu_reduction.rs"]
+mod mtu_reduction;
 #[path = "../../packet_peer.rs"]
 mod packet_peer;
+#[path = "../../pmtu_feedback.rs"]
 mod pmtu_feedback;
+#[cfg(test)]
+mod pmtu_feedback_tests;
+#[path = "../../pmtu_fixture.rs"]
+mod pmtu_fixture;
 #[path = "../../reassembly.rs"]
 mod reassembly;
 #[cfg(test)]

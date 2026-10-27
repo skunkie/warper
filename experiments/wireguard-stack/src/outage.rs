@@ -745,4 +745,58 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn pmtu_reservation_expiry_and_cancellation_release_the_session() {
+        for ipv6 in [false, true] {
+            for cancel in [false, true] {
+                let (mut client, mut server) = fixture(ipv6).unwrap();
+                connect(&mut client, &mut server, ipv6).unwrap();
+                let address = endpoint_address(&mut client).unwrap();
+                let now = client.now;
+                let endpoint = client.endpoint().unwrap();
+                endpoint
+                    .peer
+                    .sockets
+                    .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                    .send_slice(b"reserved-tcp-data")
+                    .unwrap();
+                endpoint.peer.poll(now.as_millis() as i64);
+                let packet = endpoint.peer.device.outgoing.front().unwrap().clone();
+                endpoint.transport.watch_pmtu(&packet, now).unwrap();
+                assert_eq!(
+                    endpoint
+                        .transport
+                        .watch_pmtu(&packet, now)
+                        .unwrap_err()
+                        .downcast_ref::<crate::pmtu_feedback::Error>(),
+                    Some(&crate::pmtu_feedback::Error::Busy)
+                );
+                if cancel {
+                    client.cancel();
+                    assert_eq!(client.step(now).unwrap_err().reason, Reason::Cancelled);
+                } else {
+                    let failure = client.step(now + Duration::from_secs(1)).unwrap_err();
+                    assert_eq!(failure.reason, Reason::Transport);
+                    assert_eq!(
+                        failure
+                            .source
+                            .as_ref()
+                            .unwrap()
+                            .downcast_ref::<crate::pmtu_feedback::Error>(),
+                        Some(&crate::pmtu_feedback::Error::Expired)
+                    );
+                    assert_eq!(
+                        client
+                            .step(now + Duration::from_secs(1))
+                            .unwrap_err()
+                            .reason,
+                        Reason::Transport
+                    );
+                }
+                assert!(client.endpoint.is_none());
+                UdpSocket::bind(address).unwrap();
+            }
+        }
+    }
 }

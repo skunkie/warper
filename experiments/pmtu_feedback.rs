@@ -275,7 +275,3 @@ fn parse_ip(bytes: &[u8], truncated: bool) -> Option<IpPayload<'_>> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-#[path = "pmtu_feedback_tests.rs"]
-mod tests;

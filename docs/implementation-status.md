@@ -74,7 +74,12 @@ TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
 quotes and queue-busy retry are covered
 (`target/evidence/phase-0/matched-pmtu/README.md`). Production path attribution
-and state-transfer policy are still missing. General error propagation,
+and state-transfer policy are still missing. The same candidate now carries
+inner too-big feedback through encrypted WireGuard in all inner/outer family
+combinations, preserving exact TCP bytes/FIN and retiring reservations on expiry
+or cancellation (`target/evidence/phase-0/wireguard-pmtu/README.md`). The larger
+TCP/outer budgets exist only in a controlled fixture; ordinary UDP/fragment
+limits remain tested. Physical outer PMTU and general error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
 

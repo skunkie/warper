@@ -374,3 +374,19 @@ changing the raw-stack negative control or accepting production path attribution
 per-path state, concurrent/asymmetric flows, physical transport or WireGuard
 outer PMTU. RFC 1191/8201 feedback and production interface-state policy still
 need broader evidence before this ADR or the MTU gate can close.
+
+The bounded feedback matcher and retained-socket interface replacement are now
+shared by host and active WireGuard experiments. A controlled TCP-only path
+fixture decrypts oversized data and returns one encrypted too-big message.
+All eight inner/outer-family and 1280/1400 combinations preserve the original
+TCP write, lost-sequence retry, tuple, exact bytes and FIN/response. Source and
+recipient checks precede matching; expiry/cancellation retires reserved state
+with the endpoint, preserving typed failures and releasing sockets.
+
+The fixture requires 1500-byte TCP peers and a declared 1600-byte outer budget;
+its larger plain-TCP admission does not expand ordinary UDP/fragment limits.
+IPv4 fragmentation-required feedback requires DF. This is same-library,
+peer-addressed inner feedback, not physical outer-UDP discovery or independent
+kernel PMTU. Real router-source admission, per-path/concurrent/asymmetric
+routing, production interface state/entropy and below-minimum paths remain
+open. The stack ADR and full MTU gate remain unaccepted.
