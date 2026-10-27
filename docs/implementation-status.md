@@ -52,9 +52,13 @@ kernel-peer WireGuard interface down/up probe now verifies a completed new
 handshake, one TCP write with FIN, an unreplayed lost UDP datagram, a distinct
 post-recovery heartbeat and cleanup in both families. The helper explicitly
 restores the fixture IPv6 address lost on link-down
-(`target/evidence/phase-0/kernel-link/README.md`). Physical link down, general
-inbound failure handling, roaming, service recovery, and MTU/ICMP gates remain
-open.
+(`target/evidence/phase-0/kernel-link/README.md`). A separate three-namespace
+fixture now lowers and restores a private router egress veth while an established
+WireGuard path carries a single TCP write and one lost UDP datagram. Both
+matching IP families recover without replay, with independent peer and link
+cleanup (`target/evidence/phase-0/physical-path/README.md`). Actual physical
+NIC failure, general inbound failure handling, roaming, service recovery, and
+MTU/ICMP gates remain open.
 
 The explicit host MTU gate now reproduces oversized TCP retransmission after
 valid ICMP too-big feedback and missing fragment reassembly in both families

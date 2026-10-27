@@ -356,6 +356,25 @@ the probe explicitly restores and verifies that address before proceeding. The
 helper independently deletes its interface on exit. This is not a physical-link
 or host TUN test. See contract section 25.
 
+The private routed-path interruption fixture runs each matching IP family in
+its own user, network and mount namespaces. It requires `mount`, `umount`,
+`nsenter`, `sysctl`, `ip`, `python3`, and permission to create those namespaces:
+
+```sh
+cargo build --locked -p wireguard-stack
+for family in 4 6; do
+  PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 55s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-physical-path-isolated.sh "$PWD/target/debug/wireguard-stack" "$family"
+done
+```
+
+The helper interrupts and restores only its own router egress veth, verifies
+interface state and its restored fixture IPv6 address, and cleans up links,
+processes and a private tmpfs control directory. The client checks one TCP write
+and FIN plus a lost UDP datagram, then an exact response and distinct heartbeat;
+the independent peer checks counts and joins workers. A bounded set of typed OS
+network errors may be counted during recovery. This is not a physical NIC, host
+TUN, or production route-repair test. See contract section 26.
+
 The kernel-peer CLI refuses the initial/broad user namespace and a preexisting
 configured interface. It requires the helper-created single-UID namespace;
 the kernel additionally enforces CAP_NET_ADMIN in the target network

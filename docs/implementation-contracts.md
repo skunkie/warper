@@ -1101,3 +1101,30 @@ link under test. Restoring its fixture-owned IPv6 address is explicit setup,
 not evidence of automatic platform recovery. This does not establish service
 outage detection, production route or address repair, inbound link loss on a
 separate physical path, or native macOS behavior.
+
+
+## 26. Experimental Private Outer Path Interruption
+
+A separate Linux fixture uses distinct client, router, and kernel WireGuard
+peer network namespaces. A private tmpfs control directory coordinates the
+probe and its independent supervisor. Once the TCP connection and a warmup
+UDP exchange are established, the supervisor lowers its own router egress veth
+and reads back its administrative state. The client admits one TCP write with
+FIN and one distinct UDP datagram, observes both emitted while the path is down,
+and waits at least 1200 ms before requesting restoration. The supervisor raises
+the veth, restores its fixture-owned IPv6 address and verifies both states.
+
+Only explicitly classified OS network errors can be tolerated during the
+bounded recovery period; their count is bounded and reported. The client never
+replays the lost UDP datagram or application TCP bytes. After exact TCP response
+and EOF, it sends a distinct heartbeat. The independent kernel peer checks the
+exact TCP and UDP workload, joins workers, and releases listeners. The helper
+separately removes and verifies both veth links, reaps namespace processes, and
+unmounts its private control state, preserving primary failure status. The
+control directory is validated for naming, ownership, mode, canonical path and
+a tmpfs mount; markers are created exclusively.
+
+This covers matching inner/outer IPv4 and IPv6 families on private virtual
+links. It does not establish behavior for a physical NIC, cross-family paths,
+production route repair, host TUN interception, macOS, or concurrent network
+changes. An actual OS network error was not observed in the passing runs.

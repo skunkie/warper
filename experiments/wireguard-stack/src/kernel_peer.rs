@@ -41,7 +41,11 @@ pub(super) struct Workers {
 }
 
 impl Workers {
-    fn start(address: IpAddr, duration: Duration, response_sent: Arc<AtomicBool>) -> Result<Self> {
+    pub(super) fn start(
+        address: IpAddr,
+        duration: Duration,
+        response_sent: Arc<AtomicBool>,
+    ) -> Result<Self> {
         let listener = TcpListener::bind((address, 9000))?;
         let udp = UdpSocket::bind((address, 9000))?;
         Self::start_sockets(listener, udp, duration, Some(response_sent))
@@ -612,6 +616,12 @@ fn read_device(netlink: &mut WgSocket) -> Result<wireguard_uapi::get::Device> {
     netlink
         .get_device(DeviceInterface::Name(INTERFACE.into()))
         .map_err(|_| anyhow::anyhow!("kernel WireGuard state read failed"))
+}
+
+pub(super) fn peer_traffic(netlink: &mut WgSocket) -> Result<(u64, u64)> {
+    let device = read_device(netlink)?;
+    ensure!(device.peers.len() == 1, "kernel peer count changed");
+    Ok((device.peers[0].rx_bytes, device.peers[0].tx_bytes))
 }
 
 pub(super) fn verify_handshake(netlink: &mut WgSocket, rekey: bool) -> Result<()> {

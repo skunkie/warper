@@ -40,6 +40,8 @@ mod outer_tcp_probe;
 #[cfg(target_os = "linux")]
 mod router_mtu;
 #[cfg(target_os = "linux")]
+mod router_path;
+#[cfg(target_os = "linux")]
 mod router_tcp;
 
 use std::{
@@ -324,11 +326,33 @@ fn main() -> Result<()> {
             || arguments == ["--kernel-mtu-check"]
             || arguments == ["--router-mtu-check"]
             || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
+            || (arguments.len() == 3 && arguments[0] == "--physical-path-client")
+            || (arguments.len() == 3 && arguments[0] == "--physical-path-peer")
             || arguments == ["--kernel-link-check"]
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY FAMILY | --physical-path-peer DIRECTORY FAMILY | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
     );
+    if arguments.first().is_some_and(|argument| {
+        argument == "--physical-path-client" || argument == "--physical-path-peer"
+    }) {
+        #[cfg(target_os = "linux")]
+        {
+            let ipv6 = match arguments[2].as_str() {
+                "4" => false,
+                "6" => true,
+                _ => bail!("physical path family must be 4 or 6"),
+            };
+            let directory = std::path::Path::new(&arguments[1]);
+            return if arguments[0] == "--physical-path-client" {
+                router_path::run(directory, ipv6)
+            } else {
+                router_path::serve(directory, ipv6)
+            };
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("physical path probe requires Linux disposable namespaces");
+    }
     if arguments == ["--router-mtu-check"] {
         #[cfg(target_os = "linux")]
         return router_mtu::run();
