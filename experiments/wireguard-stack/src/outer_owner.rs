@@ -121,13 +121,19 @@ impl Owner {
         outer_mtu: usize,
         connect: impl FnOnce(&UdpSocket, SocketAddr) -> io::Result<()>,
     ) -> anyhow::Result<()> {
-        Self::validate_peer(self.socket.local_addr()?, remote)?;
+        let mut local = self.socket.local_addr()?;
+        Self::validate_peer(local, remote)?;
         let budget = PathBudget::new(outer_mtu, remote.is_ipv6())?;
-        // Revoke the old reader and reservation before attempting any mutation.
+        // Retire feedback first; retain the old socket until a replacement is
+        // ready so its queued datagrams cannot enter the new socket.
         self.reservation.cancel();
         self.queue = None;
-        connect(&self.socket, remote)?;
-        let queue = Self::enable_queue(&self.socket, self.remote_probe)?;
+        local.set_port(0);
+        let socket = UdpSocket::bind(local)?;
+        socket.set_nonblocking(true)?;
+        connect(&socket, remote)?;
+        let queue = Self::enable_queue(&socket, self.remote_probe)?;
+        self.socket = socket;
         self.budget = budget;
         self.queue = Some(queue);
         Ok(())
@@ -385,15 +391,11 @@ mod tests {
             assert_eq!(source, first.local_addr().unwrap());
 
             owner.reconnect(second.local_addr().unwrap(), 1600).unwrap();
-            assert_eq!(
-                owner
-                    .receive_datagram(&mut buffer)
-                    .unwrap_err()
-                    .downcast_ref::<io::Error>()
-                    .map(io::Error::kind),
-                Some(io::ErrorKind::InvalidData)
-            );
-            second.send_to(b"new peer", local).unwrap();
+            assert_ne!(owner.local_addr().unwrap(), local);
+            assert!(owner.receive_datagram(&mut buffer).unwrap().is_none());
+            second
+                .send_to(b"new peer", owner.local_addr().unwrap())
+                .unwrap();
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
             loop {
                 assert!(
@@ -417,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_datagram_survives_leaving_and_returning_to_the_same_peer() {
+    fn queued_datagram_is_retired_when_returning_to_the_same_peer() {
         for ipv6 in [false, true] {
             let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
             let second = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
@@ -450,8 +452,6 @@ mod tests {
             }
             owner.reconnect(second.local_addr().unwrap(), 1600).unwrap();
             owner.reconnect(first.local_addr().unwrap(), 1600).unwrap();
-            let length = owner.receive_datagram(&mut buffer).unwrap().unwrap();
-            assert_eq!(&buffer[..length], b"old generation");
             assert!(owner.receive_datagram(&mut buffer).unwrap().is_none());
             drop(owner);
             UdpSocket::bind(local).unwrap();
@@ -582,7 +582,7 @@ mod tests {
             assert!(owner.queue.is_none());
             assert_eq!(
                 owner.socket.peer_addr().unwrap(),
-                other.local_addr().unwrap()
+                first.local_addr().unwrap()
             );
             assert_eq!(
                 owner

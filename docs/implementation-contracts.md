@@ -1021,12 +1021,15 @@ it must retire the old reader generation and invalidate its pending feedback
 before publishing a changed peer, even when a previous tuple is later restored.
 A separate Linux experimental owner constructs and privately owns a nonblocking
 socket and its error reader. Peer replacement validates first, cancels pending
-feedback and drops the old reader before reconnecting; if reconnect or reader
-creation fails, feedback and sends stay unavailable until explicit recovery.
-A fresh reader and separately validated path budget are published together on
-success. Loopback tests cover change and return, stale feedback even with a
-matching header, validation refusal, and an injected failure after the peer has
-already changed. The old error is preserved and recovery creates a new reader.
+feedback and drops the old reader before constructing a replacement socket on
+the same local IP and a fresh ephemeral port. The old socket stays bound until
+the new reader is ready; a failure leaves feedback and sends unavailable until
+explicit recovery. The socket, reader and validated path budget are published
+together on success. Loopback tests cover change and return, queued old-peer
+datagrams, stale feedback even with a matching header, validation refusal,
+and an injected failure after the replacement socket connects. The original
+error is preserved and recovery creates a new socket and reader. A previously
+used port may later be reused, so delayed datagrams remain a separate risk.
 The routed probe encrypts real inner traffic with BoringTun and sends it through
 the owner and completes a distinct UDP application exchange through it after
 recovery, verifying the returned payload and source tuple. The owner does not

@@ -146,11 +146,20 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
         "outer sockets must have distinct local tuples"
     );
     let result = exchange(&mut client, &queue, &mut owner, ipv6, reporter);
+    let final_address = owner.local_addr();
     drop(owner);
     drop(queue);
     drop(client);
-    let cleanup = UdpSocket::bind(address)
-        .and_then(|first| UdpSocket::bind(second_address).map(|second| drop((first, second))));
+    let cleanup = final_address.and_then(|final_address| {
+        let mut addresses = vec![address, second_address, final_address];
+        addresses.sort_unstable();
+        addresses.dedup();
+        addresses
+            .into_iter()
+            .map(UdpSocket::bind)
+            .collect::<std::io::Result<Vec<_>>>()
+            .map(drop)
+    });
     match (result, cleanup) {
         (Err(primary), cleanup) => Err(primary.context(match cleanup {
             Ok(()) => "router MTU outer socket rebound".into(),

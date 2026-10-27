@@ -156,23 +156,16 @@ the WireGuard transport. The routed fixture now also completes a distinct UDP
 application exchange through that owner after recovery in all four family
 combinations (`target/evidence/phase-0/owned-exchange/README.md`). Concurrent
 transitions and production path attribution remain unverified.
-An isolated loopback test also queues an old-peer UDP datagram before
-reconnection. In both outer families, the experimental owner rejects that
-retained datagram and accepts a subsequent datagram from the new peer
-(`target/evidence/phase-0/queued-peer/README.md`). This
-does not establish synchronization for concurrent transitions or production
-handling of the resulting error.
-If the owner leaves and returns to the same peer before receiving, an older
-queued datagram from that peer passes the source check in both families. The
-feedback reader token does not identify received datagram generations, so the
-experimental owner cannot yet safely attribute those datagrams across peer
-transitions (`target/evidence/phase-0/returned-peer-datagram/README.md`).
-A separate loopback experiment replaces the socket while the previous socket
-is still bound, then drops it before returning to the first peer. This discards
-the already-queued datagram in both families and uses a different local port
-for each immediate replacement. It does not address delayed datagrams after
-port reuse, route publication, failure recovery, or integration with the
-WireGuard transport (`target/evidence/phase-0/replaced-peer-socket/README.md`).
+The owner now replaces its socket during peer transitions, retaining the old
+binding until the replacement is ready. This discards already-queued old-peer
+datagrams and changes the local port in both families; transition failures stay
+unavailable until recovery. The routed kernel-peer fixture still completes an
+encrypted exchange after transition in all four family combinations
+(`target/evidence/phase-0/owner-replacement/README.md`). Earlier evidence showed
+that reconnecting the same socket could accept a queued datagram after returning
+to the original peer. Replacement does not address delayed datagrams after
+port reuse, route publication, concurrent transitions, or integration with the
+general WireGuard transport.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
