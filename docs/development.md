@@ -558,9 +558,9 @@ operations through exclusive mutable access. Its peer transition revokes the
 old reservation and reader before reconnecting; failed transitions stay
 unavailable until recovery. Run its controlled loopback tests with
 `cargo test --locked -p wireguard-stack outer_owner::tests`. The routed fixture
-uses the owner for encrypted sends and genuine feedback, but does not complete
-an application exchange through that owner after recovery. The owner does not
-replace the general WireGuard transport or a native macOS implementation.
+uses the owner for encrypted sends, genuine feedback, and a distinct application
+datagram exchange after recovery. The owner does not replace the general
+WireGuard transport or a native macOS implementation.
 The original reader's snapshot checks still cannot detect an unowned socket
 peer changed and restored between checks or concurrently reconfigured.
 
@@ -582,8 +582,8 @@ The fixture deliberately enables and reads back no-fragment PROBE mode to avoid
 cached PMTU suppressing repeated remote measurements; all sends still obey the
 declared transport budget. A distinct oversized send must then fail before
 socket I/O, and a separate safe message must complete on the same tunnel. All
-four family combinations run; the peer verifies exactly eight UDP datagrams
-(four warmups and four safe messages). A 100ms gap between fresh sessions
+four family combinations run; the peer verifies exactly twelve UDP datagrams
+(four warmups, four owner exchanges and four safe messages). A 100ms gap between fresh sessions
 spaces initiations for the reused kernel peer identity. This is fixture pacing,
 not a production reconnection strategy.
 
@@ -609,8 +609,8 @@ WireGuard counters at inner MTU 1328 (outer IPv4) or 1312 (outer IPv6).
 
 The probe verifies the rejected sequence, original tuple, exact bytes,
 FIN/response and a 100ms final-ACK pumping interval. The kernel peer accepts two
-TCP connections per inner family, verifies the combined four TCP/eight UDP
-workload and 42828 application bytes, joins all four workers and rebinds its
+TCP connections per inner family, verifies the combined four TCP/twelve UDP
+workload and 43044 application bytes, joins all four workers and rebinds its
 listeners. Both client and peer have explicit wall deadlines; real monotonic
 time drives TCP retries. The fixture's server/control/global bounds remain
 15/16/20 seconds. This extends the existing `--router-mtu-check` scope; there

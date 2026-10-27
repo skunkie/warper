@@ -1017,8 +1017,9 @@ success. Loopback tests cover change and return, stale feedback even with a
 matching header, validation refusal, and an injected failure after the peer has
 already changed. The old error is preserved and recovery creates a new reader.
 The routed probe encrypts real inner traffic with BoringTun and sends it through
-the owner, but does not complete an application exchange through it after
-recovery. The owner does not replace the existing WireGuard transport.
+the owner and completes a distinct UDP application exchange through it after
+recovery, verifying the returned payload and source tuple. The owner does not
+replace the existing WireGuard transport.
 Concurrency, cancellation during transition, and production path selection
 remain unverified. Production ownership and path policy remain open.
 Larger reports never grow the budget; unsupported small paths fail before mutation. Matching alone does
@@ -1059,7 +1060,7 @@ FIN and response/EOF, no inner feedback, a final ACK pumping interval and joined
 peer workers. All outgoing retries must fit the new inner limit, including
 WireGuard overhead/padding in the outer budget. No application write or
 ciphertext is replayed by the owner. The peer verifies four TCP connections
-alongside the existing eight UDP messages, then releases listeners; the harness
+alongside twelve UDP messages, then releases listeners; the harness
 independently retires its interfaces, links and namespace processes.
 
 The single-operation, known-router, minimum-16-byte quote, explicit PROBE mode

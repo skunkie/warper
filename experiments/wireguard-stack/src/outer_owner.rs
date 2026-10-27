@@ -133,6 +133,23 @@ impl Owner {
         Ok(())
     }
 
+    pub(super) fn receive_datagram(&self, buffer: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        let queue = self.queue.as_ref().ok_or(Error::Unavailable)?;
+        queue.verify_socket()?;
+        match self.socket.recv_from(buffer) {
+            Ok((length, source)) if source == queue.remote() => Ok(Some(length)),
+            Ok(_) => {
+                Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected outer peer").into())
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn cancel_reservation(&mut self) {
+        self.reservation.cancel();
+    }
+
     pub(super) fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }

@@ -137,9 +137,10 @@ recovery (`target/evidence/phase-0/owned-peer/README.md`). The routed kernel-pee
 fixture now sends encrypted traffic through the owner and rejects genuine
 retired router feedback after a peer transition in all four family combinations
 (`target/evidence/phase-0/owned-router/README.md`). This owner does not replace
-the WireGuard transport; a complete post-transition application exchange on
-that owner, concurrent transitions, and production path attribution remain
-unverified.
+the WireGuard transport. The routed fixture now also completes a distinct UDP
+application exchange through that owner after recovery in all four family
+combinations (`target/evidence/phase-0/owned-exchange/README.md`). Concurrent
+transitions and production path attribution remain unverified.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

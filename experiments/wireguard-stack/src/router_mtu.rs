@@ -23,6 +23,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) const OWNED_MESSAGE: &[u8] = b"owned-path-after-transition";
+
 pub fn run() -> Result<()> {
     kernel_peer::require_mapped_namespace()?;
     for ipv6 in [false, true] {
@@ -77,8 +79,9 @@ pub fn serve(directory: &Path) -> Result<()> {
     };
     ensure!(
         report.tcp == 4
-            && report.udp == 8
-            && report.bytes == 9944 + 4 * (8192 + crate::router_tcp::RESPONSE.len()),
+            && report.udp == 12
+            && report.bytes
+                == 9944 + 8 * OWNED_MESSAGE.len() + 4 * (8192 + crate::router_tcp::RESPONSE.len()),
         "router peer did not verify exact TCP/UDP counts and bytes"
     );
     for address in ["10.66.66.10:9000", "[fd66:66::10]:9000"] {
@@ -353,6 +356,7 @@ fn exchange(
         owner.outer_mtu() == 1400,
         "post-transition budget did not commit"
     );
+    owned_exchange(client, owner, destination, reporter, wall)?;
     ensure!(
         reservation.apply(
             queue,
@@ -383,12 +387,83 @@ fn exchange(
     receive_udp(client, destination, &safe, wall)?;
     ensure!(queue.read()?.is_none() && client.transport.staged_packets == 0);
     println!(
-        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, retired_feedback_rejected=true, wrong_socket_rejected=true, peer_transition=true, failed_payload_replayed=false",
+        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, retired_feedback_rejected=true, wrong_socket_rejected=true, peer_transition=true, owned_exchange=true, failed_payload_replayed=false",
         client.transport.remote.is_ipv6(),
         quoted_len.min(16),
         safe.len()
     );
     Ok(())
+}
+
+fn owned_exchange(
+    client: &mut Endpoint,
+    owner: &mut Owner,
+    destination: SocketAddr,
+    reporter: IpAddr,
+    wall: Instant,
+) -> Result<()> {
+    send_udp(client, destination, OWNED_MESSAGE)?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    ensure!(
+        client.peer.device.outgoing.len() == 1,
+        "expected one owned application datagram"
+    );
+    let packet = client
+        .peer
+        .device
+        .outgoing
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("missing owned application packet"))?;
+    let mut encrypted = [0; 1536];
+    let result = client.transport.tunnel.encapsulate(&packet, &mut encrypted);
+    let TunnResult::WriteToNetwork(packet) = result else {
+        anyhow::bail!("owned application encryption was not immediately ready");
+    };
+    owner.send_reserved(packet, reporter, wall.elapsed())?;
+    let mut incoming = [0; 1536];
+    loop {
+        ensure!(
+            wall.elapsed() < Duration::from_secs(4),
+            "owned application deadline exceeded"
+        );
+        if let Some(length) = owner.receive_datagram(&mut incoming)? {
+            let result = client.transport.tunnel.decapsulate(
+                Some(client.transport.remote.ip()),
+                &incoming[..length],
+                &mut encrypted,
+            );
+            ensure!(
+                matches!(
+                    result,
+                    TunnResult::WriteToTunnelV4(..) | TunnResult::WriteToTunnelV6(..)
+                ),
+                "owned response was not a decrypted inner packet"
+            );
+            client.transport.receive_result(result, &mut client.peer)?;
+            client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+            let socket = client.peer.sockets.get_mut::<udp::Socket>(client.peer.udp);
+            ensure!(
+                socket.can_recv(),
+                "owned response did not reach the application"
+            );
+            let (payload, metadata) = socket.recv()?;
+            ensure!(
+                payload == OWNED_MESSAGE
+                    && metadata.endpoint.addr == destination.ip().into()
+                    && metadata.endpoint.port == destination.port(),
+                "owned application content or tuple changed"
+            );
+            ensure!(!socket.can_recv(), "extra owned application datagram");
+            ensure!(
+                owner.receive()?.is_none(),
+                "owned safe message generated outer error"
+            );
+            owner.cancel_reservation();
+            return Ok(());
+        }
+        owner.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn send_udp(client: &mut Endpoint, destination: SocketAddr, payload: &[u8]) -> Result<()> {

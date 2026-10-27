@@ -478,7 +478,8 @@ fn udp_server(socket: UdpSocket, stop: &AtomicBool, deadline: Instant) -> Result
                 || payload == [0x72; 257]
                 || (payload.len() == if source.is_ipv6() { 1232 } else { 1252 }
                     && payload.iter().all(|byte| *byte == 0x53))
-                || payload == b"heartbeat",
+                || payload == b"heartbeat"
+                || payload == crate::router_mtu::OWNED_MESSAGE,
             "kernel UDP payload did not match synthetic workload"
         );
         ensure!(
