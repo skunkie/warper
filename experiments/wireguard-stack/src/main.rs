@@ -356,13 +356,14 @@ fn main() -> Result<()> {
             || arguments == ["--outer-mtu-check"]
             || arguments == ["--kernel-mtu-check"]
             || arguments == ["--router-mtu-check"]
+            || (arguments.len() == 2 && arguments[0] == "--router-mtu-check")
             || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
             || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-client")
             || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-peer")
             || arguments == ["--kernel-link-check"]
             || arguments == ["--kernel-peer"]
             || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check | --router-mtu-peer DIRECTORY | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
     );
     if arguments.first().is_some_and(|argument| {
         argument == "--physical-path-client" || argument == "--physical-path-peer"
@@ -386,9 +387,12 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         bail!("physical path probe requires Linux disposable namespaces");
     }
-    if arguments == ["--router-mtu-check"] {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--router-mtu-check")
+    {
         #[cfg(target_os = "linux")]
-        return router_mtu::run();
+        return router_mtu::run(arguments.get(1).map(std::path::Path::new));
         #[cfg(not(target_os = "linux"))]
         bail!("router MTU probe requires Linux disposable namespaces");
     }

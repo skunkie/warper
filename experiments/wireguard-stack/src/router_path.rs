@@ -96,7 +96,7 @@ fn finish_peer(
     }
 }
 
-fn validate_directory(directory: &Path) -> Result<()> {
+pub(super) fn validate_directory(directory: &Path) -> Result<()> {
     ensure!(
         directory.is_absolute() && directory.parent() == Some(Path::new("/tmp")),
         "invalid physical-path control directory"
@@ -136,7 +136,7 @@ fn validate_directory(directory: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_marker(directory: &Path, name: &str) -> Result<()> {
+pub(super) fn write_marker(directory: &Path, name: &str) -> Result<()> {
     let mut marker = OpenOptions::new()
         .write(true)
         .create_new(true)

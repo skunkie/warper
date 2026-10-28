@@ -667,13 +667,25 @@ own reduction independently. All inner/outer family combinations run. Both
 links converge at the same router and egress; this does not verify independent
 physical NICs, concurrent stack resizing, or route-change notifications.
 
-`run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links and
-the kernel-peer subprocess. Ready/stop files use a private temporary directory;
+With the harness-provided private tmpfs control directory, the probe also
+keeps both reservations outstanding while the harness lowers the second router
+veth. After the harness acknowledges the interruption, the probe explicitly
+cancels that reservation and commits the unaffected path's report. The harness
+raises the link and restores its IPv6 address; a replacement socket sends a
+distinct datagram and commits its own new report. The harness owns link mutation
+and independently removes its links and control mount even on failure. This
+controlled sequence does not establish automatic path-change detection, safe
+behavior before cancellation, or physical-interface failure.
+
+`run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links,
+interruption supervisor and kernel-peer subprocess. Ready/stop files use a
+private tmpfs directory;
 a bounded supervisor and cleanup traps reap processes and verify link removal.
 The peer helper independently removes its WireGuard interface. IPv4/IPv6
 forwarding sysctls belong only to the private router network namespace. No host
 resolver, bus or physical configuration is touched. Supply `nsenter`, `sysctl`,
-`readlink` and `sleep` on PATH; `/usr/sbin` may be needed for sysctl. The full
+`readlink`, `sleep`, `mount` and `umount` on PATH; `/usr/sbin` may be needed for
+sysctl. The full
 Phase0 gate remains open, especially short quotes, router trust and
 concurrent/asymmetric physical paths. See contract section 23.
 

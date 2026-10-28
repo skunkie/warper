@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -38,8 +38,10 @@ class FeasibilityHarnessTests(unittest.TestCase):
             "readlink": 'echo "$1"\n',
             "sysctl": f'echo "$*" >> "{root}/sysctl-commands.log"\n',
             "tc": f'echo "$*" >> "{root}/tc-commands.log"\nexit {tc_exit}\n',
+            "mount": f'echo "$*" >> "{root}/mount-commands.log"\n',
+            "umount": f'echo "$*" >> "{root}/umount-commands.log"\n',
             "nsenter": f'echo "$*" >> "{root}/nsenter-commands.log"\nshift\nif [[ "$1" == bash && "$2" == -eu ]]; then exit 0; fi\nexec "$@"\n',
-            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\n',
+            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\nif [[ "$*" == "link set dev routerc1 down" ]]; then exit {interrupt_exit}; fi\n',
             "cat": f'if [[ "$1" == /proc/self/uid_map ]]; then echo "{mapping}"; else exec /bin/cat "$@"; fi\n',
         }
         for name, source in commands.items():
@@ -48,7 +50,33 @@ class FeasibilityHarnessTests(unittest.TestCase):
             path.chmod(0o700)
         executable = root / f"target/debug/{probe}"
         executable.parent.mkdir(parents=True)
-        executable.write_text(f'#!/usr/bin/env bash\nset -eu\necho fixture-probe "$@"\nif [[ "${{1:-}}" == --router-mtu-peer ]]; then touch "$2/ready"; while [[ ! -f "$2/stop" ]]; do sleep 0.01; done; exit {peer_exit}; fi\nif [[ "{probe_killed}" == True ]]; then kill -KILL $$; fi\nexit {probe_exit}\n')
+        executable.write_text(f'''#!/usr/bin/env bash
+set -eu
+echo fixture-probe "$@"
+if [[ "${{1:-}}" == --router-mtu-peer ]]; then
+    touch "$2/ready"
+    while [[ ! -f "$2/stop" ]]; do sleep 0.01; done
+    exit {peer_exit}
+fi
+if [[ "{probe_killed}" == True ]]; then kill -KILL $$; fi
+if [[ "${{1:-}}" == --router-mtu-check && {probe_exit} == 0 ]]; then
+    for suffix in 00 01 10 11; do
+        touch "$2/down.$suffix.request"
+        for _ in {{1..500}}; do
+            if [[ -f "$2/down.$suffix.ready" ]]; then break; fi
+            sleep 0.002
+        done
+        [[ -f "$2/down.$suffix.ready" ]] || exit 1
+        touch "$2/up.$suffix.request"
+        for _ in {{1..500}}; do
+            if [[ -f "$2/up.$suffix.ready" ]]; then break; fi
+            sleep 0.002
+        done
+        [[ -f "$2/up.$suffix.ready" ]] || exit 1
+    done
+fi
+exit {probe_exit}
+''')
         executable.chmod(0o700)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
         arguments = ["bash", str(harness), probe]
@@ -198,6 +226,8 @@ class FeasibilityHarnessTests(unittest.TestCase):
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link set routerc0 mtu 1600 up", commands)
         self.assertIn("link set routerc1 mtu 1600 up", commands)
+        self.assertEqual(commands.count("link set dev routerc1 down"), 4)
+        self.assertEqual(commands.count("link set dev routerc1 up"), 4)
         self.assertIn("link set routers0 mtu 1400 up", commands)
         traffic_control = (evidence.parents[3] / "tc-commands.log").read_text()
         self.assertIn("netem delay 100ms", traffic_control)
@@ -214,6 +244,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertIn("--router-mtu-peer", log)
         self.assertIn("CLEANUP independent kernel WireGuard interface removed and verified", log)
         self.assertIn("namespace processes reaped", log)
+        self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
         outcome = (evidence / "result.txt").read_text()
         self.assertIn("router_mtu_probe_exit=0", outcome)
         self.assertIn("NOT RUN short-quote support", outcome)
@@ -235,6 +266,15 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertIn("link del dev routerc0", commands)
         self.assertIn("link del dev routerc1", commands)
         self.assertIn("link del dev routers0", commands)
+        self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_router_interruption_failure_retires_links_and_control_mount(self):
+        result, evidence = self.run_harness(scope="--router-mtu-check", interrupt_exit=7)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        commands = (evidence.parents[3] / "ip-commands.log").read_text()
+        self.assertIn("link set dev routerc1 down", commands)
+        self.assertIn("link del dev routerc1", commands)
+        self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
         self.assertNotIn("PASS", (evidence / "result.txt").read_text())
 
     def test_killed_router_client_still_stops_peer_and_reaps_namespaces(self):

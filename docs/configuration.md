@@ -295,7 +295,7 @@ kernel peer. The full Phase 0/PMTU gate remains incomplete.
 
 The router scope instead creates client, forwarding-router and kernel-peer
 network namespaces with 1600-byte ingress and 1400-byte egress links. It requires
-`nsenter`, `sysctl`, `readlink` and `sleep` in addition to the usual harness tools
+`nsenter`, `sysctl`, `readlink`, `sleep`, `mount` and `umount` in addition to the usual harness tools
 (on systems with administrative tools outside PATH, add `/usr/sbin`). It uses
 explicit no-fragment PROBE socket mode to measure remote errors independently
 of cached PMTU; the declared budget continues to guard sends. The internal
@@ -305,3 +305,10 @@ no rekey combination. For each family combination it verifies a failed UDP
 operation without replay and a retained TCP connection across sizing, matching
 a router report before committing each reduction. General path trust and
 shorter quotes remain unresolved.
+
+The internal `--router-mtu-check DIRECTORY` form is reserved for the isolated
+router harness. Its private control directory coordinates interruption and
+restoration of a fixture-owned link; the probe does not configure host links.
+The standalone no-directory form remains available for the existing routed
+checks and does not request an interruption. Both forms require a mapped user
+namespace and controlled router topology; they are not production commands.

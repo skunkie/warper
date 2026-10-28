@@ -25,11 +25,14 @@ use std::{
 
 pub(super) const OWNED_MESSAGE: &[u8] = b"owned-path-after-transition";
 
-pub fn run() -> Result<()> {
+pub fn run(directory: Option<&Path>) -> Result<()> {
     kernel_peer::require_mapped_namespace()?;
+    if let Some(directory) = directory {
+        crate::router_path::validate_directory(directory)?;
+    }
     for ipv6 in [false, true] {
         for outer_ipv6 in [false, true] {
-            run_case(ipv6, outer_ipv6)?;
+            run_case(ipv6, outer_ipv6, directory)?;
             // Fresh synthetic sessions reuse one kernel peer identity. Space
             // initiations beyond its anti-flood window; this is fixture pacing.
             thread::sleep(Duration::from_millis(100));
@@ -130,7 +133,7 @@ pub(super) fn client(ipv6: bool, outer_ipv6: bool) -> Result<Endpoint> {
     Ok(client)
 }
 
-fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
+fn run_case(ipv6: bool, outer_ipv6: bool, directory: Option<&Path>) -> Result<()> {
     let mut client = client(ipv6, outer_ipv6)?;
     let reporter = reporter(outer_ipv6)?;
     let address = client.transport.socket.local_addr()?;
@@ -145,7 +148,7 @@ fn run_case(ipv6: bool, outer_ipv6: bool) -> Result<()> {
         second_address != address,
         "outer sockets must have distinct local tuples"
     );
-    let result = exchange(&mut client, &queue, &mut owner, ipv6, reporter);
+    let result = exchange(&mut client, &queue, &mut owner, ipv6, reporter, directory);
     let final_address = owner.local_addr();
     drop(owner);
     drop(queue);
@@ -175,6 +178,7 @@ fn exchange(
     owner: &mut Owner,
     ipv6: bool,
     reporter: IpAddr,
+    directory: Option<&Path>,
 ) -> Result<()> {
     let wall = Instant::now();
     let destination: SocketAddr = if ipv6 {
@@ -186,6 +190,9 @@ fn exchange(
     send_udp(client, destination, &[0x31])?;
     receive_udp(client, destination, &[0x31], wall)?;
     overlapping_paths(client, destination, ipv6, wall)?;
+    if let Some(directory) = directory {
+        interrupted_path(client, destination, ipv6, wall, directory)?;
+    }
     ensure!(
         queue.read()?.is_none(),
         "router MTU queue was not initially empty"
@@ -528,29 +535,7 @@ fn overlapping_paths(
         (&mut first, first_reporter, 0x67),
         (&mut second, second_reporter, 0x69),
     ] {
-        send_udp(
-            client,
-            destination,
-            &vec![marker; if ipv6 { 1352 } else { 1372 }],
-        )?;
-        client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
-        ensure!(
-            client.peer.device.outgoing.len() == 1,
-            "expected one path-specific datagram"
-        );
-        let inner = client
-            .peer
-            .device
-            .outgoing
-            .pop_front()
-            .ok_or_else(|| anyhow::anyhow!("missing path datagram"))?;
-        let mut encrypted = [0; 1536];
-        let TunnResult::WriteToNetwork(packet) =
-            client.transport.tunnel.encapsulate(&inner, &mut encrypted)
-        else {
-            anyhow::bail!("path encryption was not immediately ready");
-        };
-        owner.send_reserved(packet, reporter, wall.elapsed())?;
+        send_path_datagram(client, owner, destination, reporter, ipv6, marker, wall)?;
     }
     let first_report = loop {
         if let Some(report) = first.receive()? {
@@ -601,6 +586,150 @@ fn overlapping_paths(
     drop(UdpSocket::bind(first_address)?);
     drop(UdpSocket::bind(second_address)?);
     println!("PASS simultaneous routed path feedback: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
+    Ok(())
+}
+
+fn interrupted_path(
+    client: &mut Endpoint,
+    destination: SocketAddr,
+    ipv6: bool,
+    wall: Instant,
+    directory: &Path,
+) -> Result<()> {
+    let outer_ipv6 = client.transport.remote.is_ipv6();
+    let (first_local, second_local, first_reporter, second_reporter): (
+        IpAddr,
+        IpAddr,
+        IpAddr,
+        IpAddr,
+    ) = if outer_ipv6 {
+        (
+            "fd77:1::2".parse()?,
+            "fd77:3::2".parse()?,
+            "fd77:1::1".parse()?,
+            "fd77:3::1".parse()?,
+        )
+    } else {
+        (
+            "198.18.0.2".parse()?,
+            "198.20.0.2".parse()?,
+            "198.18.0.1".parse()?,
+            "198.20.0.1".parse()?,
+        )
+    };
+    let mut first = Owner::new_remote_probe(
+        SocketAddr::new(first_local, 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let mut second = Owner::new_remote_probe(
+        SocketAddr::new(second_local, 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let first_address = first.local_addr()?;
+    let second_address = second.local_addr()?;
+    for (owner, reporter, marker) in [
+        (&mut first, first_reporter, 0x71),
+        (&mut second, second_reporter, 0x73),
+    ] {
+        send_path_datagram(client, owner, destination, reporter, ipv6, marker, wall)?;
+    }
+    let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
+    crate::router_path::write_marker(directory, &format!("down.{suffix}.request"))?;
+    wait_marker(directory, &format!("down.{suffix}.ready"))?;
+    second.cancel_reservation();
+    let report = loop {
+        if let Some(report) = first.receive()? {
+            break report;
+        }
+        first.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    ensure!(
+        first.apply(&report, wall.elapsed())?,
+        "unaffected path did not reduce"
+    );
+    ensure!(
+        first.outer_mtu() == 1400 && second.outer_mtu() == 1600,
+        "interruption changed the wrong budget"
+    );
+    crate::router_path::write_marker(directory, &format!("up.{suffix}.request"))?;
+    wait_marker(directory, &format!("up.{suffix}.ready"))?;
+    second.reconnect(client.transport.remote, 1600)?;
+    send_path_datagram(
+        client,
+        &mut second,
+        destination,
+        second_reporter,
+        ipv6,
+        0x75,
+        wall,
+    )?;
+    let report = loop {
+        if let Some(report) = second.receive()? {
+            break report;
+        }
+        second.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    ensure!(
+        second.apply(&report, wall.elapsed())?,
+        "restored path did not reduce"
+    );
+    ensure!(first.outer_mtu() == 1400 && second.outer_mtu() == 1400);
+    let restored_address = second.local_addr()?;
+    drop((first, second));
+    drop(UdpSocket::bind(first_address)?);
+    drop(UdpSocket::bind(second_address)?);
+    drop(UdpSocket::bind(restored_address)?);
+    println!("PASS interrupted routed path: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
+    Ok(())
+}
+
+fn send_path_datagram(
+    client: &mut Endpoint,
+    owner: &mut Owner,
+    destination: SocketAddr,
+    reporter: IpAddr,
+    ipv6: bool,
+    marker: u8,
+    wall: Instant,
+) -> Result<()> {
+    send_udp(
+        client,
+        destination,
+        &vec![marker; if ipv6 { 1352 } else { 1372 }],
+    )?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    ensure!(
+        client.peer.device.outgoing.len() == 1,
+        "expected one path-specific datagram"
+    );
+    let inner = client
+        .peer
+        .device
+        .outgoing
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("missing path datagram"))?;
+    let mut encrypted = [0; 1536];
+    let TunnResult::WriteToNetwork(packet) =
+        client.transport.tunnel.encapsulate(&inner, &mut encrypted)
+    else {
+        anyhow::bail!("path encryption was not immediately ready");
+    };
+    owner.send_reserved(packet, reporter, wall.elapsed())
+}
+
+fn wait_marker(directory: &Path, name: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !directory.join(name).try_exists()? {
+        ensure!(
+            Instant::now() < deadline,
+            "router fixture control deadline exceeded"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     Ok(())
 }
 

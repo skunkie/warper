@@ -16,16 +16,26 @@ if [[ "$mapping" == *$'\n'* || "$inside" != 0 || "$count" != 1 || -n "${extra:-}
     exit 1
 fi
 probe=$1
-control_directory=$(mktemp -d /tmp/warper-router.XXXXXXXX)
+control_directory=$(mktemp -d /tmp/warper-path.XXXXXXXX)
+mounted=false
 client_anchor=
 server_anchor=
 peer_process=
+control_process=
 links=()
 cleanup() {
     local status=${1:-$?}
     local failed=false
     local child_status
     trap - EXIT
+    if [[ -n "$control_process" ]]; then
+        if kill -0 "$control_process" 2>/dev/null; then
+            if ! kill "$control_process" 2>/dev/null; then failed=true; fi
+        fi
+        child_status=0
+        wait "$control_process" || child_status=$?
+        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then failed=true; fi
+    fi
     if [[ -n "$peer_process" ]]; then
         : > "$control_directory/stop"
         if kill -0 "$peer_process" 2>/dev/null; then
@@ -52,6 +62,10 @@ cleanup() {
             if [[ "$child_status" != 0 && "$child_status" != 143 ]]; then failed=true; fi
         fi
     done
+    if [[ -f "$control_directory/control.log" ]] && ! cat "$control_directory/control.log" >&2; then failed=true; fi
+    if [[ "$mounted" == true ]]; then
+        if ! umount "$control_directory"; then failed=true; fi
+    fi
     if ! rm -r -- "$control_directory"; then failed=true; fi
     if [[ "$failed" == true ]]; then
         echo "FAIL independent router fixture cleanup" >&2
@@ -64,6 +78,8 @@ cleanup() {
 trap 'cleanup' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+mount -t tmpfs -o mode=700 tmpfs "$control_directory"
+mounted=true
 unshare --net sleep 30 &
 client_anchor=$!
 unshare --net sleep 30 &
@@ -138,8 +154,37 @@ for _ in {1..300}; do
     sleep 0.01
 done
 if [[ "$ready" != true ]]; then echo "FAIL router kernel peer startup" >&2; exit 1; fi
+wait_marker() {
+    local marker=$1
+    for _ in {1..5000}; do
+        if [[ -f "$control_directory/$marker" ]]; then return 0; fi
+        sleep 0.002
+    done
+    echo "FAIL router control deadline: $marker" >&2
+    return 1
+}
+supervise_interruptions() {
+    local suffix
+    for suffix in 00 01 10 11; do
+        wait_marker "down.$suffix.request"
+        ip link set dev routerc1 down
+        : > "$control_directory/down.$suffix.ready"
+        wait_marker "up.$suffix.request"
+        ip link set dev routerc1 up
+        ip -6 addr replace fd77:3::1/64 dev routerc1 nodad
+        : > "$control_directory/up.$suffix.ready"
+    done
+}
+supervise_interruptions > "$control_directory/control.log" 2>&1 &
+control_process=$!
 status=0
-nsenter --net="/proc/$client_anchor/ns/net" "$probe" --router-mtu-check || status=$?
+nsenter --net="/proc/$client_anchor/ns/net" "$probe" --router-mtu-check "$control_directory" || status=$?
+if [[ "$status" == 0 ]]; then
+    control_status=0
+    wait "$control_process" || control_status=$?
+    control_process=
+    if [[ "$control_status" != 0 ]]; then status=$control_status; fi
+fi
 : > "$control_directory/stop"
 peer_status=0
 wait "$peer_process" || peer_status=$?
