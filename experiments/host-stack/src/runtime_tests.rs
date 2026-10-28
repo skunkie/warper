@@ -68,6 +68,68 @@ async fn incomplete_fragments_publish_no_handler_and_expire_without_further_inpu
     assert!(channels.udp.recv().await.is_none());
 }
 
+#[tokio::test(start_paused = true)]
+async fn discarded_fragment_slots_expire_before_distinct_datagram_is_admitted() {
+    for ipv6 in [false, true] {
+        let (runtime, mut channels) = runtime(8);
+        let runner = tokio::spawn(runtime.run());
+        let first = crate::fragment_probe::split(&udp_packet_for(ipv6, 40000), 1, 8).unwrap();
+        let second = crate::fragment_probe::split(&udp_packet_for(ipv6, 40001), 2, 8).unwrap();
+        let blocked = crate::fragment_probe::split(&udp_packet_for(ipv6, 40002), 3, 8).unwrap();
+        for fragment in [
+            &first[0],
+            &first[0],
+            &second[0],
+            &second[0],
+            &blocked[0],
+            &blocked[1],
+        ] {
+            channels.ingress.try_inject(fragment).unwrap();
+        }
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            channels.udp.try_recv().is_err(),
+            "incomplete or rejected fragments must not publish a handler"
+        );
+        tokio::time::advance(Duration::from_millis(999)).await;
+        let still_blocked =
+            crate::fragment_probe::split(&udp_packet_for(ipv6, 40003), 4, 8).unwrap();
+        for fragment in &still_blocked {
+            channels.ingress.try_inject(fragment).unwrap();
+        }
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            channels.udp.try_recv().is_err(),
+            "unexpired tombstones must retain capacity"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        let fresh = crate::fragment_probe::split(&udp_packet_for(ipv6, 40004), 5, 8).unwrap();
+        for fragment in &fresh {
+            channels.ingress.try_inject(fragment).unwrap();
+        }
+        let mut association = channels.udp.recv().await.unwrap();
+        assert_eq!(association.metadata().source.port(), 40004);
+        assert_eq!(association.recv().await.unwrap().payload(), b"sample");
+        assert!(
+            channels.udp.try_recv().is_err(),
+            "rejected fragments must not be replayed"
+        );
+        channels.shutdown.send(()).unwrap();
+        let report = runner.await.unwrap().unwrap();
+        assert_eq!(report.fragment_timeouts, 2);
+        assert_eq!(report.reassembled, 1);
+        assert_eq!(report.admitted, 1);
+        assert_eq!(report.rejected, 6);
+    }
+}
+
 #[test]
 fn ingress_reserves_capacity_before_copying_and_rejects_oversized_input() {
     let (_runtime, channels) = runtime(1);
@@ -92,10 +154,20 @@ fn ingress_reserves_capacity_before_copying_and_rejects_oversized_input() {
 }
 
 fn udp_packet(port: u16) -> Vec<u8> {
-    let mut peer = crate::packet_peer::Peer::new("10.66.66.2".parse().unwrap(), port).unwrap();
+    udp_packet_for(false, port)
+}
+
+fn udp_packet_for(ipv6: bool, port: u16) -> Vec<u8> {
+    let source = if ipv6 { "fd66:66::2" } else { "10.66.66.2" };
+    let destination = if ipv6 {
+        "[fd66:66::91]:9000"
+    } else {
+        "10.66.66.91:9000"
+    };
+    let mut peer = crate::packet_peer::Peer::new(source.parse().unwrap(), port).unwrap();
     peer.sockets
         .get_mut::<smoltcp::socket::udp::Socket>(peer.udp)
-        .send_slice(b"sample", "10.66.66.91:9000".parse::<SocketAddr>().unwrap())
+        .send_slice(b"sample", destination.parse::<SocketAddr>().unwrap())
         .unwrap();
     peer.poll(0);
     peer.device.outgoing.pop_front().unwrap()

@@ -649,6 +649,12 @@ succeed.
 This tests rejection and continued operation, not forwarding or reassembly of
 datagrams above the limit.
 
+The combined-runtime controlled-clock test fills both slots with overlap
+tombstones. It checks that distinct fragment sets publish no handler before
+expiry, then that a different datagram is admitted at expiry without replaying
+the rejected sets. This covers runtime scheduling and accounting in both IP
+families; it is not a real-TUN overload or sustained-traffic test.
+
 A separate Linux TUN scope sets an IPv4 route MTU of 1000 bytes while retaining
 the interface's 1280-byte MTU. It observes kernel-generated fragments of a
 1252-byte UDP payload for each of two destinations, then verifies the complete

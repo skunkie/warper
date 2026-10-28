@@ -50,6 +50,10 @@ fragmentation of supported 1252-byte UDP payloads. The combined runtime
 reassembles and replies for two destinations while preserving payload and
 metadata (`target/evidence/phase-0/tun-fragments/README.md`). This does not
 establish native IPv6 fragmentation or production route handling.
+The combined runtime's controlled-clock test also exercises two retained
+fragment tombstones: distinct fragment sets are rejected before expiry and a
+new datagram is admitted at expiry in both IP families. This does not establish
+real-TUN overload behavior.
 The isolated TUN crash fixture also joins the external packet bridge, kills
 the experimental adapter after UDP traffic, and completes fresh TCP/UDP
 traffic using a new adapter on the same fixture interface in both families,
