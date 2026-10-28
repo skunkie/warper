@@ -1092,6 +1092,56 @@ mod tests {
             replacement.decapsulate(None, &initiation, &mut output),
             TunnResult::WriteToNetwork(_)
         ));
+        // A later legitimate initiation must still establish a usable session.
+        let mut current_client = Tunn::new(
+            client_key,
+            PublicKey::from(&server_key),
+            None,
+            None,
+            1,
+            None,
+        );
+        let current_initiation =
+            match current_client.format_handshake_initiation(&mut output, false) {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected current initiation, got {other:?}"),
+            };
+        let response = match replacement.decapsulate(None, &current_initiation, &mut output) {
+            TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+            other => panic!("expected handshake response, got {other:?}"),
+        };
+        let keepalive = match current_client.decapsulate(None, &response, &mut output) {
+            TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+            other => panic!("expected keepalive, got {other:?}"),
+        };
+        assert!(matches!(
+            replacement.decapsulate(None, &keepalive, &mut output),
+            TunnResult::Done
+        ));
+        let mut inner = [0; 20];
+        inner[0] = 0x45;
+        inner[2..4].copy_from_slice(&20_u16.to_be_bytes());
+        inner[12..16].copy_from_slice(&[10, 66, 66, 2]);
+        let data = match current_client.encapsulate(&inner, &mut output) {
+            TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+            other => panic!("expected encrypted data, got {other:?}"),
+        };
+        assert!(matches!(
+            replacement.decapsulate(None, &data, &mut output),
+            TunnResult::WriteToTunnelV4(packet, _) if packet == inner
+        ));
+        assert!(matches!(
+            replacement.decapsulate(None, &initiation, &mut output),
+            TunnResult::Err(_)
+        ));
+        let next = match current_client.encapsulate(&inner, &mut output) {
+            TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+            other => panic!("expected encrypted data, got {other:?}"),
+        };
+        assert!(matches!(
+            replacement.decapsulate(None, &next, &mut output),
+            TunnResult::WriteToTunnelV4(packet, _) if packet == inner
+        ));
     }
 
     #[test]

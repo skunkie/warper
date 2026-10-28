@@ -190,8 +190,10 @@ handshake with the same static keys, while accepting new session data. It does
 not establish behavior across process restart. A separate in-process test
 shows that an already seen handshake initiation is rejected by the original
 BoringTun instance but elicits a response from a fresh instance with the same
-static keys. It does not show acceptance of old application data or establish
-process-restart behavior. Socket-level ambiguity remains. Route
+static keys. In that controlled sequence a newer initiation establishes a
+working session, and another replay of the old initiation is rejected without
+preventing subsequent data. It does not show acceptance of old application
+data or establish process-restart behavior. Socket-level ambiguity remains. Route
 publication, concurrent transitions, and general WireGuard transport
 integration also remain unresolved.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
