@@ -552,7 +552,7 @@ is never redirected to a physical application socket.
 
 The resource policy is deliberately fatal rather than silent library loss.
 Malformed traffic from the selected outer peer follows the probe's fatal error
-policy, except for the stale or invalid-MAC initiations described below.
+policy, except for the rejected handshake and data packets described below.
 Datagrams from other outer addresses are discarded before decapsulation and
 count toward the per-pump receive limit. Broader
 resilience to hostile datagrams and production congestion
@@ -573,6 +573,12 @@ error, and dropping the endpoint releases its socket. A burst exceeding the
 per-call packet limit requires a second pump. This narrow experiment does not
 establish production packet rejection policy or resilience to a sustained
 hostile sender.
+
+After that handshake, the loopback test corrupts an encrypted data packet,
+then delivers the original, replays it, and sends fresh encrypted data. The
+transport discards `InvalidAeadTag` and `DuplicateCounter`; the original and
+fresh data each enter the stack once in both outer families. Other error
+categories and sustained hostile traffic remain outside this evidence.
 
 A separate loopback test corrupts the initiation's MAC, verifies that it
 produces no response or inner data, and then receives a response to the

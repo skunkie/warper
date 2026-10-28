@@ -204,11 +204,16 @@ impl Transport {
             let result =
                 self.tunnel
                     .decapsulate(Some(source.ip()), &incoming[..length], &mut output);
-            // Reject stale or unauthenticated handshakes without ending the
-            // transport; the per-pump packet limit still bounds work.
+            // Discard rejected authentication and replay attempts without
+            // ending the transport; the per-pump packet limit bounds work.
             if matches!(
                 result,
-                TunnResult::Err(WireGuardError::WrongTai64nTimestamp | WireGuardError::InvalidMac)
+                TunnResult::Err(
+                    WireGuardError::WrongTai64nTimestamp
+                        | WireGuardError::InvalidMac
+                        | WireGuardError::InvalidAeadTag
+                        | WireGuardError::DuplicateCounter
+                )
             ) {
                 continue;
             }
@@ -1360,6 +1365,23 @@ mod tests {
                 TunnResult::WriteToNetwork(packet) => packet.to_vec(),
                 other => panic!("expected encrypted data, got {other:?}"),
             };
+            let mut damaged = data.clone();
+            *damaged.last_mut().unwrap() ^= 1;
+            client
+                .transport
+                .socket
+                .send_to(&damaged, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 0);
             client
                 .transport
                 .socket
@@ -1376,6 +1398,43 @@ mod tests {
                 .unwrap();
             assert!(server.peer.device.has_ingress());
             assert_eq!(server.transport.received_inner, 1);
+            client
+                .transport
+                .socket
+                .send_to(&data, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(
+                server.transport.received_inner, 1,
+                "replayed data must not be delivered twice"
+            );
+            let next = match client.transport.tunnel.encapsulate(&inner, &mut output) {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected fresh encrypted data, got {other:?}"),
+            };
+            client
+                .transport
+                .socket
+                .send_to(&next, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 2);
             client
                 .transport
                 .socket

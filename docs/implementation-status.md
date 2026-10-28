@@ -250,6 +250,10 @@ socket address before passing them to BoringTun. A local test sends a valid
 initiation from a different socket, observes no response, and then completes
 the initiation from the configured peer in both outer IP families. This does
 not establish roaming support, sustained-load fairness, or production policy.
+The same-library transport also discards damaged encrypted data and replayed
+data without ending the session. A loopback test delivers the original after a
+damaged copy, rejects its replay, and accepts a fresh packet in both outer IP
+families. Other error categories and sustained hostile traffic remain open.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
