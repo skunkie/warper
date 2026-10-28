@@ -94,6 +94,23 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
 
+    def test_tun_crash_scope_passes_argument_and_preserves_failure(self):
+        for probe_exit in (0, 7):
+            result, evidence = self.run_harness(probe="host-stack", scope="--tun-crash-check", probe_exit=probe_exit)
+            self.assertEqual(result.returncode, probe_exit, result.stderr)
+            self.assertIn("--crash-after-udp", (evidence / "probe.log").read_text())
+            outcome = (evidence / "result.txt").read_text()
+            self.assertIn(f"tun_crash_probe_exit={probe_exit}", outcome)
+            self.assertEqual("PASS tun-crash-check" in outcome, probe_exit == 0)
+
+    def test_tun_crash_scope_rejects_wrong_probe_and_initial_namespace(self):
+        harness = str(Path(__file__).with_name("verify-feasibility.sh"))
+        result = subprocess.run(["bash", harness, "wireguard-stack", "--tun-crash-check"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        result, evidence = self.run_harness(probe="host-stack", scope="--tun-crash-check", mapping="0 0 4294967295")
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
+
     def test_mtu_scope_rejects_wireguard_before_build_or_network_setup(self):
         result = subprocess.run(["bash", str(Path(__file__).with_name("verify-feasibility.sh")), "wireguard-stack", "--mtu-check"], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)

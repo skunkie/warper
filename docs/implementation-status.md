@@ -45,6 +45,12 @@ arrives within the 200 ms observation, and a later supported datagram succeeds
 for both destinations and IP families
 (`target/evidence/phase-0/tun-oversized/README.md`). This is
 bounded rejection evidence, not support for larger datagrams.
+The isolated TUN crash fixture also joins the external packet bridge, kills
+the experimental adapter after UDP traffic, and completes fresh TCP/UDP
+traffic using a new adapter on the same fixture interface in both families,
+then independently verifies interface
+removal (`target/evidence/phase-0/tun-crash/README.md`). It does not restore
+old flows or establish production service crash recovery.
 This is limited feasibility evidence, not complete host-networking acceptance;
 it does not exercise production backends, macOS, or the remaining MTU and
 failure gates. The sandboxed environment denies TUN access; the isolated run

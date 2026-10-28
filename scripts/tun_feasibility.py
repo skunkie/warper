@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import signal
 import struct
 import subprocess
 import sys
@@ -194,7 +195,7 @@ async def udp_exchange(source, destination, offset, ipv6):
                 raise RuntimeError("UDP datagram or source changed")
 
 
-async def exchange(fd, executable, ipv6, directory):
+async def exchange(fd, executable, ipv6, directory, crash_after_udp=False):
     loop = asyncio.get_running_loop()
     local = str(Path(directory) / "fixture.sock")
     remote = str(Path(directory) / "adapter.sock")
@@ -222,6 +223,21 @@ async def exchange(fd, executable, ipv6, directory):
             async with asyncio.TaskGroup() as group:
                 for i, destination in enumerate(destinations, 1):
                     group.create_task(udp_exchange(source, destination, i, ipv6))
+            if crash_after_udp:
+                # Stop the external packet bridge before killing its peer so
+                # teardown cannot race a send against the dead Unix socket.
+                for task in tasks:
+                    task.cancel()
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = []
+                for result in results:
+                    if isinstance(result, Exception):
+                        raise RuntimeError("packet bridge failed before adapter kill") from result
+                process.kill()
+                if await asyncio.wait_for(process.wait(), 2) != -signal.SIGKILL:
+                    raise RuntimeError("adapter did not terminate with SIGKILL")
+                print(f"PASS adapter SIGKILL after TUN UDP traffic: IPv6={ipv6}", flush=True)
+                return
             async with asyncio.TaskGroup() as group:
                 for i, destination in enumerate(destinations, 1):
                     group.create_task(tcp_exchange(source, destination, i))
@@ -258,7 +274,7 @@ async def exchange(fd, executable, ipv6, directory):
                     raise RuntimeError(f"bridge cleanup failures: {cleanup_errors}")
 
 
-async def run(executable):
+async def run(executable, crash_after_udp=False):
     if not isolated_namespace():
         raise RuntimeError("TUN fixture requires a fresh single-UID user namespace")
     fd = os.open("/dev/net/tun", os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -275,6 +291,9 @@ async def run(executable):
         ip("route", "add", "10.66.66.0/24", "dev", INTERFACE)
         ip("-6", "route", "add", "fd66:66::/64", "dev", INTERFACE)
         for ipv6 in (False, True):
+            if crash_after_udp:
+                with tempfile.TemporaryDirectory(prefix="warper-tun-") as directory:
+                    await asyncio.wait_for(exchange(fd, executable, ipv6, directory, True), 12)
             with tempfile.TemporaryDirectory(prefix="warper-tun-") as directory:
                 await asyncio.wait_for(exchange(fd, executable, ipv6, directory), 12)
     except BaseException as error:
@@ -297,6 +316,6 @@ async def run(executable):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: tun_feasibility.py HOST_STACK_EXECUTABLE")
-    asyncio.run(run(sys.argv[1]))
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--crash-after-udp"):
+        raise SystemExit("usage: tun_feasibility.py HOST_STACK_EXECUTABLE [--crash-after-udp]")
+    asyncio.run(run(sys.argv[1], len(sys.argv) == 3))

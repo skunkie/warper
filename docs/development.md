@@ -135,6 +135,7 @@ cargo fetch --locked
 cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
 ./scripts/verify-feasibility.sh host-stack --tun
+./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --mtu-check
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
@@ -151,7 +152,11 @@ It builds before isolation and creates disposable namespaces. Packet-only
 mode enables only loopback. The TUN scope requires an accessible
 `/dev/net/tun` and permission to create an interface in the disposable user
 and network namespaces. Its nonpersistent interface is closed and its removal
-verified independently of the Rust runtime. Kernel-peer mode also requires a kernel with
+verified independently of the Rust runtime. The TUN crash scope kills the
+experimental adapter after UDP traffic, after first joining the external
+packet bridge, and runs fresh traffic with a new adapter on the same fixture
+interface. It does not test service recovery or replay old application data.
+Kernel-peer mode also requires a kernel with
 WireGuard support and creates an owned `wg-feasibility` interface entirely
 inside that namespace. The helper never touches resolver settings, the host
 bus, or persistent host state. The timeout supervises the process group;
