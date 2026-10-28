@@ -200,6 +200,15 @@ the WireGuard transport. The routed fixture now also completes a distinct UDP
 application exchange through that owner after recovery in all four family
 combinations (`target/evidence/phase-0/owned-exchange/README.md`). Concurrent
 transitions and production path attribution remain unverified.
+The experimental socket owner now rejects repeated or decreasing WireGuard
+counters for up to eight receiver indices per socket, including after failed
+sends or reservation retirement. A ninth index fails closed; successful socket
+replacement resets the bounded history. Tests cover delayed stale feedback,
+capacity, uncertain sends, and replacement in both outer IP families. The
+controlled routed kernel-peer workload still passes in all four inner/outer
+family combinations (`target/evidence/phase-0/owner-counters/README.md`).
+Production session retirement, path attribution, and state across owner
+destruction remain unresolved.
 The owner now replaces its socket during peer transitions and retains at most
 eight retired sockets until owner destruction. This prevents local port reuse
 within the owner lifetime, changes the local port in both families, and returns

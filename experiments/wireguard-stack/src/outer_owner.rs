@@ -17,11 +17,15 @@ use crate::{
 };
 
 const MAX_RETIRED_SOCKETS: usize = 8;
+const MAX_SESSIONS_PER_SOCKET: usize = 8;
 
 #[derive(Debug, Eq, PartialEq)]
 enum Error {
     InvalidPeer,
+    InvalidPacket,
     RetiredSocketLimit,
+    NonIncreasingCounter,
+    SessionLimit,
     Unavailable,
 }
 
@@ -37,9 +41,15 @@ pub(super) struct Owner {
     socket: UdpSocket,
     queue: Option<ErrorQueue>,
     retired_sockets: Vec<UdpSocket>,
+    sessions: Vec<SessionCounter>,
     reservation: Reservation,
     budget: PathBudget,
     remote_probe: bool,
+}
+
+struct SessionCounter {
+    receiver_index: u32,
+    counter: u64,
 }
 
 impl Owner {
@@ -72,6 +82,7 @@ impl Owner {
             socket,
             queue: Some(queue),
             retired_sockets: Vec::with_capacity(MAX_RETIRED_SOCKETS),
+            sessions: Vec::with_capacity(MAX_SESSIONS_PER_SOCKET),
             reservation: Reservation::default(),
             budget,
             remote_probe,
@@ -98,6 +109,10 @@ impl Owner {
         self.budget.check_datagram(packet.len())?;
         self.reservation
             .reserve(packet, queue, reporter, now, Duration::from_secs(1))?;
+        if let Err(error) = self.record_header(packet) {
+            self.reservation.cancel();
+            return Err(error.into());
+        }
         match send(&self.socket, packet) {
             Ok(length) if length == packet.len() => Ok(()),
             Ok(_) => {
@@ -143,6 +158,7 @@ impl Owner {
         let queue = Self::enable_queue(&socket, self.remote_probe)?;
         self.retired_sockets
             .push(std::mem::replace(&mut self.socket, socket));
+        self.sessions.clear();
         self.budget = budget;
         self.queue = Some(queue);
         Ok(())
@@ -188,6 +204,43 @@ impl Owner {
         } else {
             ErrorQueue::enable(socket)
         }
+    }
+
+    fn record_header(&mut self, packet: &[u8]) -> Result<(), Error> {
+        // Reservation admission already validated a complete WireGuard header.
+        let receiver_index = u32::from_le_bytes(
+            packet
+                .get(4..8)
+                .ok_or(Error::InvalidPacket)?
+                .try_into()
+                .map_err(|_| Error::InvalidPacket)?,
+        );
+        let counter = u64::from_le_bytes(
+            packet
+                .get(8..16)
+                .ok_or(Error::InvalidPacket)?
+                .try_into()
+                .map_err(|_| Error::InvalidPacket)?,
+        );
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.receiver_index == receiver_index)
+        {
+            if counter <= session.counter {
+                return Err(Error::NonIncreasingCounter);
+            }
+            session.counter = counter;
+        } else {
+            if self.sessions.len() == MAX_SESSIONS_PER_SOCKET {
+                return Err(Error::SessionLimit);
+            }
+            self.sessions.push(SessionCounter {
+                receiver_index,
+                counter,
+            });
+        }
+        Ok(())
     }
 
     fn validate_peer(local: SocketAddr, remote: SocketAddr) -> Result<(), Error> {
@@ -350,6 +403,13 @@ mod tests {
                         io::ErrorKind::PermissionDenied
                     }
                 );
+                assert_eq!(
+                    owner
+                        .send_reserved(&packet(1), reporter, Duration::ZERO)
+                        .unwrap_err()
+                        .downcast_ref::<Error>(),
+                    Some(&Error::NonIncreasingCounter)
+                );
                 let next = packet(2);
                 owner
                     .send_reserved(&next, reporter, Duration::ZERO)
@@ -364,6 +424,215 @@ mod tests {
                 );
                 drop(owner);
                 UdpSocket::bind(local).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn retired_feedback_cannot_match_reused_counter_on_the_same_socket() {
+        for ipv6 in [false, true] {
+            for retirement in ["commit", "cancel", "expiry"] {
+                let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+                let mut owner = Owner::new(
+                    crate::loopback_address(ipv6),
+                    peer.local_addr().unwrap(),
+                    1600,
+                )
+                .unwrap();
+                let first = packet(1);
+                owner
+                    .send_reserved(&first, reporter, Duration::ZERO)
+                    .unwrap();
+                let stale = report(&owner, &first, reporter);
+                let mut buffer = [0; 128];
+                let length = peer.recv(&mut buffer).unwrap();
+                assert_eq!(&buffer[..length], &first);
+                let now = match retirement {
+                    "commit" => {
+                        assert!(owner.apply(&stale, Duration::ZERO).unwrap());
+                        Duration::ZERO
+                    }
+                    "cancel" => {
+                        owner.cancel_reservation();
+                        Duration::ZERO
+                    }
+                    "expiry" => {
+                        assert_eq!(
+                            owner
+                                .advance(Duration::from_secs(1))
+                                .unwrap_err()
+                                .downcast_ref::<crate::outer_remote::Error>(),
+                            Some(&crate::outer_remote::Error::Timeout)
+                        );
+                        Duration::from_secs(1)
+                    }
+                    _ => unreachable!(),
+                };
+                let mut repeated = first;
+                repeated[16] ^= 1;
+                assert_eq!(
+                    owner
+                        .send_reserved(&repeated, reporter, now)
+                        .unwrap_err()
+                        .downcast_ref::<Error>(),
+                    Some(&Error::NonIncreasingCounter),
+                    "IPv6 {ipv6}, retirement {retirement}"
+                );
+                let next = packet(2);
+                owner.send_reserved(&next, reporter, now).unwrap();
+                assert_eq!(
+                    owner
+                        .apply(&stale, now)
+                        .unwrap_err()
+                        .downcast_ref::<crate::outer_remote::Error>(),
+                    Some(&crate::outer_remote::Error::Unmatched)
+                );
+                let current = report(&owner, &next, reporter);
+                assert_eq!(owner.apply(&current, now).unwrap(), retirement != "commit");
+                assert_eq!(
+                    owner
+                        .send_reserved(&packet(0), reporter, now)
+                        .unwrap_err()
+                        .downcast_ref::<Error>(),
+                    Some(&Error::NonIncreasingCounter)
+                );
+                let length = peer.recv(&mut buffer).unwrap();
+                assert_eq!(&buffer[..length], &next);
+                peer.set_nonblocking(true).unwrap();
+                assert_eq!(
+                    peer.recv(&mut buffer).unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn session_history_is_bounded_and_new_socket_starts_a_new_history() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut owner = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            for index in 0..MAX_SESSIONS_PER_SOCKET {
+                let mut sample = packet(1);
+                sample[4] = index as u8;
+                owner
+                    .send_reserved(&sample, reporter, Duration::ZERO)
+                    .unwrap();
+                owner.cancel_reservation();
+            }
+            let mut overflow = packet(1);
+            overflow[4] = MAX_SESSIONS_PER_SOCKET as u8;
+            let local = owner.local_addr().unwrap();
+            assert_eq!(
+                owner
+                    .send_reserved(&overflow, reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::SessionLimit)
+            );
+            assert_eq!(owner.local_addr().unwrap(), local);
+            let mut buffer = [0; 128];
+            for index in 0..MAX_SESSIONS_PER_SOCKET {
+                let (length, source) = peer.recv_from(&mut buffer).unwrap();
+                assert_eq!(length, 64);
+                assert_eq!(source, local);
+                assert_eq!(buffer[4], index as u8);
+            }
+            peer.set_nonblocking(true).unwrap();
+            assert_eq!(
+                peer.recv(&mut buffer).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            peer.set_nonblocking(false).unwrap();
+            owner.reconnect(peer.local_addr().unwrap(), 1600).unwrap();
+            assert_ne!(owner.local_addr().unwrap(), local);
+            owner
+                .send_reserved(&overflow, reporter, Duration::ZERO)
+                .unwrap();
+            let (length, source) = peer.recv_from(&mut buffer).unwrap();
+            assert_eq!(&buffer[..length], &overflow);
+            assert_eq!(source, owner.local_addr().unwrap());
+        }
+    }
+
+    #[test]
+    fn busy_reservation_does_not_consume_an_unsent_counter() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut owner = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            owner
+                .send_reserved(&packet(1), reporter, Duration::ZERO)
+                .unwrap();
+            assert_eq!(
+                owner
+                    .send_reserved(&packet(2), reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<crate::outer_remote::Error>(),
+                Some(&crate::outer_remote::Error::Busy)
+            );
+            owner.cancel_reservation();
+            owner
+                .send_reserved(&packet(2), reporter, Duration::ZERO)
+                .unwrap();
+            let mut buffer = [0; 128];
+            for expected in [packet(1), packet(2)] {
+                let length = peer.recv(&mut buffer).unwrap();
+                assert_eq!(&buffer[..length], &expected);
+            }
+        }
+    }
+
+    #[test]
+    fn counter_order_uses_wireguard_little_endian_numeric_value() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut owner = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let mut first = packet(0);
+            first[8..16].copy_from_slice(&255_u64.to_le_bytes());
+            let mut next = packet(0);
+            next[8..16].copy_from_slice(&256_u64.to_le_bytes());
+            owner
+                .send_reserved(&first, reporter, Duration::ZERO)
+                .unwrap();
+            owner.cancel_reservation();
+            owner
+                .send_reserved(&next, reporter, Duration::ZERO)
+                .unwrap();
+            owner.cancel_reservation();
+            assert_eq!(
+                owner
+                    .send_reserved(&first, reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::NonIncreasingCounter)
+            );
+            let mut buffer = [0; 128];
+            for expected in [first, next] {
+                let length = peer.recv(&mut buffer).unwrap();
+                assert_eq!(&buffer[..length], &expected);
             }
         }
     }

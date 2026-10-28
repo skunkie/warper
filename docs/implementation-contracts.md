@@ -1097,6 +1097,18 @@ retains at most eight retired sockets, bound until owner destruction, so those
 local ports cannot be reused while this owner is active. An additional
 transition fails with a typed capacity error before invalidating the current
 reader or reservation. Failed replacement does not consume a retired slot.
+For each active socket the owner also retains the highest observed WireGuard
+data counter for at most eight receiver indices. A repeated or lower counter
+for an observed index is rejected before sending, and a ninth index fails with
+a typed capacity error. The counter is retained even when a send fails or is
+partial, because delivery may be uncertain; cancellation, expiry, and feedback
+commit do not free it. A successful socket replacement resets this history
+only after the old socket and reader generation have been retired. This bounds
+history without treating an identical quoted header as a new operation.
+Reused receiver indices, out-of-order sends, and more than eight indices on
+one socket therefore fail closed. The bounded experiment does not establish a
+production session-retirement policy, persistence across owner destruction,
+or authentication of router feedback.
 Each retained kernel socket has its own bounded receive buffer. This deliberately
 bounded experiment has no retirement timer and is not a production policy;
 traffic delayed beyond owner destruction and ports used before this owner remain
