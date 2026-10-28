@@ -217,8 +217,14 @@ invalidation, independent budgets and fail-closed shared-interface sizing.
 An interleaved loopback test keeps two owners' reservations live at once,
 rejects a report from the other owner even with an identical header, and
 verifies that a failed transition does not prevent the first owner from
-committing its own feedback. This uses one loopback path and synthetic reports;
-concurrent distinct physical paths and production route verification remain open.
+committing its own feedback. This uses one loopback path and synthetic reports.
+An isolated kernel-peer fixture now also sends distinct encrypted datagrams
+through two source-bound veth links with overlapping reservations. Each owner
+rejects the other's genuine feedback and reduces only its own budget in all
+four inner/outer family combinations
+(`target/evidence/phase-0/overlapping-routed-paths/README.md`). The links share
+a router and egress;
+independent physical paths and production route verification remain open.
 The routed kernel-peer fixture additionally verifies same-socket counter
 rejection and stale-report rejection before committing a distinct later
 report in all four family combinations

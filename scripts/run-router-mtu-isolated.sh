@@ -41,7 +41,7 @@ cleanup() {
             if ! ip link del dev "$link"; then failed=true; fi
         fi
     done
-    if ! ip -j link show | python3 -c 'import json,sys; sys.exit(any(row["ifname"] in ("routerc0","routers0") for row in json.load(sys.stdin)))'; then failed=true; fi
+    if ! ip -j link show | python3 -c 'import json,sys; sys.exit(any(row["ifname"] in ("routerc0","routerc1","routers0") for row in json.load(sys.stdin)))'; then failed=true; fi
     for anchor in "$client_anchor" "$server_anchor"; do
         if [[ -n "$anchor" ]]; then
             if kill -0 "$anchor" 2>/dev/null; then
@@ -80,14 +80,20 @@ done
 ip link add routerc0 type veth peer name client0
 links+=(routerc0)
 ip link set client0 netns "$client_anchor"
+ip link add routerc1 type veth peer name client1
+links+=(routerc1)
+ip link set client1 netns "$client_anchor"
 ip link add routers0 type veth peer name server0
 links+=(routers0)
 ip link set server0 netns "$server_anchor"
 ip addr add 198.18.0.1/24 dev routerc0
 ip -6 addr add fd77:1::1/64 dev routerc0 nodad
+ip addr add 198.20.0.1/24 dev routerc1
+ip -6 addr add fd77:3::1/64 dev routerc1 nodad
 ip addr add 198.19.0.1/24 dev routers0
 ip -6 addr add fd77:2::1/64 dev routers0 nodad
 ip link set routerc0 mtu 1600 up
+ip link set routerc1 mtu 1600 up
 ip link set routers0 mtu 1400 up
 # Delay router-generated feedback on its way to the client, inside this
 # disposable network namespace. Other traffic retains the default priority.
@@ -100,9 +106,18 @@ nsenter --net="/proc/$client_anchor/ns/net" bash -eu -c '
     ip link set lo up
     ip addr add 198.18.0.2/24 dev client0
     ip -6 addr add fd77:1::2/64 dev client0 nodad
+    ip addr add 198.20.0.2/24 dev client1
+    ip -6 addr add fd77:3::2/64 dev client1 nodad
     ip link set client0 mtu 1600 up
+    ip link set client1 mtu 1600 up
     ip route add default via 198.18.0.1
     ip -6 route add default via fd77:1::1
+    ip route add 198.20.0.0/24 dev client1 table 100
+    ip route add default via 198.20.0.1 dev client1 table 100
+    ip rule add from 198.20.0.2/32 table 100
+    ip -6 route add fd77:3::/64 dev client1 table 100
+    ip -6 route add default via fd77:3::1 dev client1 table 100
+    ip -6 rule add from fd77:3::2/128 table 100
 '
 nsenter --net="/proc/$server_anchor/ns/net" bash -eu -c '
     ip link set lo up

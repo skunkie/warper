@@ -659,6 +659,14 @@ old report and applies the later report. The test requires `tc` and the kernel
 prio, u32 and netem facilities; it does not establish cross-session header
 uniqueness or path attribution.
 
+The client also has a second source-bound route over a separate veth to the
+same router. Two socket owners send distinct oversized encrypted datagrams
+before either reservation is retired. Each receives a genuine report from its
+own router-facing address, rejects the other owner's report, and commits its
+own reduction independently. All inner/outer family combinations run. Both
+links converge at the same router and egress; this does not verify independent
+physical NICs, concurrent stack resizing, or route-change notifications.
+
 `run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links and
 the kernel-peer subprocess. Ready/stop files use a private temporary directory;
 a bounded supervisor and cleanup traps reap processes and verify link removal.

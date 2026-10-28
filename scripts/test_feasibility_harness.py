@@ -197,6 +197,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link set routerc0 mtu 1600 up", commands)
+        self.assertIn("link set routerc1 mtu 1600 up", commands)
         self.assertIn("link set routers0 mtu 1400 up", commands)
         traffic_control = (evidence.parents[3] / "tc-commands.log").read_text()
         self.assertIn("netem delay 100ms", traffic_control)
@@ -204,6 +205,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertIn("match ip6 protocol 58 0xff", traffic_control)
         self.assertIn("link set dev wg-feasibility mtu 1500 up", commands)
         self.assertIn("link del dev routerc0", commands)
+        self.assertIn("link del dev routerc1", commands)
         self.assertIn("link del dev routers0", commands)
         forwarding = (evidence.parents[3] / "sysctl-commands.log").read_text()
         self.assertIn("net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1", forwarding)
@@ -222,6 +224,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
             self.assertEqual(result.returncode, expected, result.stderr)
             commands = (evidence.parents[3] / "ip-commands.log").read_text()
             self.assertIn("link del dev routerc0", commands)
+            self.assertIn("link del dev routerc1", commands)
             self.assertIn("link del dev routers0", commands)
             self.assertNotIn("PASS", (evidence / "result.txt").read_text())
 
@@ -230,6 +233,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 7, result.stderr)
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link del dev routerc0", commands)
+        self.assertIn("link del dev routerc1", commands)
         self.assertIn("link del dev routers0", commands)
         self.assertNotIn("PASS", (evidence / "result.txt").read_text())
 

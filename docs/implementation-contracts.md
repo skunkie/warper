@@ -1241,8 +1241,13 @@ independent verification.
 
 The present `outer_owner` fixture provides exclusive socket ownership and
 bounded single-operation correlation, not the platform driver or this complete
-state machine. Interleaved loopback owner tests can demonstrate independent
-reservation and failure isolation only. Required further evidence includes
+state machine. Interleaved loopback owner tests demonstrate independent
+reservation and failure isolation. An isolated routed test sends distinct
+encrypted datagrams with two outstanding reservations over separate source-bound
+veth links to the same router. Each owner rejects the other's genuine ICMP
+report and commits only its own reduction, in all four inner/outer family
+combinations. The links share a router and egress; this does not prove physical
+path verification or concurrent stack resizing. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.

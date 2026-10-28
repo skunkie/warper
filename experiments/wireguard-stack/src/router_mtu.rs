@@ -185,6 +185,7 @@ fn exchange(
     .parse()?;
     send_udp(client, destination, &[0x31])?;
     receive_udp(client, destination, &[0x31], wall)?;
+    overlapping_paths(client, destination, ipv6, wall)?;
     ensure!(
         queue.read()?.is_none(),
         "router MTU queue was not initially empty"
@@ -481,6 +482,125 @@ fn exchange(
         quoted_len.min(16),
         safe.len()
     );
+    Ok(())
+}
+
+fn overlapping_paths(
+    client: &mut Endpoint,
+    destination: SocketAddr,
+    ipv6: bool,
+    wall: Instant,
+) -> Result<()> {
+    let outer_ipv6 = client.transport.remote.is_ipv6();
+    let (first_local, second_local, first_reporter, second_reporter): (
+        IpAddr,
+        IpAddr,
+        IpAddr,
+        IpAddr,
+    ) = if outer_ipv6 {
+        (
+            "fd77:1::2".parse()?,
+            "fd77:3::2".parse()?,
+            "fd77:1::1".parse()?,
+            "fd77:3::1".parse()?,
+        )
+    } else {
+        (
+            "198.18.0.2".parse()?,
+            "198.20.0.2".parse()?,
+            "198.18.0.1".parse()?,
+            "198.20.0.1".parse()?,
+        )
+    };
+    let mut first = Owner::new_remote_probe(
+        SocketAddr::new(first_local, 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let mut second = Owner::new_remote_probe(
+        SocketAddr::new(second_local, 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let first_address = first.local_addr()?;
+    let second_address = second.local_addr()?;
+    for (owner, reporter, marker) in [
+        (&mut first, first_reporter, 0x67),
+        (&mut second, second_reporter, 0x69),
+    ] {
+        send_udp(
+            client,
+            destination,
+            &vec![marker; if ipv6 { 1352 } else { 1372 }],
+        )?;
+        client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+        ensure!(
+            client.peer.device.outgoing.len() == 1,
+            "expected one path-specific datagram"
+        );
+        let inner = client
+            .peer
+            .device
+            .outgoing
+            .pop_front()
+            .ok_or_else(|| anyhow::anyhow!("missing path datagram"))?;
+        let mut encrypted = [0; 1536];
+        let TunnResult::WriteToNetwork(packet) =
+            client.transport.tunnel.encapsulate(&inner, &mut encrypted)
+        else {
+            anyhow::bail!("path encryption was not immediately ready");
+        };
+        owner.send_reserved(packet, reporter, wall.elapsed())?;
+    }
+    let first_report = loop {
+        if let Some(report) = first.receive()? {
+            break report;
+        }
+        first.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    let second_report = loop {
+        if let Some(report) = second.receive()? {
+            break report;
+        }
+        second.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    for (owner, report) in [(&mut first, &second_report), (&mut second, &first_report)] {
+        let error = match owner.apply(report, wall.elapsed()) {
+            Ok(_) => anyhow::bail!("another path's report was accepted"),
+            Err(error) => error,
+        };
+        ensure!(
+            error.downcast_ref::<crate::outer_remote::Error>()
+                == Some(&crate::outer_remote::Error::Unmatched),
+            "another path's report did not fail correlation"
+        );
+    }
+    ensure!(
+        first.outer_mtu() == 1600 && second.outer_mtu() == 1600,
+        "cross-path report changed a budget"
+    );
+    ensure!(
+        first.apply(&first_report, wall.elapsed())?,
+        "first path did not reduce"
+    );
+    ensure!(
+        first.outer_mtu() == 1400 && second.outer_mtu() == 1600,
+        "first reduction changed the second path"
+    );
+    ensure!(
+        second.apply(&second_report, wall.elapsed())?,
+        "second path did not reduce"
+    );
+    ensure!(
+        second.outer_mtu() == 1400,
+        "second path did not commit its own budget"
+    );
+    drop((first, second));
+    drop(UdpSocket::bind(first_address)?);
+    drop(UdpSocket::bind(second_address)?);
+    println!("PASS simultaneous routed path feedback: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
     Ok(())
 }
 
