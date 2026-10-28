@@ -214,6 +214,7 @@ impl Transport {
                         | WireGuardError::InvalidAeadTag
                         | WireGuardError::DuplicateCounter
                         | WireGuardError::InvalidCounter
+                        | WireGuardError::NoCurrentSession
                 )
             ) {
                 continue;
@@ -1519,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_outer_sender_cannot_stop_or_advance_handshake() {
+    fn unrecognized_outer_packets_do_not_stop_handshake() {
         for outer_ipv6 in [false, true] {
             let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
             let mut output = [0; 2048];
@@ -1552,6 +1553,27 @@ mod tests {
                 sender.recv_from(&mut output).unwrap_err().kind(),
                 io::ErrorKind::WouldBlock
             );
+            assert!(!server.peer.device.has_ingress());
+
+            let mut unrecognized_session_data = [0; 32];
+            unrecognized_session_data[0] = 4;
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .send_to(&unrecognized_session_data, server_address)
+                    .unwrap(),
+                unrecognized_session_data.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
             assert!(!server.peer.device.has_ingress());
 
             assert_eq!(

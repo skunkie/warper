@@ -253,6 +253,9 @@ socket address before passing them to BoringTun. A local test sends a valid
 initiation from a different socket, observes no response, and then completes
 the initiation from the configured peer in both outer IP families. This does
 not establish roaming support, sustained-load fairness, or production policy.
+A synthetic data-shaped packet with no current session is also discarded before
+a valid handshake in both outer families. Real retired-session delivery across
+process restart remains unverified.
 The same-library transport also discards damaged encrypted data and replayed
 data without ending the session. A loopback test delivers the original after a
 damaged copy, rejects its replay, and accepts a fresh packet in both outer IP

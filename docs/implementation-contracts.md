@@ -563,6 +563,10 @@ outage scopes remain separate evidence. A valid initiation sent from another
 socket produces no response, and the same initiation from the selected peer
 then produces a response in both outer IP families. This does not establish
 roaming or sustained-load fairness.
+Before handshake, a synthetic encrypted-data-shaped datagram from the selected
+peer produces `NoCurrentSession`; the transport discards it and completes the
+subsequent valid initiation in both outer families. This does not establish
+process-restart behavior for packets from a real retired session.
 
 A controlled loopback test sends the same valid handshake initiation twice
 from the selected outer peer. The first produces a handshake response; the
