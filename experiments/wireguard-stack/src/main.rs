@@ -985,6 +985,72 @@ mod tests {
     }
 
     #[test]
+    fn fresh_wireguard_session_rejects_old_session_data() {
+        fn pair() -> (Tunn, Tunn) {
+            let client = StaticSecret::from([0x11; 32]);
+            let server = StaticSecret::from([0x22; 32]);
+            (
+                Tunn::new(
+                    client.clone(),
+                    PublicKey::from(&server),
+                    None,
+                    None,
+                    1,
+                    None,
+                ),
+                Tunn::new(server, PublicKey::from(&client), None, None, 2, None),
+            )
+        }
+
+        fn network(result: TunnResult<'_>) -> Vec<u8> {
+            match result {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected network packet, got {other:?}"),
+            }
+        }
+
+        fn handshake(client: &mut Tunn, server: &mut Tunn) {
+            let mut output = [0; 2048];
+            let initiation = network(client.format_handshake_initiation(&mut output, false));
+            let response = network(server.decapsulate(None, &initiation, &mut output));
+            let keepalive = network(client.decapsulate(None, &response, &mut output));
+            assert!(matches!(
+                server.decapsulate(None, &keepalive, &mut output),
+                TunnResult::Done
+            ));
+        }
+
+        let (mut client, mut server) = pair();
+        handshake(&mut client, &mut server);
+        let mut output = [0; 2048];
+        let mut inner = [0; 20];
+        inner[0] = 0x45;
+        inner[2..4].copy_from_slice(&20_u16.to_be_bytes());
+        inner[12..16].copy_from_slice(&[10, 66, 66, 2]);
+        let old = network(client.encapsulate(&inner, &mut output));
+        assert!(matches!(
+            server.decapsulate(None, &old, &mut output),
+            TunnResult::WriteToTunnelV4(_, _)
+        ));
+
+        let (mut replacement_client, mut replacement_server) = pair();
+        assert!(matches!(
+            replacement_server.decapsulate(None, &old, &mut output),
+            TunnResult::Err(_)
+        ));
+        handshake(&mut replacement_client, &mut replacement_server);
+        assert!(matches!(
+            replacement_server.decapsulate(None, &old, &mut output),
+            TunnResult::Err(_)
+        ));
+        let current = network(replacement_client.encapsulate(&inner, &mut output));
+        assert!(matches!(
+            replacement_server.decapsulate(None, &current, &mut output),
+            TunnResult::WriteToTunnelV4(_, _)
+        ));
+    }
+
+    #[test]
     fn controlled_outage_retries_tcp_without_replaying_lost_udp() {
         for ipv6 in [false, true] {
             let (mut client, mut server) = create_pair(ipv6).unwrap();
