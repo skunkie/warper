@@ -1051,6 +1051,50 @@ mod tests {
     }
 
     #[test]
+    fn fresh_wireguard_instance_accepts_previously_seen_handshake_initiation() {
+        let client_key = StaticSecret::from([0x11; 32]);
+        let server_key = StaticSecret::from([0x22; 32]);
+        let mut client = Tunn::new(
+            client_key.clone(),
+            PublicKey::from(&server_key),
+            None,
+            None,
+            1,
+            None,
+        );
+        let server = || {
+            Tunn::new(
+                server_key.clone(),
+                PublicKey::from(&client_key),
+                None,
+                None,
+                2,
+                None,
+            )
+        };
+        let mut output = [0; 2048];
+        let initiation = match client.format_handshake_initiation(&mut output, false) {
+            TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+            other => panic!("expected handshake initiation, got {other:?}"),
+        };
+        let mut original = server();
+        assert!(matches!(
+            original.decapsulate(None, &initiation, &mut output),
+            TunnResult::WriteToNetwork(_)
+        ));
+        assert!(matches!(
+            original.decapsulate(None, &initiation, &mut output),
+            TunnResult::Err(_)
+        ));
+
+        let mut replacement = server();
+        assert!(matches!(
+            replacement.decapsulate(None, &initiation, &mut output),
+            TunnResult::WriteToNetwork(_)
+        ));
+    }
+
+    #[test]
     fn controlled_outage_retries_tcp_without_replaying_lost_udp() {
         for ipv6 in [false, true] {
             let (mut client, mut server) = create_pair(ipv6).unwrap();

@@ -187,8 +187,11 @@ forces reuse of the released local port and shows that a datagram from the same
 peer reaches the replacement socket in both IP families. A separate BoringTun
 test rejects an old encrypted data packet both before and after a fresh
 handshake with the same static keys, while accepting new session data. It does
-not establish behavior across process restart or all delayed handshake packets.
-Socket-level ambiguity remains. Route
+not establish behavior across process restart. A separate in-process test
+shows that an already seen handshake initiation is rejected by the original
+BoringTun instance but elicits a response from a fresh instance with the same
+static keys. It does not show acceptance of old application data or establish
+process-restart behavior. Socket-level ambiguity remains. Route
 publication, concurrent transitions, and general WireGuard transport
 integration also remain unresolved.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
