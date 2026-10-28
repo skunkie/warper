@@ -924,6 +924,109 @@ fn is_lost_datagram(packet: &[u8]) -> Result<bool> {
 mod tests {
     use super::*;
 
+    fn receive_outer_data(
+        socket: &UdpSocket,
+        deadline: Instant,
+        bytes: &mut [u8],
+    ) -> Result<usize> {
+        for _ in 0..PACKET_CAPACITY {
+            wait_for_outer(socket, deadline)?;
+            let (length, _) = socket.recv_from(bytes)?;
+            if length > 32 {
+                return Ok(length);
+            }
+            ensure!(
+                length == 32 && bytes[0] == 4,
+                "unexpected outer datagram before data"
+            );
+        }
+        anyhow::bail!("outer data exceeded the bounded datagram count")
+    }
+
+    #[test]
+    fn outer_data_waits_past_a_queued_keepalive() {
+        for ipv6 in [false, true] {
+            let receiver = UdpSocket::bind(loopback_address(ipv6)).unwrap();
+            receiver.set_nonblocking(true).unwrap();
+            let observer = receiver.try_clone().unwrap();
+            let sender = UdpSocket::bind(loopback_address(ipv6)).unwrap();
+            let destination = receiver.local_addr().unwrap();
+            let mut keepalive = [0; 32];
+            keepalive[0] = 4;
+            assert_eq!(
+                sender.send_to(&keepalive, destination).unwrap(),
+                keepalive.len()
+            );
+            wait_for_outer(&receiver, Instant::now() + Duration::from_secs(2)).unwrap();
+            let worker = thread::spawn(move || -> Result<()> {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    ensure!(Instant::now() < deadline, "keepalive was not consumed");
+                    match observer.peek_from(&mut [0; 1]) {
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Ok(_) => thread::yield_now(),
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                let mut data = [0; 64];
+                data[0] = 4;
+                ensure!(
+                    sender.send_to(&data, destination)? == data.len(),
+                    "partial synthetic data"
+                );
+                Ok(())
+            });
+            let mut bytes = [0; 128];
+            let received = receive_outer_data(
+                &receiver,
+                Instant::now() + Duration::from_secs(2),
+                &mut bytes,
+            );
+            worker.join().unwrap().unwrap();
+            assert_eq!(received.unwrap(), 64);
+            assert_eq!(bytes[0], 4);
+            let sender = UdpSocket::bind(loopback_address(ipv6)).unwrap();
+            assert_eq!(
+                sender.send_to(&keepalive, destination).unwrap(),
+                keepalive.len()
+            );
+            assert!(
+                receive_outer_data(
+                    &receiver,
+                    Instant::now() + Duration::from_millis(20),
+                    &mut bytes
+                )
+                .is_err(),
+                "a keepalive alone must not satisfy data readiness"
+            );
+            assert_eq!(sender.send_to(&[0; 16], destination).unwrap(), 16);
+            assert!(
+                receive_outer_data(
+                    &receiver,
+                    Instant::now() + Duration::from_secs(2),
+                    &mut bytes
+                )
+                .is_err(),
+                "unexpected datagrams must not be treated as data"
+            );
+            for _ in 0..PACKET_CAPACITY {
+                assert_eq!(
+                    sender.send_to(&keepalive, destination).unwrap(),
+                    keepalive.len()
+                );
+            }
+            assert!(
+                receive_outer_data(
+                    &receiver,
+                    Instant::now() + Duration::from_secs(2),
+                    &mut bytes
+                )
+                .is_err(),
+                "keepalives must not cause an unbounded readiness loop"
+            );
+        }
+    }
+
     #[test]
     fn outer_readiness_waits_for_delayed_datagram_and_times_out() {
         for ipv6 in [false, true] {
@@ -1499,23 +1602,19 @@ mod tests {
                         Some(&path_mtu::Error::PacketTooLarge)
                     );
                 }
-                let mut received_data = false;
                 let mut bytes = [0; 1600];
                 if expected_delivery {
-                    wait_for_outer(
+                    let length = receive_outer_data(
                         &server.transport.socket,
                         Instant::now() + Duration::from_secs(2),
+                        &mut bytes,
                     )
                     .unwrap();
+                    assert_eq!(length, 1472);
+                    assert_eq!(bytes[0], 4);
                 }
                 for _ in 0..PACKET_CAPACITY {
                     match server.transport.socket.recv_from(&mut bytes) {
-                        Ok((length, _)) if length > 32 => {
-                            assert!(expected_delivery && !received_data);
-                            assert_eq!(length, 1472);
-                            assert_eq!(bytes[0], 4);
-                            received_data = true;
-                        }
                         Ok((length, _)) => assert_eq!(
                             length, 32,
                             "only encrypted keepalive may accompany the data"
@@ -1524,7 +1623,6 @@ mod tests {
                         Err(error) => panic!("controlled outer receiver failed: {error}"),
                     }
                 }
-                assert_eq!(received_data, expected_delivery);
             }
         }
     }
