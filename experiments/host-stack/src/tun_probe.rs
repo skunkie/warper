@@ -164,7 +164,13 @@ async fn transfer_tcp(mut stream: impl AsyncRead + AsyncWrite + Unpin, expected:
 }
 
 async fn handle_udp(mut association: Association) -> Result<()> {
-    for payload in [vec![], vec![0x31], vec![0x72; 257]] {
+    let max_payload = MTU
+        - if association.metadata().destination.is_ipv6() {
+            48
+        } else {
+            28
+        };
+    for payload in [vec![], vec![0x31], vec![0x72; 257], vec![0x53; max_payload]] {
         let datagram = association.recv().await?;
         ensure!(datagram.payload() == payload, "TUN UDP datagram changed");
         association.try_reply(datagram.payload())?;
@@ -241,6 +247,12 @@ mod tests {
 
     #[tokio::test]
     async fn local_packet_bridge_round_trips_udp_and_joins_on_shutdown() {
+        for ipv6 in [false, true] {
+            bridge_udp(ipv6).await;
+        }
+    }
+
+    async fn bridge_udp(ipv6: bool) {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("warper-tun-bridge-{}-udp", std::process::id())),
         );
@@ -259,11 +271,28 @@ mod tests {
         .await
         .unwrap();
         socket.connect(&remote).unwrap();
-        let source: SocketAddr = "10.66.66.2:41001".parse().unwrap();
-        let destination: SocketAddr = "10.66.66.91:9000".parse().unwrap();
+        let source: SocketAddr = if ipv6 {
+            "[fd66:66::2]:41001"
+        } else {
+            "10.66.66.2:41001"
+        }
+        .parse()
+        .unwrap();
+        let destination: SocketAddr = if ipv6 {
+            "[fd66:66::91]:9000"
+        } else {
+            "10.66.66.91:9000"
+        }
+        .parse()
+        .unwrap();
         let mut peer = crate::packet_peer::Peer::new(source.ip(), source.port()).unwrap();
         let start = tokio::time::Instant::now();
-        for payload in [vec![], vec![0x31], vec![0x72; 257]] {
+        for payload in [
+            vec![],
+            vec![0x31],
+            vec![0x72; 257],
+            vec![0x53; MTU - if ipv6 { 48 } else { 28 }],
+        ] {
             peer.sockets
                 .get_mut::<udp::Socket>(peer.udp)
                 .send_slice(&payload, destination)

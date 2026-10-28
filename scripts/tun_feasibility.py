@@ -46,7 +46,26 @@ async def ready(fd, *, write=False):
         remove(fd)
 
 
-async def from_tun(fd, bridge):
+def boundary_udp_flow(packet, ipv6):
+    header = 40 if ipv6 else 20
+    version = 6 if ipv6 else 4
+    if (len(packet) != MTU or packet[0] >> 4 != version
+            or packet[6 if ipv6 else 9] != socket.IPPROTO_UDP
+            or (not ipv6 and packet[0] & 0x0F != 5)):
+        return None
+    if ipv6:
+        if struct.unpack_from("!H", packet, 4)[0] != MTU - header:
+            return None
+    elif (struct.unpack_from("!H", packet, 2)[0] != MTU
+          or struct.unpack_from("!H", packet, 6)[0] & 0x3FFF):
+        return None
+    source, destination, length = struct.unpack_from("!HHH", packet, header)
+    if length != MTU - header:
+        return None
+    return source, destination
+
+
+async def from_tun(fd, bridge, ipv6=False, boundary=None):
     loop = asyncio.get_running_loop()
     while True:
         await ready(fd)
@@ -56,10 +75,14 @@ async def from_tun(fd, bridge):
             continue
         if not packet or len(packet) > MTU:
             raise RuntimeError("invalid TUN packet length")
+        if boundary is not None:
+            flow = boundary_udp_flow(packet, ipv6)
+            if flow is not None:
+                boundary.add(flow)
         await loop.sock_sendall(bridge, packet)
 
 
-async def to_tun(fd, bridge):
+async def to_tun(fd, bridge, ipv6=False, boundary=None):
     loop = asyncio.get_running_loop()
     while True:
         packet = await loop.sock_recv(bridge, MTU + 1)
@@ -73,6 +96,10 @@ async def to_tun(fd, bridge):
                 await ready(fd, write=True)
         if written != len(packet):
             raise RuntimeError("partial TUN packet write")
+        if boundary is not None:
+            flow = boundary_udp_flow(packet, ipv6)
+            if flow is not None:
+                boundary.add(flow)
 
 
 async def tcp_exchange(source, destination, offset):
@@ -117,9 +144,10 @@ async def udp_exchange(source, destination, offset, ipv6):
         client.setblocking(False)
         client.bind((source, 41000 + offset))
         target = (destination, 9000 if offset == 1 else 9100)
-        for payload in (b"", b"\x31", b"\x72" * 257):
+        maximum = MTU - (48 if ipv6 else 28)
+        for payload in (b"", b"\x31", b"\x72" * 257, b"\x53" * maximum):
             await loop.sock_sendto(client, payload, target)
-            actual, sender = await loop.sock_recvfrom(client, 1024)
+            actual, sender = await loop.sock_recvfrom(client, MTU + 1)
             if actual != payload or sender[:2] != target:
                 raise RuntimeError("UDP datagram or source changed")
 
@@ -143,7 +171,9 @@ async def exchange(fd, executable, ipv6, directory):
             else:
                 raise RuntimeError("adapter bridge setup deadline exceeded")
             bridge.connect(remote)
-            tasks = [asyncio.create_task(from_tun(fd, bridge)), asyncio.create_task(to_tun(fd, bridge))]
+            ingress_boundary, egress_boundary = set(), set()
+            tasks = [asyncio.create_task(from_tun(fd, bridge, ipv6, ingress_boundary)),
+                     asyncio.create_task(to_tun(fd, bridge, ipv6, egress_boundary))]
             source = "fd66:66::2" if ipv6 else "10.66.66.2"
             destinations = ("fd66:66::91", "fd66:66::92") if ipv6 else ("10.66.66.91", "10.66.66.92")
             # Keep both UDP associations live concurrently to exercise dispatch.
@@ -153,13 +183,15 @@ async def exchange(fd, executable, ipv6, directory):
             async with asyncio.TaskGroup() as group:
                 for i, destination in enumerate(destinations, 1):
                     group.create_task(tcp_exchange(source, destination, i))
+            if ingress_boundary != {(41001, 9000), (41002, 9100)} or egress_boundary != {(9000, 41001), (9100, 41002)}:
+                raise RuntimeError("maximum UDP datagrams did not cross the TUN at its MTU")
             await loop.sock_sendall(bridge, b"")
             if await asyncio.wait_for(process.wait(), 2) != 0:
                 raise RuntimeError("adapter failed during shutdown")
             for task in tasks:
                 if task.done():
                     task.result()
-            print(f"PASS kernel TUN TCP/UDP metadata, 64 KiB full-duplex, half-close and boundaries: IPv6={ipv6}", flush=True)
+            print(f"PASS kernel TUN metadata, 64 KiB TCP full-duplex, half-close and 1280-byte UDP: IPv6={ipv6}", flush=True)
         finally:
             primary = sys.exception()
             for task in tasks:
