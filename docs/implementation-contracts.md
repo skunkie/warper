@@ -1194,6 +1194,61 @@ and interface-state/entropy restrictions remain. This is controlled routed TCP
 recovery, not general concurrent/asymmetric path or production trust policy.
 
 
+## Physical Path and PMTU Ownership Proposal
+
+Status: proposed production obligations, not a completed interface or evidence
+of OS route verification. A physical transport exemption and a physical path
+are distinct: an exemption is useful only while the actual route and socket
+egress satisfy the verified path. A service-owned path generation must bind the
+endpoint, address family, source address, egress interface identity and route
+selection evidence. A socket and its error reader belong to exactly one such
+generation; neither a socket tuple nor an ICMP reporter alone proves the path.
+The platform driver must establish and revalidate that evidence without routing
+the endpoint through the capture interface. Interface removal, route changes,
+notification loss, ambiguous lookup, and uncertain reconfiguration invalidate
+the generation. Until verification succeeds, new sends and feedback mutations
+on that path fail closed; no direct or alternate-backend fallback is allowed.
+
+An owner serializes sends, reservations, feedback, and path transitions for
+each generation. Validate prospective endpoint, source, family and MTU before
+retiring the current generation. On invalidation, stop new sends, revoke
+pending feedback, retain active-flow ownership, and publish a replacement only
+after its socket and exemption are verified. Failure after retirement leaves
+the path unavailable until recovery; it must not restore an unverified path or
+replay an application payload. Keep retired resources bounded and fail closed
+when safe retirement cannot be established. Handle shutdown and cancellation
+as explicit transitions, with the supervisor joining owners and reporting
+cleanup errors alongside the initial failure.
+
+Each simultaneous path has independently bounded reservation, error-reader,
+counter and MTU state. Reports must match the live generation and outstanding
+operation before any mutation. A short, truncated, ambiguous, untrusted or
+otherwise uncorrelated report does not reduce an MTU or retire an operation.
+ICMP reporter selection is a path policy input, not cryptographic proof of a
+router. Limit each reservation's lifetime and avoid retaining ciphertext or
+application payload. Unknown delivery is never retried at the application
+layer; TCP retransmission remains the TCP stack's responsibility.
+
+Outer MTU reductions must account for the actual outer family, UDP, WireGuard
+overhead and padding. Before committing an interface-wide inner reduction,
+the owner must prove that every retained flow and queued packet sharing that
+interface can be preserved or safely retired; an unresolved shared-interface
+conflict leaves the budgets and reservation unchanged and returns a typed
+failure. UDP datagrams must retain boundaries; unsupported sizes fail without
+fragmenting or silently falling back. A report cannot increase an MTU. A new
+path generation must not inherit the old generation's discovered PMTU without
+independent verification.
+
+The present `outer_owner` fixture provides exclusive socket ownership and
+bounded single-operation correlation, not the platform driver or this complete
+state machine. Interleaved loopback owner tests can demonstrate independent
+reservation and failure isolation only. Required further evidence includes
+actual route/exemption verification and change detection, concurrent and
+asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
+generation retirement, cancellation and recovery, and native platform cases.
+The production API, limits and OS mechanisms remain pending that evidence;
+this proposal does not close the Phase 0 or MTU gates.
+
 ## 25. Experimental Kernel Peer Link Transition
 
 A separate Linux-only probe starts an established userspace WireGuard session

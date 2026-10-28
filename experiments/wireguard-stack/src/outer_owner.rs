@@ -296,6 +296,101 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_owners_isolate_feedback_and_failed_transition() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut first = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let mut second = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let first_local = first.local_addr().unwrap();
+            let second_local = second.local_addr().unwrap();
+            let payload = packet(1);
+            first
+                .send_reserved(&payload, reporter, Duration::ZERO)
+                .unwrap();
+            second
+                .send_reserved(&payload, reporter, Duration::ZERO)
+                .unwrap();
+            let mut buffer = [0; 128];
+            for _ in 0..2 {
+                let (length, _) = peer.recv_from(&mut buffer).unwrap();
+                assert_eq!(&buffer[..length], &payload);
+            }
+            let first_report = report(&first, &payload, reporter);
+            let second_report = report(&second, &payload, reporter);
+            assert_eq!(
+                first
+                    .apply(&second_report, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<crate::outer_remote::Error>(),
+                Some(&crate::outer_remote::Error::Unmatched)
+            );
+            assert_eq!(first.outer_mtu(), 1600);
+            assert_eq!(second.outer_mtu(), 1600);
+            let transition_error = second
+                .reconnect_with(peer.local_addr().unwrap(), 1600, |_, _| {
+                    Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+                })
+                .unwrap_err();
+            assert_eq!(
+                transition_error.downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::ConnectionRefused
+            );
+            assert_eq!(
+                second
+                    .apply(&second_report, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            assert_eq!(
+                second
+                    .send_reserved(&packet(2), reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            assert!(first.apply(&first_report, Duration::ZERO).unwrap());
+            assert_eq!(first.outer_mtu(), 1400);
+            second.reconnect(peer.local_addr().unwrap(), 1600).unwrap();
+            let next = packet(2);
+            second
+                .send_reserved(&next, reporter, Duration::ZERO)
+                .unwrap();
+            let (length, _) = peer.recv_from(&mut buffer).unwrap();
+            assert_eq!(&buffer[..length], &next);
+            assert_eq!(
+                second
+                    .apply(&second_report, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<crate::outer_remote::Error>(),
+                Some(&crate::outer_remote::Error::Unmatched)
+            );
+            assert_eq!(second.outer_mtu(), 1600);
+            assert!(
+                second
+                    .apply(&report(&second, &next, reporter), Duration::ZERO)
+                    .unwrap()
+            );
+            assert_eq!(second.outer_mtu(), 1400);
+            drop((first, second));
+            drop(UdpSocket::bind(first_local).unwrap());
+            drop(UdpSocket::bind(second_local).unwrap());
+        }
+    }
+
+    #[test]
     fn changing_and_restoring_peers_retires_old_feedback_without_replay() {
         for ipv6 in [false, true] {
             let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();

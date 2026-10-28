@@ -26,6 +26,7 @@ SPDX-License-Identifier: MIT
 | Static route | Configured CIDR assignment installed independently of DNS discovery |
 | Dynamic route | Destination assignment discovered from a selected backend's DNS answer |
 | Physical transport exemption | Verified routing/socket mechanism keeping backend endpoints and direct DNS outside capture loops |
+| Physical path | A verified OS egress interface, source address, and route to a backend endpoint or direct upstream, identified for one lifetime of that routing state |
 | Direct upstream | Real physical-network DNS resolver used for bootstrap and unmatched forwarding, never a selected-backend failure fallback |
 | Split DNS | System resolver policy sending only configured domains to warper |
 | Global DNS forwarding | System resolver catch-all policy sending unmatched DNS to warper; more-specific external policies may still apply |

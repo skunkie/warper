@@ -212,6 +212,13 @@ controlled routed kernel-peer workload still passes in all four inner/outer
 family combinations (`target/evidence/phase-0/owner-counters/README.md`).
 Production session retirement, path attribution, and state across owner
 destruction remain unresolved.
+The physical-path and PMTU ownership proposal now defines generation
+invalidation, independent budgets and fail-closed shared-interface sizing.
+An interleaved loopback test keeps two owners' reservations live at once,
+rejects a report from the other owner even with an identical header, and
+verifies that a failed transition does not prevent the first owner from
+committing its own feedback. This uses one loopback path and synthetic reports;
+concurrent distinct physical paths and production route verification remain open.
 The routed kernel-peer fixture additionally verifies same-socket counter
 rejection and stale-report rejection before committing a distinct later
 report in all four family combinations
