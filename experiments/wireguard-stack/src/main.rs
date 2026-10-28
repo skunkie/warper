@@ -202,11 +202,11 @@ impl Transport {
             let result =
                 self.tunnel
                     .decapsulate(Some(source.ip()), &incoming[..length], &mut output);
-            // A stale authenticated initiation is a rejected packet, not a
-            // transport failure. The per-pump packet limit still bounds work.
+            // Reject stale or unauthenticated handshakes without ending the
+            // transport; the per-pump packet limit still bounds work.
             if matches!(
                 result,
-                TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
+                TunnResult::Err(WireGuardError::WrongTai64nTimestamp | WireGuardError::InvalidMac)
             ) {
                 continue;
             }
@@ -1286,6 +1286,85 @@ mod tests {
                     .transport
                     .pump(&mut server.peer, Duration::ZERO)
                     .is_err()
+            );
+            drop(server);
+            UdpSocket::bind(server_address).unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_handshake_mac_does_not_stop_experimental_udp_transport() {
+        for outer_ipv6 in [false, true] {
+            let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
+            let mut output = [0; 2048];
+            let initiation = match client
+                .transport
+                .tunnel
+                .format_handshake_initiation(&mut output, false)
+            {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected handshake initiation, got {other:?}"),
+            };
+            let mut corrupt = initiation.clone();
+            let mac_offset = corrupt.len() - 32;
+            corrupt[mac_offset] ^= 1;
+            let server_address = server.transport.socket.local_addr().unwrap();
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .send_to(&corrupt, server_address)
+                    .unwrap(),
+                corrupt.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .recv_from(&mut output)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(!server.peer.device.has_ingress());
+
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .send_to(&initiation, server_address)
+                    .unwrap(),
+                initiation.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            wait_for_outer(
+                &client.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            let (length, source) = client.transport.socket.recv_from(&mut output).unwrap();
+            assert_eq!(source, server_address);
+            assert!(length > 0);
+            assert_eq!(
+                output[0], 2,
+                "valid initiation must receive a handshake response"
             );
             drop(server);
             UdpSocket::bind(server_address).unwrap();

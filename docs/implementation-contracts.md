@@ -552,7 +552,7 @@ is never redirected to a physical application socket.
 
 The resource policy is deliberately fatal rather than silent library loss.
 Malformed/unexpected outer traffic follows the probe's fatal error policy,
-except for the stale authenticated initiation described below. Broader
+except for the stale or invalid-MAC initiations described below. Broader
 resilience to hostile datagrams and production congestion
 backpressure require separate decisions. Full-queue tests observe 64 actual
 encrypted datagrams at the peer socket, not 64 application deliveries through
@@ -568,6 +568,12 @@ error, and dropping the endpoint releases its socket. A burst exceeding the
 per-call packet limit requires a second pump. This narrow experiment does not
 establish production packet rejection policy or resilience to a sustained
 hostile sender.
+
+A separate loopback test corrupts the initiation's MAC, verifies that it
+produces no response or inner data, and then receives a response to the
+original valid initiation. The pump discards BoringTun's `InvalidMac` result
+under the same packet limit. This does not classify other authentication or
+protocol errors, and it does not test sustained hostile traffic.
 
 ## 11. Experimental MTU and ICMP Boundary
 
