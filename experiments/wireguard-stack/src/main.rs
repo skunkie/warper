@@ -1520,6 +1520,151 @@ mod tests {
     }
 
     #[test]
+    fn retired_session_data_does_not_stop_replacement_transport() {
+        fn network(result: TunnResult<'_>) -> Vec<u8> {
+            match result {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected network packet, got {other:?}"),
+            }
+        }
+
+        for outer_ipv6 in [false, true] {
+            let (mut old_client, mut old_server) =
+                create_pair_with_outer(false, outer_ipv6).unwrap();
+            let mut output = [0; 2048];
+            let initiation = network(
+                old_client
+                    .transport
+                    .tunnel
+                    .format_handshake_initiation(&mut output, false),
+            );
+            let response = network(old_server.transport.tunnel.decapsulate(
+                None,
+                &initiation,
+                &mut output,
+            ));
+            let keepalive = network(old_client.transport.tunnel.decapsulate(
+                None,
+                &response,
+                &mut output,
+            ));
+            assert!(matches!(
+                old_server
+                    .transport
+                    .tunnel
+                    .decapsulate(None, &keepalive, &mut output),
+                TunnResult::Done
+            ));
+            let mut inner = [0; 20];
+            inner[0] = 0x45;
+            inner[2..4].copy_from_slice(&20_u16.to_be_bytes());
+            inner[12..16].copy_from_slice(&[10, 66, 66, 2]);
+            inner[16..20].copy_from_slice(&[10, 66, 66, 10]);
+            let retired = network(old_client.transport.tunnel.encapsulate(&inner, &mut output));
+            drop((old_client, old_server));
+
+            let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
+            let server_address = server.transport.socket.local_addr().unwrap();
+            client
+                .transport
+                .socket
+                .send_to(&retired, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 0);
+
+            let initiation = network(
+                client
+                    .transport
+                    .tunnel
+                    .format_handshake_initiation(&mut output, false),
+            );
+            client
+                .transport
+                .socket
+                .send_to(&initiation, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            wait_for_outer(
+                &client.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            let (length, source) = client.transport.socket.recv_from(&mut output).unwrap();
+            assert_eq!(source, server_address);
+            let response = output[..length].to_vec();
+            let keepalive = network(client.transport.tunnel.decapsulate(
+                None,
+                &response,
+                &mut output,
+            ));
+            client
+                .transport
+                .socket
+                .send_to(&keepalive, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            client
+                .transport
+                .socket
+                .send_to(&retired, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 0);
+            let fresh = network(client.transport.tunnel.encapsulate(&inner, &mut output));
+            client
+                .transport
+                .socket
+                .send_to(&fresh, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 1);
+            drop(server);
+            UdpSocket::bind(server_address).unwrap();
+        }
+    }
+
+    #[test]
     fn unrecognized_outer_packets_do_not_stop_handshake() {
         for outer_ipv6 in [false, true] {
             let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
