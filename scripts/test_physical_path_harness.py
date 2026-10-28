@@ -13,7 +13,13 @@ import unittest
 
 
 class PhysicalPathHarnessTests(unittest.TestCase):
-    def run_harness(self, *, mapping="0 1000 1", client_exit=0, peer_exit=0, fail_down=False, fail_cleanup=False, early_client=False, early_peer=False, kill_client=False, fail_group_signal=False, track_peer_shutdown=False, families=("4",)):
+    def run_harness(
+        self, *, mapping="0 1000 1", client_exit=0, peer_exit=0,
+        fail_down=False, fail_cleanup=False, early_client=False, early_peer=False,
+        kill_client=False, fail_group_signal=False, track_peer_shutdown=False,
+        signal_timeout_124=False, signal_peer_timeout_124=False, stuck_peer=False,
+        peer_timeout_after_ready=False, delay_early_client=False, families=("4",),
+    ):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -47,6 +53,19 @@ elif [[ "$*" == "-j -6 addr show dev routers0" ]]; then
 elif [[ "$1" == -j ]]; then echo '[]'; fi
 ''',
         }
+        if signal_timeout_124 or signal_peer_timeout_124:
+            timeout_command = shutil.which("timeout")
+            if timeout_command is None:
+                self.fail("timeout is required for the synthetic supervisor")
+            commands["timeout"] = f'''role=
+if [[ "$*" == *--physical-path-client* && "{signal_timeout_124}" == True ]]; then role=client; fi
+if [[ "$*" == *--physical-path-peer* && "{signal_peer_timeout_124}" == True ]]; then role=peer; fi
+if [[ -z "$role" ]]; then exec "{timeout_command}" "$@"; fi
+"{timeout_command}" "$@" &
+child=$!
+trap 'kill "$child" 2>/dev/null || :; wait "$child" || :; touch "{root}/timeout-$role-signalled"; exit 124' TERM
+wait "$child"
+'''
         for name, source in commands.items():
             path = tools / name
             path.write_text("#!/usr/bin/env bash\nset -eu\n" + source)
@@ -58,6 +77,8 @@ if [[ "$1" == --physical-path-peer ]]; then
     echo "$3 $4" > "{root}/peer-families"
     if [[ "{early_peer}" == True ]]; then exit {peer_exit}; fi
     touch "$2/peer.ready"
+    if [[ "{peer_timeout_after_ready}" == True ]]; then exit 124; fi
+    if [[ "{stuck_peer}" == True ]]; then while true; do sleep 0.01; done; fi
     while [[ ! -f "$2/peer.stop" ]]; do sleep 0.01; done
     if [[ "{track_peer_shutdown}" == True ]]; then
         sleep 0.1
@@ -67,7 +88,10 @@ if [[ "$1" == --physical-path-peer ]]; then
 fi
 if [[ "$1" == --physical-path-client ]]; then
     echo "$3 $4" > "{root}/client-families"
-    if [[ "{early_client}" == True ]]; then exit {client_exit}; fi
+    if [[ "{early_client}" == True ]]; then
+        if [[ "{delay_early_client}" == True ]]; then sleep 0.2; fi
+        exit {client_exit}
+    fi
     if [[ "{kill_client}" == True ]]; then kill -KILL $$; fi
     touch "$2/down.request"
     while [[ ! -f "$2/down.ready" ]]; do sleep 0.01; done
@@ -157,6 +181,41 @@ exit 2
         self.assertEqual(result.returncode, 9, result.stderr)
         self.assertTrue((root / "peer-finished").exists(), result.stderr)
         self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
+
+    def test_signalled_timeout_status_124_is_accepted_after_reaping(self):
+        result, root = self.run_harness(
+            fail_down=True, fail_group_signal=True, signal_timeout_124=True,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertTrue((root / "timeout-client-signalled").exists(), result.stderr)
+        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
+        self.assertNotIn("FAIL independent physical-path cleanup", result.stderr)
+
+    def test_signalled_peer_timeout_status_124_is_accepted_after_reaping(self):
+        result, root = self.run_harness(
+            fail_down=True, fail_group_signal=True,
+            signal_peer_timeout_124=True, stuck_peer=True,
+        )
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertTrue((root / "timeout-peer-signalled").exists(), result.stderr)
+        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
+        self.assertNotIn("FAIL independent physical-path cleanup", result.stderr)
+
+    def test_unexpected_timeout_remains_a_failure(self):
+        result, root = self.run_harness(early_client=True, client_exit=124)
+        self.assertEqual(result.returncode, 124, result.stderr)
+        self.assertIn("FAIL physical-path coordination", result.stderr)
+        self.assertIn("link del dev routers0", (root / "ip.log").read_text())
+        self.assertIn("CLEANUP physical-path links removed and verified", result.stdout, result.stderr)
+
+    def test_unsignalled_peer_timeout_is_reported_during_cleanup(self):
+        result, _ = self.run_harness(
+            early_client=True, client_exit=7, delay_early_client=True,
+            peer_timeout_after_ready=True,
+        )
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn("FAIL physical-path cleanup: peer exited 124", result.stderr)
+        self.assertIn("FAIL independent physical-path cleanup", result.stderr)
 
     def test_broad_namespace_is_rejected_before_mutation(self):
         result, root = self.run_harness(mapping="0 0 4294967295")

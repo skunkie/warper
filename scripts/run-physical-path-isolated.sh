@@ -29,24 +29,31 @@ cleanup() {
     local status=${1:-$?}
     local failed=false
     local child_status
+    local child_signalled=false
     trap - EXIT
     if [[ -n "$client_process" ]]; then
         if kill -0 "$client_process" 2>/dev/null; then
             # The timeout process may have exited between the liveness check
             # and the group signal. Its bounded wait below determines whether
             # cleanup actually succeeded; fall back to signalling timeout itself.
-            if ! kill -- -"$client_process" 2>/dev/null; then
-                kill "$client_process" 2>/dev/null || :
+            if kill -- -"$client_process" 2>/dev/null; then
+                child_signalled=true
+            elif kill "$client_process" 2>/dev/null; then
+                child_signalled=true
             fi
         fi
         child_status=0
         wait "$client_process" || child_status=$?
-        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then
+        # Some timeout versions return 124 after an externally sent TERM.
+        # Accept it only when cleanup successfully signalled this supervisor.
+        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]] &&
+            ! [[ "$child_status" == 124 && "$child_signalled" == true ]]; then
             echo "FAIL physical-path cleanup: client exited $child_status" >&2
             failed=true
         fi
     fi
     if [[ -n "$peer_process" ]]; then
+        child_signalled=false
         : > "$control_directory/peer.stop"
         # Allow the peer to join its workers and remove its interface before
         # forcing termination. Both this grace and timeout's wait are bounded.
@@ -55,13 +62,16 @@ cleanup() {
             sleep 0.01
         done
         if kill -0 "$peer_process" 2>/dev/null; then
-            if ! kill -- -"$peer_process" 2>/dev/null; then
-                kill "$peer_process" 2>/dev/null || :
+            if kill -- -"$peer_process" 2>/dev/null; then
+                child_signalled=true
+            elif kill "$peer_process" 2>/dev/null; then
+                child_signalled=true
             fi
         fi
         child_status=0
         wait "$peer_process" || child_status=$?
-        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then
+        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]] &&
+            ! [[ "$child_status" == 124 && "$child_signalled" == true ]]; then
             echo "FAIL physical-path cleanup: peer exited $child_status" >&2
             failed=true
         fi
