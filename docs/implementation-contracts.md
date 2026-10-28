@@ -551,8 +551,9 @@ and kernel socket memory. Queued output that cannot reach its selected peer
 is never redirected to a physical application socket.
 
 The resource policy is deliberately fatal rather than silent library loss.
-Malformed/unexpected outer traffic also follows the existing probe's fatal
-error policy; resilience to hostile datagrams and production congestion
+Malformed/unexpected outer traffic follows the probe's fatal error policy,
+except for the stale authenticated initiation described below. Broader
+resilience to hostile datagrams and production congestion
 backpressure require separate decisions. Full-queue tests observe 64 actual
 encrypted datagrams at the peer socket, not 64 application deliveries through
 its smaller UDP ring. Kernel-peer interoperability/rekey and same-library
@@ -560,10 +561,13 @@ outage scopes remain separate evidence.
 
 A controlled loopback test sends the same valid handshake initiation twice
 from the selected outer peer. The first produces a handshake response; the
-second makes the transport pump return an error in both outer IP families.
-Dropping the endpoint releases its socket. This characterizes the existing
-fatal-session policy, not a production decision about packet rejection or a
-test of resilience to a sustained hostile sender.
+second is discarded on BoringTun's `WrongTai64nTimestamp` result in both
+outer IP families. The original handshake then completes and encrypted inner
+data enters the peer stack. An unrelated malformed packet still returns an
+error, and dropping the endpoint releases its socket. A burst exceeding the
+per-call packet limit requires a second pump. This narrow experiment does not
+establish production packet rejection policy or resilience to a sustained
+hostile sender.
 
 ## 11. Experimental MTU and ICMP Boundary
 

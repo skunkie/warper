@@ -54,7 +54,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use boringtun::{
-    noise::{Tunn, TunnResult},
+    noise::{Tunn, TunnResult, errors::WireGuardError},
     x25519::{PublicKey, StaticSecret},
 };
 use packet_peer::{MTU, PACKET_CAPACITY, Peer};
@@ -202,6 +202,14 @@ impl Transport {
             let result =
                 self.tunnel
                     .decapsulate(Some(source.ip()), &incoming[..length], &mut output);
+            // A stale authenticated initiation is a rejected packet, not a
+            // transport failure. The per-pump packet limit still bounds work.
+            if matches!(
+                result,
+                TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
+            ) {
+                continue;
+            }
             self.receive_result(result, peer)?;
             // BoringTun queues plaintext while handshaking; drain every network result.
             let mut drained = false;
@@ -1145,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn replayed_handshake_returns_error_from_experimental_udp_transport() {
+    fn replayed_handshake_does_not_stop_experimental_udp_transport() {
         for outer_ipv6 in [false, true] {
             let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
             let mut output = [0; 2048];
@@ -1184,15 +1192,90 @@ mod tests {
             assert_eq!(source, server_address);
             assert_eq!(output[0], 2, "response must be a handshake response");
             assert!(length > 0);
+            let response = output[..length].to_vec();
 
-            assert_eq!(
-                client
-                    .transport
-                    .socket
-                    .send_to(&initiation, server_address)
-                    .unwrap(),
-                initiation.len()
-            );
+            for _ in 0..=PACKET_CAPACITY {
+                assert_eq!(
+                    client
+                        .transport
+                        .socket
+                        .send_to(&initiation, server_address)
+                        .unwrap(),
+                    initiation.len()
+                );
+            }
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_outer, 1 + PACKET_CAPACITY);
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_outer, 2 + PACKET_CAPACITY);
+            let keepalive = match client
+                .transport
+                .tunnel
+                .decapsulate(None, &response, &mut output)
+            {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected keepalive, got {other:?}"),
+            };
+            client
+                .transport
+                .socket
+                .send_to(&keepalive, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            let mut inner = [0; 20];
+            inner[0] = 0x45;
+            inner[2..4].copy_from_slice(&20_u16.to_be_bytes());
+            inner[12..16].copy_from_slice(&[10, 66, 66, 2]);
+            inner[16..20].copy_from_slice(&[10, 66, 66, 10]);
+            let data = match client.transport.tunnel.encapsulate(&inner, &mut output) {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected encrypted data, got {other:?}"),
+            };
+            client
+                .transport
+                .socket
+                .send_to(&data, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert!(server.peer.device.has_ingress());
+            assert_eq!(server.transport.received_inner, 1);
+            client
+                .transport
+                .socket
+                .send_to(&[0], server_address)
+                .unwrap();
             wait_for_outer(
                 &server.transport.socket,
                 Instant::now() + Duration::from_secs(2),

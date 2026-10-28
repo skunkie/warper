@@ -196,10 +196,11 @@ preventing subsequent data. It does not show acceptance of old application
 data or establish process-restart behavior. Socket-level ambiguity remains. Route
 publication, concurrent transitions, and general WireGuard transport
 integration also remain unresolved.
-The experimental UDP transport returns an error on a replayed initiation from
-the selected peer in both outer IP families; dropping the endpoint releases
-its socket. The session's existing fatal-error policy therefore needs a
-separate production decision about rejected datagrams.
+The experimental UDP transport now discards BoringTun's stale-initiation
+timestamp error, completes the original handshake, and receives encrypted
+inner data in both outer IP families. Other malformed input still returns an
+error; dropping the endpoint releases its socket. Production policy for other
+rejected datagrams and sustained hostile traffic remains undecided.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
