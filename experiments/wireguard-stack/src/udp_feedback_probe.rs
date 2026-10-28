@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use smoltcp::socket::udp;
 
-use crate::{Endpoint, create_client, create_pair_with_outer, udp_feedback};
+use crate::{Endpoint, create_pair_with_outer, udp_feedback};
 
 pub fn run_probe(ipv6: bool) -> Result<()> {
     for outer_ipv6 in [false, true] {
@@ -25,7 +25,7 @@ pub fn run_probe(ipv6: bool) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn run_kernel(ipv6: bool, remote: SocketAddr) -> Result<()> {
-    let (peer, transport) = create_client(ipv6, remote)?;
+    let (peer, transport) = crate::create_client(ipv6, remote)?;
     run_owned(
         ipv6,
         Endpoint { peer, transport },
