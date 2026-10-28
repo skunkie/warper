@@ -245,6 +245,11 @@ also discarded without a response. A finite burst filling the per-pump packet
 limit defers a queued valid initiation to the next pump, which responds in both
 outer families. This does not establish fairness under sustained hostile traffic.
 Production policy for other rejected datagrams remains undecided.
+The experimental transport also discards datagrams from an unexpected outer
+socket address before passing them to BoringTun. A local test sends a valid
+initiation from a different socket, observes no response, and then completes
+the initiation from the configured peer in both outer IP families. This does
+not establish roaming support, sustained-load fairness, or production policy.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

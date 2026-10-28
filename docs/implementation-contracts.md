@@ -551,13 +551,18 @@ and kernel socket memory. Queued output that cannot reach its selected peer
 is never redirected to a physical application socket.
 
 The resource policy is deliberately fatal rather than silent library loss.
-Malformed/unexpected outer traffic follows the probe's fatal error policy,
-except for the stale or invalid-MAC initiations described below. Broader
+Malformed traffic from the selected outer peer follows the probe's fatal error
+policy, except for the stale or invalid-MAC initiations described below.
+Datagrams from other outer addresses are discarded before decapsulation and
+count toward the per-pump receive limit. Broader
 resilience to hostile datagrams and production congestion
 backpressure require separate decisions. Full-queue tests observe 64 actual
 encrypted datagrams at the peer socket, not 64 application deliveries through
 its smaller UDP ring. Kernel-peer interoperability/rekey and same-library
-outage scopes remain separate evidence.
+outage scopes remain separate evidence. A valid initiation sent from another
+socket produces no response, and the same initiation from the selected peer
+then produces a response in both outer IP families. This does not establish
+roaming or sustained-load fairness.
 
 A controlled loopback test sends the same valid handshake initiation twice
 from the selected outer peer. The first produces a handshake response; the

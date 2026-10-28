@@ -192,7 +192,9 @@ impl Transport {
             {
                 self.received_outer += 1;
             }
-            ensure!(source == self.remote, "unexpected outer peer");
+            if source != self.remote {
+                continue;
+            }
             if self.inbound_blackhole {
                 if incoming[..length].starts_with(&[4, 0, 0, 0]) {
                     self.dropped_inbound = self.dropped_inbound.saturating_add(1);
@@ -1389,6 +1391,76 @@ mod tests {
                     .transport
                     .pump(&mut server.peer, Duration::ZERO)
                     .is_err()
+            );
+            drop(server);
+            UdpSocket::bind(server_address).unwrap();
+        }
+    }
+
+    #[test]
+    fn unexpected_outer_sender_cannot_stop_or_advance_handshake() {
+        for outer_ipv6 in [false, true] {
+            let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
+            let mut output = [0; 2048];
+            let initiation = match client
+                .transport
+                .tunnel
+                .format_handshake_initiation(&mut output, false)
+            {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected handshake initiation, got {other:?}"),
+            };
+            let server_address = server.transport.socket.local_addr().unwrap();
+            let sender = UdpSocket::bind(loopback_address(outer_ipv6)).unwrap();
+            sender.set_nonblocking(true).unwrap();
+            assert_eq!(
+                sender.send_to(&initiation, server_address).unwrap(),
+                initiation.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_outer, 1);
+            assert_eq!(
+                sender.recv_from(&mut output).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(!server.peer.device.has_ingress());
+
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .send_to(&initiation, server_address)
+                    .unwrap(),
+                initiation.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            wait_for_outer(
+                &client.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            let (length, source) = client.transport.socket.recv_from(&mut output).unwrap();
+            assert_eq!(source, server_address);
+            assert!(length > 0);
+            assert_eq!(
+                output[0], 2,
+                "configured peer must receive a handshake response"
             );
             drop(server);
             UdpSocket::bind(server_address).unwrap();

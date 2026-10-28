@@ -617,11 +617,10 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_outer_peer_is_fatal_with_preserved_source_and_socket_cleanup() {
-        let (mut client, _server) = fixture(false).unwrap();
+    fn malformed_selected_peer_packet_is_fatal_with_preserved_source_and_socket_cleanup() {
+        let (mut client, server) = fixture(false).unwrap();
         let address = endpoint_address(&mut client).unwrap();
-        let stranger = UdpSocket::bind("127.0.0.1:0").unwrap();
-        stranger.send_to(&[0], address).unwrap();
+        server.transport.socket.send_to(&[0], address).unwrap();
         crate::wait_for_outer(
             &client.endpoint().unwrap().transport.socket,
             Instant::now() + Duration::from_secs(2),
