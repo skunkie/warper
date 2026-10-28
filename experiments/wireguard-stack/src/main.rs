@@ -213,6 +213,7 @@ impl Transport {
                         | WireGuardError::InvalidMac
                         | WireGuardError::InvalidAeadTag
                         | WireGuardError::DuplicateCounter
+                        | WireGuardError::InvalidCounter
                 )
             ) {
                 continue;
@@ -1435,6 +1436,67 @@ mod tests {
                 .pump(&mut server.peer, Duration::ZERO)
                 .unwrap();
             assert_eq!(server.transport.received_inner, 2);
+            // Advance beyond BoringTun's 1024-packet replay window without
+            // filling the fixture's bounded ingress queue.
+            let mut far_ahead = Vec::new();
+            for _ in 0..1025 {
+                far_ahead = match client.transport.tunnel.encapsulate(&inner, &mut output) {
+                    TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                    other => panic!("expected encrypted data, got {other:?}"),
+                };
+            }
+            client
+                .transport
+                .socket
+                .send_to(&far_ahead, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 3);
+            client
+                .transport
+                .socket
+                .send_to(&data, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(
+                server.transport.received_inner, 3,
+                "out-of-window data must not be delivered"
+            );
+            let fresh = match client.transport.tunnel.encapsulate(&inner, &mut output) {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected fresh encrypted data, got {other:?}"),
+            };
+            client
+                .transport
+                .socket
+                .send_to(&fresh, server_address)
+                .unwrap();
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_inner, 4);
             client
                 .transport
                 .socket
