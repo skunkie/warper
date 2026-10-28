@@ -1145,6 +1145,71 @@ mod tests {
     }
 
     #[test]
+    fn replayed_handshake_returns_error_from_experimental_udp_transport() {
+        for outer_ipv6 in [false, true] {
+            let (mut client, mut server) = create_pair_with_outer(false, outer_ipv6).unwrap();
+            let mut output = [0; 2048];
+            let initiation = match client
+                .transport
+                .tunnel
+                .format_handshake_initiation(&mut output, false)
+            {
+                TunnResult::WriteToNetwork(packet) => packet.to_vec(),
+                other => panic!("expected handshake initiation, got {other:?}"),
+            };
+            let server_address = server.transport.socket.local_addr().unwrap();
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .send_to(&initiation, server_address)
+                    .unwrap(),
+                initiation.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            wait_for_outer(
+                &client.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            let (length, source) = client.transport.socket.recv_from(&mut output).unwrap();
+            assert_eq!(source, server_address);
+            assert_eq!(output[0], 2, "response must be a handshake response");
+            assert!(length > 0);
+
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .send_to(&initiation, server_address)
+                    .unwrap(),
+                initiation.len()
+            );
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            assert!(
+                server
+                    .transport
+                    .pump(&mut server.peer, Duration::ZERO)
+                    .is_err()
+            );
+            drop(server);
+            UdpSocket::bind(server_address).unwrap();
+        }
+    }
+
+    #[test]
     fn controlled_outage_retries_tcp_without_replaying_lost_udp() {
         for ipv6 in [false, true] {
             let (mut client, mut server) = create_pair(ipv6).unwrap();

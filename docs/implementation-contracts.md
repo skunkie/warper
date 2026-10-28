@@ -558,6 +558,13 @@ encrypted datagrams at the peer socket, not 64 application deliveries through
 its smaller UDP ring. Kernel-peer interoperability/rekey and same-library
 outage scopes remain separate evidence.
 
+A controlled loopback test sends the same valid handshake initiation twice
+from the selected outer peer. The first produces a handshake response; the
+second makes the transport pump return an error in both outer IP families.
+Dropping the endpoint releases its socket. This characterizes the existing
+fatal-session policy, not a production decision about packet rejection or a
+test of resilience to a sustained hostile sender.
+
 ## 11. Experimental MTU and ICMP Boundary
 
 Status: fixed-envelope checks and bounded pre-admission fragment input exist;
