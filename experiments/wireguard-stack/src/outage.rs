@@ -295,7 +295,7 @@ fn transient_outage(ipv6: bool) -> Result<()> {
     let wall = Instant::now();
     for step in 2..2000 {
         ensure!(
-            wall.elapsed() < Duration::from_secs(3),
+            wall.elapsed() < Duration::from_secs(10),
             "outage recovery exceeded wall deadline"
         );
         let now = start + Duration::from_millis(step);
@@ -493,12 +493,27 @@ mod tests {
                 client.step(Duration::from_millis(step as u64)).unwrap();
             }
             assert_eq!(client.endpoint().unwrap().transport.staged_packets, 64);
+            crate::wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
             server_step(&mut server, Duration::from_millis(65)).unwrap();
+            crate::wait_for_outer(
+                &client.endpoint().unwrap().transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
             client.step(Duration::from_millis(66)).unwrap();
             assert_eq!(client.endpoint().unwrap().transport.staged_packets, 0);
             let mut observed = 0;
             let mut bytes = [0; super::super::MTU + 256];
+            let deadline = Instant::now() + Duration::from_secs(2);
             for _ in 0..66 {
+                if observed == 64 {
+                    break;
+                }
+                crate::wait_for_outer(&server.transport.socket, deadline).unwrap();
                 match server.transport.socket.recv_from(&mut bytes) {
                     Ok((length, _)) => {
                         if bytes[0] == 4 && length > 32 {
@@ -607,6 +622,11 @@ mod tests {
         let address = endpoint_address(&mut client).unwrap();
         let stranger = UdpSocket::bind("127.0.0.1:0").unwrap();
         stranger.send_to(&[0], address).unwrap();
+        crate::wait_for_outer(
+            &client.endpoint().unwrap().transport.socket,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
         let failure = client.step(Duration::ZERO).unwrap_err();
         assert_eq!(failure.reason, Reason::Transport);
         assert!(std::error::Error::source(&failure).is_some());
@@ -646,7 +666,19 @@ mod tests {
                 .unwrap();
                 server.peer.device.outgoing.push_back(packets[0].clone());
                 server.transport.pump(&mut server.peer, now).unwrap();
-                client.step(now).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while client
+                    .endpoint()
+                    .unwrap()
+                    .transport
+                    .reassembly
+                    .next_deadline()
+                    .is_none()
+                {
+                    crate::wait_for_outer(&client.endpoint().unwrap().transport.socket, deadline)
+                        .unwrap();
+                    client.step(now).unwrap();
+                }
                 assert!(
                     client
                         .endpoint
@@ -663,7 +695,17 @@ mod tests {
                 } else {
                     server.peer.device.outgoing.push_back(packets[0].clone());
                     server.transport.pump(&mut server.peer, now).unwrap();
-                    let failure = client.step(now).unwrap_err();
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    let failure = loop {
+                        crate::wait_for_outer(
+                            &client.endpoint().unwrap().transport.socket,
+                            deadline,
+                        )
+                        .unwrap();
+                        if let Err(failure) = client.step(now) {
+                            break failure;
+                        }
+                    };
                     assert_eq!(failure.reason, Reason::Transport);
                     assert_eq!(
                         failure

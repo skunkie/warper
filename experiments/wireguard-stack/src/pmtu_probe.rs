@@ -297,18 +297,19 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
                 .get::<tcp::Socket>(client.peer.tcp)
                 .may_recv()
         {
-            // The final ACK has crossed the tunnel in this turn. Consume it
-            // before retiring the fixture so peer completion is checked too.
+            // The final ACK can arrive on a later loopback turn. Keep pumping
+            // both endpoints until the peer closes, within the existing deadline.
             server.peer.poll(tick as i64);
-            ensure!(
-                server
-                    .peer
-                    .sockets
-                    .get::<tcp::Socket>(server.peer.tcp)
-                    .state()
-                    == tcp::State::Closed,
-                "encrypted PMTU peer did not complete final ACK"
-            );
+            if server
+                .peer
+                .sockets
+                .get::<tcp::Socket>(server.peer.tcp)
+                .state()
+                != tcp::State::Closed
+            {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
             ensure!(
                 response == reply && observed_retry,
                 "encrypted PMTU response or lost-sequence retry missing"

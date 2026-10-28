@@ -99,6 +99,7 @@ struct Transport {
     now: Duration,
     initiations: usize,
     encrypted_packets: usize,
+    received_inner: u64,
     drop_first_handshake: bool,
     dropped_handshakes: usize,
     staged_packets: usize,
@@ -106,6 +107,8 @@ struct Transport {
     dropped_packets: usize,
     inbound_blackhole: bool,
     dropped_inbound: usize,
+    #[cfg(test)]
+    received_outer: usize,
 }
 
 impl Transport {
@@ -140,6 +143,7 @@ impl Transport {
                     "unapproved inner IPv4 source"
                 );
                 self.inject_inner(packet, peer)?;
+                self.received_inner = self.received_inner.saturating_add(1);
                 Ok(true)
             }
             TunnResult::WriteToTunnelV6(packet, source) => {
@@ -148,6 +152,7 @@ impl Transport {
                     "unapproved inner IPv6 source"
                 );
                 self.inject_inner(packet, peer)?;
+                self.received_inner = self.received_inner.saturating_add(1);
                 Ok(true)
             }
         }
@@ -183,6 +188,10 @@ impl Transport {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error.into()),
             };
+            #[cfg(test)]
+            {
+                self.received_outer += 1;
+            }
             ensure!(source == self.remote, "unexpected outer peer");
             if self.inbound_blackhole {
                 if incoming[..length].starts_with(&[4, 0, 0, 0]) {
@@ -481,6 +490,7 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
+        received_inner: 0,
         drop_first_handshake: false,
         dropped_handshakes: 0,
         staged_packets: 0,
@@ -488,6 +498,8 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         dropped_packets: 0,
         inbound_blackhole: false,
         dropped_inbound: 0,
+        #[cfg(test)]
+        received_outer: 0,
     };
     Ok((
         Endpoint {
@@ -531,6 +543,7 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
+        received_inner: 0,
         drop_first_handshake: false,
         dropped_handshakes: 0,
         staged_packets: 0,
@@ -538,6 +551,8 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         dropped_packets: 0,
         inbound_blackhole: false,
         dropped_inbound: 0,
+        #[cfg(test)]
+        received_outer: 0,
     };
     Ok((client, transport))
 }
@@ -547,6 +562,23 @@ fn loopback_address(ipv6: bool) -> SocketAddr {
         SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 0))
     } else {
         SocketAddr::from(([127, 0, 0, 1], 0))
+    }
+}
+
+fn wait_for_outer(socket: &UdpSocket, deadline: Instant) -> Result<()> {
+    let mut byte = [0; 1];
+    loop {
+        ensure!(
+            Instant::now() < deadline,
+            "outer datagram readiness deadline exceeded"
+        );
+        match socket.peek_from(&mut byte) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 
@@ -876,6 +908,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn outer_readiness_waits_for_delayed_datagram_and_times_out() {
+        for ipv6 in [false, true] {
+            let receiver = UdpSocket::bind(loopback_address(ipv6)).unwrap();
+            receiver.set_nonblocking(true).unwrap();
+            let sender = UdpSocket::bind(loopback_address(ipv6)).unwrap();
+            sender
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let destination = receiver.local_addr().unwrap();
+            let worker = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(10));
+                sender.send_to(b"ready", destination)
+            });
+            let ready = wait_for_outer(&receiver, Instant::now() + Duration::from_secs(2));
+            let sent = worker.join().unwrap().unwrap();
+            ready.unwrap();
+            let mut bytes = [0; 16];
+            let (length, _) = receiver.recv_from(&mut bytes).unwrap();
+            assert_eq!(&bytes[..length], b"ready");
+            assert_eq!(sent, 5);
+            assert!(wait_for_outer(&receiver, Instant::now()).is_err());
+        }
+    }
+
+    #[test]
     fn blackout_datagram_detection_handles_both_families_and_malformed_packets() {
         assert!(is_lost_datagram(&[]).is_err());
         assert!(is_lost_datagram(&[0x70]).is_err());
@@ -952,7 +1009,12 @@ mod tests {
             }
             data[0] = 2;
             assert_eq!(sender.send_to(&data, local).unwrap(), data.len());
-            transport.pump(&mut peer, Duration::ZERO).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while transport.received_outer < 3 {
+                wait_for_outer(&transport.socket, deadline).unwrap();
+                transport.pump(&mut peer, Duration::ZERO).unwrap();
+            }
+            assert_eq!(transport.received_outer, 3);
             assert_eq!(transport.dropped_inbound, 2);
             assert!(!peer.device.has_ingress());
             transport.inbound_blackhole = false;
@@ -1014,10 +1076,20 @@ mod tests {
                     .transport
                     .pump(&mut client.peer, Duration::ZERO)
                     .unwrap();
+                wait_for_outer(
+                    &server.transport.socket,
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .unwrap();
                 server
                     .transport
                     .pump(&mut server.peer, Duration::ZERO)
                     .unwrap();
+                wait_for_outer(
+                    &client.transport.socket,
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .unwrap();
                 let result = client.transport.pump(&mut client.peer, Duration::ZERO);
                 // 1412 UDP bytes + 28 inner headers + 32 encryption overhead
                 // fit exactly in IPv4's 1472-byte outer UDP allowance. IPv6
@@ -1033,6 +1105,13 @@ mod tests {
                 }
                 let mut received_data = false;
                 let mut bytes = [0; 1600];
+                if expected_delivery {
+                    wait_for_outer(
+                        &server.transport.socket,
+                        Instant::now() + Duration::from_secs(2),
+                    )
+                    .unwrap();
+                }
                 for _ in 0..PACKET_CAPACITY {
                     match server.transport.socket.recv_from(&mut bytes) {
                         Ok((length, _)) if length > 32 => {

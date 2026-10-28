@@ -4,7 +4,11 @@
 
 //! Authenticated, encrypted fragment input through active UDP sockets.
 
-use std::{net::SocketAddr, thread, time::Duration};
+use std::{
+    net::SocketAddr,
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, ensure};
 use smoltcp::socket::udp;
@@ -109,9 +113,16 @@ fn transmit(
 ) -> Result<()> {
     sender.peer.device.outgoing.push_back(packet.to_vec());
     sender.transport.pump(&mut sender.peer, now)?;
-    receiver.transport.pump(&mut receiver.peer, now)?;
-    receiver.peer.poll(now.as_millis() as i64);
-    Ok(())
+    let previous_received = receiver.transport.received_inner;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        crate::wait_for_outer(&receiver.transport.socket, deadline)?;
+        receiver.transport.pump(&mut receiver.peer, now)?;
+        receiver.peer.poll(now.as_millis() as i64);
+        if receiver.transport.received_inner != previous_received {
+            return Ok(());
+        }
+    }
 }
 
 fn exchange(
@@ -196,6 +207,74 @@ fn release_pair(client: Endpoint, server: Endpoint) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MTU;
+
+    #[test]
+    fn concurrent_fragments_with_shared_deadline_make_progress() {
+        for ipv6 in [false, true] {
+            let (mut client, mut server) = crate::create_pair(ipv6).unwrap();
+            let now = warm_up(&mut client, &mut server).unwrap();
+            let destination = address(&server);
+            let first = fragments(&mut client, destination, &[0x31; 200], now, 45).unwrap();
+            let second = fragments(&mut client, destination, &[0x52; 200], now, 46).unwrap();
+            transmit(&mut client, &mut server, &first[0], now).unwrap();
+            let deadline = server.transport.reassembly.next_deadline();
+            transmit(&mut client, &mut server, &second[0], now).unwrap();
+            assert_eq!(server.transport.reassembly.next_deadline(), deadline);
+            transmit(&mut client, &mut server, &first[1], now).unwrap();
+            assert_eq!(server.transport.reassembly.next_deadline(), deadline);
+            transmit(&mut client, &mut server, &second[1], now).unwrap();
+            let socket = server.peer.sockets.get_mut::<udp::Socket>(server.peer.udp);
+            for expected in [[0x31; 200], [0x52; 200]] {
+                let (payload, _) = socket.recv().unwrap();
+                assert_eq!(payload, expected);
+            }
+            assert!(server.transport.reassembly.next_deadline().is_none());
+            release_pair(client, server).unwrap();
+        }
+    }
+
+    #[test]
+    fn encrypted_fragment_waits_for_delayed_outer_delivery() {
+        for ipv6 in [false, true] {
+            let (mut client, mut server) = crate::create_pair(ipv6).unwrap();
+            let now = warm_up(&mut client, &mut server).unwrap();
+            let packets = fragments(&mut client, address(&server), &[0x53; 200], now, 45).unwrap();
+            let relay = std::net::UdpSocket::bind(crate::loopback_address(false)).unwrap();
+            relay
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let relay_address = relay.local_addr().unwrap();
+            let original_client = client.transport.socket.local_addr().unwrap();
+            let server_address = server.transport.socket.local_addr().unwrap();
+            let mut encrypted = [0; MTU + 256];
+            let result = client.transport.tunnel.encapsulate(&[], &mut encrypted);
+            assert!(matches!(&result, crate::TunnResult::WriteToNetwork(_)));
+            let keepalive = if let crate::TunnResult::WriteToNetwork(bytes) = result {
+                bytes.to_vec()
+            } else {
+                return;
+            };
+            assert_eq!(keepalive.len(), 32);
+            client.transport.remote = relay_address;
+            server.transport.remote = relay_address;
+            let worker = thread::spawn(move || -> std::io::Result<(usize, SocketAddr)> {
+                let mut packet = [0; MTU + 256];
+                let (length, source) = relay.recv_from(&mut packet)?;
+                relay.send_to(&keepalive, server_address)?;
+                thread::sleep(Duration::from_millis(20));
+                let sent = relay.send_to(&packet[..length], server_address)?;
+                Ok((sent, source))
+            });
+            let result = transmit(&mut client, &mut server, &packets[0], now);
+            let (sent, source) = worker.join().unwrap().unwrap();
+            result.unwrap();
+            assert!(sent > 32);
+            assert_eq!(source, original_client);
+            assert!(server.transport.reassembly.next_deadline().is_some());
+            release_pair(client, server).unwrap();
+        }
+    }
 
     #[test]
     fn encrypted_fragments_preserve_datagrams_and_release_partial_state() {

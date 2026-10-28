@@ -164,6 +164,13 @@ above remain open.
   fixed public synthetic values. Requests/responses and initial UDP message
   counts are bounded. The executable returns operational errors with context;
   it logs no payloads or keys.
+  Fixtures that require a specific next loopback datagram wait for readiness
+  within a bounded wall deadline, rather than assuming it is available in the
+  same turn as the send. Fragment fixtures observe a saturating count of
+  accepted inner packets, including when assembly deadlines coincide. The
+  PMTU fixture continues pumping until the final
+  ACK is observed or its existing deadline expires. These checks do not establish
+  native macOS networking acceptance.
 - `experiments/wireguard-stack/src/kernel_peer.rs`: the Linux-only independent
   peer uses `wireguard-uapi` 3.0.1 to configure and read back the disposable
   `wg-feasibility` interface. Both the executable and namespace helper reject

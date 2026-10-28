@@ -27,6 +27,9 @@ gates remain open.
 The [stack ADR](adr/0002-network-stack.md) remains proposed. Packet probes
 establish limited transport behavior, not NET-01/NET-05/NET-06/NET-07 or
 the complete Phase 0 exit criteria. No native macOS evidence exists.
+The loopback fixtures use bounded readiness waits for dependent packets and
+final ACKs; native macOS test results remain separate from Linux evidence
+(`target/evidence/phase-0/macos-readiness/README.md`).
 `tests/fixtures/configuration/cases.toml` captures parser and capability
 expectations; executable production parser/CLI registration remains Phase 1.
 TUN device provisioning is denied here even inside disposable namespaces;
