@@ -257,6 +257,7 @@ fn exchange(
         packet[..16] != stale.prefix,
         "successive WireGuard headers repeated"
     );
+    let old_sent_at = Instant::now();
     owner.send_reserved(packet, reporter, wall.elapsed())?;
     let mut wrong_owner = stale.clone();
     wrong_owner.prefix.copy_from_slice(&packet[..16]);
@@ -272,17 +273,11 @@ fn exchange(
         owner.outer_mtu() == 1600,
         "wrong socket changed path budget"
     );
-    let old_report = loop {
-        if let Some(received) = owner.receive()? {
-            ensure!(
-                received.record.mtu == 1400,
-                "unexpected owned remote path MTU"
-            );
-            break received;
-        }
-        owner.advance(wall.elapsed())?;
-        thread::sleep(Duration::from_millis(1));
-    };
+    let old_prefix: [u8; 16] = packet[..16].try_into()?;
+    ensure!(
+        owner.receive()?.is_none(),
+        "old feedback arrived before retirement"
+    );
     owner.cancel_reservation();
     let error = match owner.send_reserved(packet, reporter, wall.elapsed()) {
         Ok(()) => anyhow::bail!("repeated encrypted header was sent"),
@@ -315,10 +310,33 @@ fn exchange(
         anyhow::bail!("distinct later encryption was not immediately ready");
     };
     ensure!(
-        later[..16] != old_report.prefix,
+        later[..16] != old_prefix,
         "distinct data reused the retired header"
     );
     owner.send_reserved(later, reporter, wall.elapsed())?;
+    ensure!(
+        owner.receive()?.is_none(),
+        "retired feedback arrived before the later send completed"
+    );
+    let old_report = loop {
+        if let Some(received) = owner.receive()? {
+            ensure!(
+                received.record.mtu == 1400,
+                "unexpected owned remote path MTU"
+            );
+            ensure!(
+                received.prefix == old_prefix,
+                "expected delayed retired feedback first"
+            );
+            break received;
+        }
+        owner.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    };
+    ensure!(
+        old_sent_at.elapsed() >= Duration::from_millis(80),
+        "router feedback did not experience the configured delay"
+    );
     let error = match owner.apply(&old_report, wall.elapsed()) {
         Ok(_) => anyhow::bail!("retired feedback matched a later same-socket send"),
         Err(error) => error,

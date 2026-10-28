@@ -652,6 +652,13 @@ four family combinations run; the peer verifies exactly twelve UDP datagrams
 spaces initiations for the reused kernel peer identity. This is fixture pacing,
 not a production reconnection strategy.
 
+The router uses `tc` netem to delay ICMP and ICMPv6 feedback by 100 ms on the
+private client-facing link. The owner retires a reservation and sends a later
+distinct packet before the old report reaches its error queue. It rejects the
+old report and applies the later report. The test requires `tc` and the kernel
+prio, u32 and netem facilities; it does not establish cross-session header
+uniqueness or path attribution.
+
 `run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links and
 the kernel-peer subprocess. Ready/stop files use a private temporary directory;
 a bounded supervisor and cleanup traps reap processes and verify link removal.

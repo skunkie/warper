@@ -1077,7 +1077,11 @@ then holds a genuine report from the owner, changes and restores its peer,
 and rejects the retired report both before and after a new reservation. A
 modified copy with the new packet's header isolates reader generation from
 header matching. A new genuine router report commits the new path budget.
-This tests delayed processing rather than delayed packet delivery.
+Separately, the router delays ICMP feedback in transit while the owner retires
+one reservation and sends a distinct later datagram. The old report reaches
+the socket only after that send, cannot change the later reservation or budget,
+and the subsequent report commits the reduction. This controlled delay does not
+establish header uniqueness across sessions or general path attribution.
 A real loopback rebinding test verifies that a new reader at the same local
 tuple cannot match an old reservation. The token identifies an error-reader
 instance, not a physical path: two independent readers for one socket have
@@ -1123,8 +1127,8 @@ or authentication of router feedback.
 The routed kernel-peer fixture now also retains a genuine router report,
 rejects a repeated data header before send on the same socket, rejects that
 report against a later distinct header, and commits a later genuine report.
-This exercises all inner/outer IP-family combinations; it does not establish
-actual delayed report delivery or general physical-path attribution.
+This exercises delayed report delivery in all inner/outer IP-family
+combinations; it does not establish general physical-path attribution.
 Each retained kernel socket has its own bounded receive buffer. This deliberately
 bounded experiment has no retirement timer and is not a production policy;
 traffic delayed beyond owner destruction and ports used before this owner remain

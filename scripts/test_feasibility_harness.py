@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -37,6 +37,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
             "unshare": 'if [[ "$1" == --net ]]; then shift; exec "$@"; fi\nwhile [[ "$1" != bash ]]; do shift; done\nexec "$@"\n',
             "readlink": 'echo "$1"\n',
             "sysctl": f'echo "$*" >> "{root}/sysctl-commands.log"\n',
+            "tc": f'echo "$*" >> "{root}/tc-commands.log"\nexit {tc_exit}\n',
             "nsenter": f'echo "$*" >> "{root}/nsenter-commands.log"\nshift\nif [[ "$1" == bash && "$2" == -eu ]]; then exit 0; fi\nexec "$@"\n',
             "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\n',
             "cat": f'if [[ "$1" == /proc/self/uid_map ]]; then echo "{mapping}"; else exec /bin/cat "$@"; fi\n',
@@ -197,6 +198,10 @@ class FeasibilityHarnessTests(unittest.TestCase):
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link set routerc0 mtu 1600 up", commands)
         self.assertIn("link set routers0 mtu 1400 up", commands)
+        traffic_control = (evidence.parents[3] / "tc-commands.log").read_text()
+        self.assertIn("netem delay 100ms", traffic_control)
+        self.assertIn("match ip protocol 1 0xff", traffic_control)
+        self.assertIn("match ip6 protocol 58 0xff", traffic_control)
         self.assertIn("link set dev wg-feasibility mtu 1500 up", commands)
         self.assertIn("link del dev routerc0", commands)
         self.assertIn("link del dev routers0", commands)
@@ -219,6 +224,14 @@ class FeasibilityHarnessTests(unittest.TestCase):
             self.assertIn("link del dev routerc0", commands)
             self.assertIn("link del dev routers0", commands)
             self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_router_traffic_control_failure_retires_links(self):
+        result, evidence = self.run_harness(scope="--router-mtu-check", tc_exit=7)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        commands = (evidence.parents[3] / "ip-commands.log").read_text()
+        self.assertIn("link del dev routerc0", commands)
+        self.assertIn("link del dev routers0", commands)
+        self.assertNotIn("PASS", (evidence / "result.txt").read_text())
 
     def test_killed_router_client_still_stops_peer_and_reaps_namespaces(self):
         result, evidence = self.run_harness(scope="--router-mtu-check", probe_killed=True)

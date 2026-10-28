@@ -89,6 +89,12 @@ ip addr add 198.19.0.1/24 dev routers0
 ip -6 addr add fd77:2::1/64 dev routers0 nodad
 ip link set routerc0 mtu 1600 up
 ip link set routers0 mtu 1400 up
+# Delay router-generated feedback on its way to the client, inside this
+# disposable network namespace. Other traffic retains the default priority.
+tc qdisc add dev routerc0 root handle 1: prio priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+tc qdisc add dev routerc0 parent 1:3 handle 30: netem delay 100ms
+tc filter add dev routerc0 protocol ip parent 1: prio 1 u32 match ip protocol 1 0xff flowid 1:3
+tc filter add dev routerc0 protocol ipv6 parent 1: prio 2 u32 match ip6 protocol 58 0xff flowid 1:3
 sysctl -q -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
 nsenter --net="/proc/$client_anchor/ns/net" bash -eu -c '
     ip link set lo up

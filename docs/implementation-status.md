@@ -170,8 +170,11 @@ A synthetic Linux loopback error queue preserves the old header when its ICMP
 report arrives after a later send. The routed kernel-peer fixture now holds a
 genuine report after receipt, rejects it against a later distinct send, and
 applies the later report in all four family combinations
-(`target/evidence/phase-0/router-delayed/README.md`). Actual delayed packet
-delivery and cross-session header uniqueness remain unverified. The current
+(`target/evidence/phase-0/router-delayed/README.md`). The routed fixture now
+also delays router ICMP in transit and verifies that an old report arriving
+after a later send cannot consume its reservation, across all four family
+combinations (`target/evidence/phase-0/router-delivery/README.md`). Cross-session
+header uniqueness remains unverified. The current
 routed fixture also uses two connected sockets and distinct budgets; matching
 checks the local socket tuple and rejects a wrong-socket report even when its
 header is made to match (`target/evidence/phase-0/router-sockets/README.md`).
@@ -212,8 +215,8 @@ destruction remain unresolved.
 The routed kernel-peer fixture additionally verifies same-socket counter
 rejection and stale-report rejection before committing a distinct later
 report in all four family combinations
-(`target/evidence/phase-0/owner-same-socket/README.md`). The old report is
-deliberately held after receipt; delayed network delivery remains unverified.
+(`target/evidence/phase-0/owner-same-socket/README.md`). The routed fixture
+now also checks delayed network delivery before applying that report.
 The owner now replaces its socket during peer transitions and retains at most
 eight retired sockets until owner destruction. This prevents local port reuse
 within the owner lifetime, changes the local port in both families, and returns

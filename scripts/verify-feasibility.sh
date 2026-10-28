@@ -83,6 +83,10 @@ for tool in cargo rustc git timeout unshare ip bash python3 cat; do
         exit 1
     fi
 done
+if [[ "$scope" == --router-mtu-check ]] && ! command -v tc >/dev/null 2>&1; then
+    echo "Required feasibility tool is missing: tc" >&2
+    exit 1
+fi
 if [[ $(uname -s) != Linux ]]; then
     echo "This isolation harness requires Linux; native macOS acceptance is not implemented." >&2
     exit 1
