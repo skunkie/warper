@@ -541,7 +541,9 @@ oversized decrypted data, and returns one encrypted too-big message from the
 configured inner peer. The client applies 1280/1400 reductions to its existing
 connection. All eight inner/outer-family/MTU combinations check exact 8 KiB
 request, lost-sequence retry, FIN and response. TCP clock steps are controlled
-at five milliseconds; loopback I/O and BoringTun timers remain real. Reservation
+at five milliseconds; fixture pacing sleeps at most once per four steps and
+yields on the other turns. Each case has a twelve-second wall deadline;
+loopback I/O and BoringTun timers remain real. Reservation
 expiry/cancellation releases endpoint sockets and preserves typed failures.
 The scoped larger-TCP fixture validates checksums/headers and cannot bypass
 ordinary UDP size checks. These are inner feedback probes, not physical outer

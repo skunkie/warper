@@ -582,6 +582,15 @@ fn wait_for_outer(socket: &UdpSocket, deadline: Instant) -> Result<()> {
     }
 }
 
+fn pace_fixture(step: u64) {
+    // Let loopback I/O progress without requiring one OS timer wake per tick.
+    if step.is_multiple_of(4) {
+        thread::sleep(Duration::from_millis(1));
+    } else {
+        thread::yield_now();
+    }
+}
+
 fn run_client(
     ipv6: bool,
     minimum_duration: Duration,

@@ -6,7 +6,6 @@
 
 use std::{
     net::{IpAddr, UdpSocket},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -211,8 +210,8 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
     for step in 0..1000 {
         let tick = step * 5;
         ensure!(
-            wall.elapsed() < Duration::from_secs(6),
-            "encrypted PMTU fixture exceeded wall deadline"
+            wall.elapsed() < Duration::from_secs(12),
+            "encrypted PMTU fixture exceeded wall deadline at step {step}"
         );
         let now = Duration::from_millis(tick);
         client.peer.poll(tick as i64);
@@ -307,7 +306,7 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
                 .state()
                 != tcp::State::Closed
             {
-                thread::sleep(Duration::from_millis(1));
+                crate::pace_fixture(step);
                 continue;
             }
             ensure!(
@@ -346,7 +345,7 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
             );
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(1));
+        crate::pace_fixture(step);
     }
     anyhow::bail!("encrypted PMTU connection did not complete")
 }

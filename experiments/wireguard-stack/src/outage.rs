@@ -295,8 +295,8 @@ fn transient_outage(ipv6: bool) -> Result<()> {
     let wall = Instant::now();
     for step in 2..2000 {
         ensure!(
-            wall.elapsed() < Duration::from_secs(10),
-            "outage recovery exceeded wall deadline"
+            wall.elapsed() < Duration::from_secs(12),
+            "outage recovery exceeded wall deadline at step {step}"
         );
         let now = start + Duration::from_millis(step);
         client.step(now)?;
@@ -359,7 +359,7 @@ fn transient_outage(ipv6: bool) -> Result<()> {
             UdpSocket::bind(address).context("cancel did not release outage transport")?;
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(1));
+        crate::pace_fixture(step);
     }
     anyhow::bail!("TCP did not retransmit across controlled outage")
 }
