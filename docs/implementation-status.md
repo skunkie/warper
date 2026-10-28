@@ -34,8 +34,10 @@ final ACKs; native macOS test results remain separate from Linux evidence
 expectations; executable production parser/CLI registration remains Phase 1.
 The isolated Linux TUN fixture now exercises kernel TCP and UDP clients through
 the combined runtime for both families and two destination/backend selections.
-It verifies original tuples, empty and unequal datagrams, TCP response after
-half-close, bounded bridge queues, explicit shutdown, and interface removal.
+It verifies original tuples, empty and unequal datagrams, concurrent 64 KiB
+TCP transfers to two destinations, data received before half-close and a
+response after it, bounded bridge queues, explicit shutdown, and interface
+removal (`target/evidence/phase-0/tun-duplex/README.md`).
 This is limited feasibility evidence, not complete host-networking acceptance;
 it does not exercise production backends, macOS, or the remaining MTU and
 failure gates. The sandboxed environment denies TUN access; the isolated run

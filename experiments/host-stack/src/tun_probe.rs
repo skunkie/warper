@@ -8,7 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::UnixDatagram,
     task::JoinSet,
 };
@@ -20,7 +20,7 @@ use crate::{
     udp_adapter::{self, Association},
 };
 
-const REQUEST: &[u8] = b"tun-fixture-request";
+const TRANSFER: usize = 65536;
 const RESPONSE: &[u8] = b"tun-fixture-response-after-fin";
 
 pub async fn run(local: &str, remote: &str) -> Result<()> {
@@ -137,15 +137,29 @@ fn validate_metadata(
     Ok(())
 }
 
-async fn handle_tcp(mut flow: AcceptedFlow) -> Result<()> {
-    let mut request = Vec::new();
-    (&mut flow.stream)
-        .take(1024)
-        .read_to_end(&mut request)
-        .await?;
-    ensure!(request == REQUEST, "TUN TCP request or half-close changed");
-    flow.stream.write_all(RESPONSE).await?;
-    flow.stream.shutdown().await?;
+async fn handle_tcp(flow: AcceptedFlow) -> Result<()> {
+    let expected = 0x60 + flow.metadata.backend.0;
+    transfer_tcp(flow.stream, expected).await
+}
+
+async fn transfer_tcp(mut stream: impl AsyncRead + AsyncWrite + Unpin, expected: u8) -> Result<()> {
+    let mut total = 0;
+    let mut buffer = [0; 1024];
+    loop {
+        let count = stream.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        total += count;
+        ensure!(
+            total <= TRANSFER && buffer[..count].iter().all(|byte| *byte == expected),
+            "TUN TCP request changed"
+        );
+        stream.write_all(&buffer[..count]).await?;
+    }
+    ensure!(total == TRANSFER, "TUN TCP request or half-close changed");
+    stream.write_all(RESPONSE).await?;
+    stream.shutdown().await?;
     Ok(())
 }
 
@@ -170,6 +184,39 @@ mod tests {
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_transfer_echoes_full_payload_and_trailer_after_fin() {
+        let (mut client, server) = tokio::io::duplex(TRANSFER * 2);
+        let handler = tokio::spawn(transfer_tcp(server, 0x61));
+        client.write_all(&vec![0x61; TRANSFER]).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        handler.await.unwrap().unwrap();
+        assert_eq!(response.len(), TRANSFER + RESPONSE.len());
+        assert!(response[..TRANSFER].iter().all(|byte| *byte == 0x61));
+        assert_eq!(&response[TRANSFER..], RESPONSE);
+    }
+
+    #[tokio::test]
+    async fn tcp_transfer_rejects_wrong_payload_premature_fin_and_excess() {
+        for payload in [vec![0x62], vec![0x61; 10], vec![0x61; TRANSFER + 1]] {
+            let (mut client, server) = tokio::io::duplex(TRANSFER * 2);
+            let handler = tokio::spawn(transfer_tcp(server, 0x61));
+            client.write_all(&payload).await.unwrap();
+            client.shutdown().await.unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).await.unwrap();
+            assert!(handler.await.unwrap().is_err());
+            if payload[0] == 0x61 {
+                assert_eq!(response.len(), payload.len().min(TRANSFER));
+                assert_eq!(response, payload[..response.len()]);
+            } else {
+                assert!(response.is_empty());
+            }
         }
     }
 

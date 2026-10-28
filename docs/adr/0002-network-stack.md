@@ -120,9 +120,10 @@ errors. `accepted_probe.rs` retains and joins controlled handler tasks.
 
 The Linux TUN fixture connects kernel TCP and UDP clients to the combined
 runtime through a bounded local datagram bridge. It checks two destinations,
-backend selection, original tuples, half-close, and empty and unequal UDP
-datagrams in both IP families, then joins the runtime and independently
-verifies interface removal. See `target/evidence/phase-0/tun/README.md` and
+backend selection, original tuples, concurrent 64 KiB TCP transfers with data
+before and after half-close, and empty and unequal UDP datagrams in both IP
+families, then joins the runtime and independently verifies interface removal.
+See `target/evidence/phase-0/tun-duplex/README.md` and
 `./scripts/verify-feasibility.sh host-stack --tun`. This is not evidence of
 native macOS utun, production backend forwarding, or complete MTU and failure
 acceptance; the stack decision remains proposed.

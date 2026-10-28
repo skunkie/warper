@@ -21,7 +21,7 @@ IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
 INTERFACE = "tun-feasibility"
 MTU = 1280
-REQUEST = b"tun-fixture-request"
+TRANSFER = 65536
 RESPONSE = b"tun-fixture-response-after-fin"
 
 
@@ -81,12 +81,28 @@ async def tcp_exchange(source, destination, offset):
         local_addr=(source, 40000 + offset),
     )
     try:
-        writer.write(REQUEST)
+        payload = bytes((0x60 + offset,)) * TRANSFER
+        writer.write(payload[:1024])
         await writer.drain()
+        if await reader.readexactly(1024) != payload[:1024]:
+            raise RuntimeError("TCP full-duplex prefix changed")
         if not writer.can_write_eof():
             raise RuntimeError("TCP half-close unavailable")
-        writer.write_eof()
-        response = await reader.readexactly(len(RESPONSE))
+
+        async def send_remaining():
+            writer.write(payload[1024:])
+            await writer.drain()
+            writer.write_eof()
+
+        async def receive_remaining():
+            if await reader.readexactly(TRANSFER - 1024) != payload[1024:]:
+                raise RuntimeError("TCP full-duplex payload changed")
+            return await reader.readexactly(len(RESPONSE))
+
+        async with asyncio.TaskGroup() as group:
+            group.create_task(send_remaining())
+            response_task = group.create_task(receive_remaining())
+        response = response_task.result()
         if response != RESPONSE or await reader.read(1) != b"":
             raise RuntimeError("TCP response or EOF changed")
     finally:
@@ -131,15 +147,19 @@ async def exchange(fd, executable, ipv6, directory):
             source = "fd66:66::2" if ipv6 else "10.66.66.2"
             destinations = ("fd66:66::91", "fd66:66::92") if ipv6 else ("10.66.66.91", "10.66.66.92")
             # Keep both UDP associations live concurrently to exercise dispatch.
-            await asyncio.gather(*(udp_exchange(source, dest, i, ipv6) for i, dest in enumerate(destinations, 1)))
-            await asyncio.gather(*(tcp_exchange(source, dest, i) for i, dest in enumerate(destinations, 1)))
+            async with asyncio.TaskGroup() as group:
+                for i, destination in enumerate(destinations, 1):
+                    group.create_task(udp_exchange(source, destination, i, ipv6))
+            async with asyncio.TaskGroup() as group:
+                for i, destination in enumerate(destinations, 1):
+                    group.create_task(tcp_exchange(source, destination, i))
             await loop.sock_sendall(bridge, b"")
             if await asyncio.wait_for(process.wait(), 2) != 0:
                 raise RuntimeError("adapter failed during shutdown")
             for task in tasks:
                 if task.done():
                     task.result()
-            print(f"PASS kernel TUN TCP/UDP metadata, half-close and boundaries: IPv6={ipv6}", flush=True)
+            print(f"PASS kernel TUN TCP/UDP metadata, 64 KiB full-duplex, half-close and boundaries: IPv6={ipv6}", flush=True)
         finally:
             primary = sys.exception()
             for task in tasks:
