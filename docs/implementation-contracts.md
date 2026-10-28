@@ -1249,14 +1249,19 @@ report and commits only its own reduction, in all four inner/outer family
 combinations. The links share a router and egress; this does not prove physical
 path verification or concurrent stack resizing. A harness-owned interruption of
 the second veth with both reservations outstanding is acknowledged before the
-probe explicitly invalidates its owner, revoking its reservation and preventing
-further sends. The first owner commits its report
+probe receives a Linux link notification and invalidates its owner, revoking
+its reservation and preventing further sends. The first owner commits its report
 while the link is down; after restoration the second replaces its socket and
 commits feedback for a distinct send. The fixture covers all family combinations
 and independently cleans up. It does not establish automatic invalidation or
-safe behavior before explicit invalidation. The experimental invalidation is
+safe behavior before notification processing. The experimental invalidation is
 idempotent and rejects sends, feedback, and reads until socket replacement;
-failed replacement remains unavailable. It does not discover path changes.
+failed replacement remains unavailable. The bounded Linux link listener uses
+a nonblocking netlink socket, validates the kernel sender and message bounds,
+and invalidates on change or uncertainty, including overrun and truncation.
+It watches one interface index and is explicitly polled only in this fixture;
+it does not monitor routes, prove a verified physical path, or provide a
+continuous production event loop.
 Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across

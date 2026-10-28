@@ -669,14 +669,17 @@ physical NICs, concurrent stack resizing, or route-change notifications.
 
 With the harness-provided private tmpfs control directory, the probe also
 keeps both reservations outstanding while the harness lowers the second router
-veth. After the harness acknowledges the interruption, the probe explicitly
-invalidates that owner, verifies it rejects new sends, and commits the
+veth. After the harness acknowledges the interruption, the probe reads a real
+Linux link notification and invalidates that owner, verifies it rejects new
+sends, and commits the
 unaffected path's report. The harness
 raises the link and restores its IPv6 address; a replacement socket sends a
 distinct datagram and commits its own new report. The harness owns link mutation
 and independently removes its links and control mount even on failure. This
-controlled sequence does not establish automatic path-change detection, safe
-behavior before invalidation, or physical-interface failure.
+controlled sequence does not establish continuous monitoring, route-change
+detection, safe behavior before the notification is processed, or physical
+interface failure. Notification loss, truncation and malformed input fail
+closed in the experimental owner.
 
 `run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links,
 interruption supervisor and kernel-peer subprocess. Ready/stop files use a

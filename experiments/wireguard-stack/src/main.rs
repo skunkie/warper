@@ -28,6 +28,8 @@ mod kernel_mtu;
 #[cfg(target_os = "linux")]
 mod kernel_peer;
 #[cfg(target_os = "linux")]
+mod link_monitor;
+#[cfg(target_os = "linux")]
 mod outer_errors;
 #[cfg(target_os = "linux")]
 mod outer_mtu_probe;

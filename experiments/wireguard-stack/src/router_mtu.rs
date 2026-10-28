@@ -627,6 +627,7 @@ fn interrupted_path(
         client.transport.remote,
         1600,
     )?;
+    let monitor = crate::link_monitor::Monitor::new("client1")?;
     let first_address = first.local_addr()?;
     let second_address = second.local_addr()?;
     for (owner, reporter, marker) in [
@@ -638,7 +639,17 @@ fn interrupted_path(
     let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
     crate::router_path::write_marker(directory, &format!("down.{suffix}.request"))?;
     wait_marker(directory, &format!("down.{suffix}.ready"))?;
-    second.invalidate_path();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if crate::link_monitor::apply(&mut second, monitor.poll())? {
+            break;
+        }
+        if Instant::now() >= deadline {
+            second.invalidate_path();
+            anyhow::bail!("link notification deadline exceeded");
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
     let error = match second.send_reserved(&[0; 64], second_reporter, wall.elapsed()) {
         Ok(()) => anyhow::bail!("invalidated path accepted a send"),
         Err(error) => error,

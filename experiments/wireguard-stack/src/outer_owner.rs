@@ -301,6 +301,79 @@ mod tests {
     }
 
     #[test]
+    fn link_notification_or_uncertainty_invalidates_only_affected_owner() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut first = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let mut second = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let first_address = first.local_addr().unwrap();
+            let second_address = second.local_addr().unwrap();
+            let original = packet(1);
+            first
+                .send_reserved(&original, reporter, Duration::ZERO)
+                .unwrap();
+            second
+                .send_reserved(&original, reporter, Duration::ZERO)
+                .unwrap();
+            let first_report = report(&first, &original, reporter);
+            let mut buffer = [0; 128];
+            for _ in 0..2 {
+                peer.recv_from(&mut buffer).unwrap();
+            }
+            assert_eq!(
+                crate::link_monitor::apply(&mut second, Ok(false)),
+                Ok(false)
+            );
+            assert_eq!(
+                second
+                    .send_reserved(&packet(2), reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<crate::outer_remote::Error>(),
+                Some(&crate::outer_remote::Error::Busy)
+            );
+            assert_eq!(
+                crate::link_monitor::apply(&mut second, Err(crate::link_monitor::Error::Lost)),
+                Err(crate::link_monitor::Error::Lost)
+            );
+            assert_eq!(
+                second
+                    .send_reserved(&packet(2), reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            assert!(first.apply(&first_report, Duration::ZERO).unwrap());
+            assert_eq!(first.outer_mtu(), 1400);
+            second.reconnect(peer.local_addr().unwrap(), 1600).unwrap();
+            let replacement_address = second.local_addr().unwrap();
+            assert_eq!(crate::link_monitor::apply(&mut second, Ok(true)), Ok(true));
+            assert_eq!(
+                second
+                    .send_reserved(&packet(2), reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            drop((first, second));
+            drop(UdpSocket::bind(first_address).unwrap());
+            drop(UdpSocket::bind(second_address).unwrap());
+            drop(UdpSocket::bind(replacement_address).unwrap());
+        }
+    }
+
+    #[test]
     fn invalidated_path_rejects_io_until_replacement_and_retires_feedback() {
         for ipv6 in [false, true] {
             let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
