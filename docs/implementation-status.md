@@ -182,8 +182,12 @@ encrypted exchange after transition in all four family combinations
 (`target/evidence/phase-0/retired-socket/README.md`). Earlier evidence showed
 that reconnecting the same socket could accept a queued datagram after returning
 to the original peer. This bounded experiment has no timer-based retirement;
-delayed traffic after owner destruction, route publication, concurrent
-transitions, and general WireGuard transport integration remain unresolved.
+delayed traffic after owner destruction remains unresolved: a loopback test
+forces reuse of the released local port and shows that a datagram from the same
+peer reaches the replacement socket in both IP families. This demonstrates
+socket-level ambiguity, not acceptance by WireGuard authentication. Route
+publication, concurrent transitions, and general WireGuard transport
+integration also remain unresolved.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.

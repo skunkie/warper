@@ -527,6 +527,38 @@ mod tests {
     }
 
     #[test]
+    fn delayed_datagram_can_reach_new_owner_after_port_reuse() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let owner = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let old_local = owner.local_addr().unwrap();
+            drop(owner);
+
+            // Force reuse instead of depending on the kernel's ephemeral port choice.
+            let replacement = Owner::new(old_local, peer.local_addr().unwrap(), 1600).unwrap();
+            peer.send_to(b"delayed old generation", old_local).unwrap();
+            let mut buffer = [0; 128];
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            loop {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "datagram was not received"
+                );
+                if let Some(length) = replacement.receive_datagram(&mut buffer).unwrap() {
+                    assert_eq!(&buffer[..length], b"delayed old generation");
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
     fn replacing_socket_discards_queued_datagram_before_returning_to_peer() {
         for ipv6 in [false, true] {
             let first = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
