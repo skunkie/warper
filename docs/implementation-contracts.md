@@ -1109,6 +1109,11 @@ Reused receiver indices, out-of-order sends, and more than eight indices on
 one socket therefore fail closed. The bounded experiment does not establish a
 production session-retirement policy, persistence across owner destruction,
 or authentication of router feedback.
+The routed kernel-peer fixture now also retains a genuine router report,
+rejects a repeated data header before send on the same socket, rejects that
+report against a later distinct header, and commits a later genuine report.
+This exercises all inner/outer IP-family combinations; it does not establish
+actual delayed report delivery or general physical-path attribution.
 Each retained kernel socket has its own bounded receive buffer. This deliberately
 bounded experiment has no retirement timer and is not a production policy;
 traffic delayed beyond owner destruction and ports used before this owner remain

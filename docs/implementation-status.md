@@ -209,6 +209,11 @@ controlled routed kernel-peer workload still passes in all four inner/outer
 family combinations (`target/evidence/phase-0/owner-counters/README.md`).
 Production session retirement, path attribution, and state across owner
 destruction remain unresolved.
+The routed kernel-peer fixture additionally verifies same-socket counter
+rejection and stale-report rejection before committing a distinct later
+report in all four family combinations
+(`target/evidence/phase-0/owner-same-socket/README.md`). The old report is
+deliberately held after receipt; delayed network delivery remains unverified.
 The owner now replaces its socket during peer transitions and retains at most
 eight retired sockets until owner destruction. This prevents local port reuse
 within the owner lifetime, changes the local port in both families, and returns

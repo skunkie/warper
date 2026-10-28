@@ -20,7 +20,7 @@ const MAX_RETIRED_SOCKETS: usize = 8;
 const MAX_SESSIONS_PER_SOCKET: usize = 8;
 
 #[derive(Debug, Eq, PartialEq)]
-enum Error {
+pub(super) enum Error {
     InvalidPeer,
     InvalidPacket,
     RetiredSocketLimit,

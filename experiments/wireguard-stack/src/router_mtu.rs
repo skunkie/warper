@@ -283,6 +283,68 @@ fn exchange(
         owner.advance(wall.elapsed())?;
         thread::sleep(Duration::from_millis(1));
     };
+    owner.cancel_reservation();
+    let error = match owner.send_reserved(packet, reporter, wall.elapsed()) {
+        Ok(()) => anyhow::bail!("repeated encrypted header was sent"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_owner::Error>()
+            == Some(&crate::outer_owner::Error::NonIncreasingCounter),
+        "repeated encrypted header was not rejected"
+    );
+    send_udp(
+        client,
+        destination,
+        &vec![0x65; if ipv6 { 1352 } else { 1372 }],
+    )?;
+    client.peer.poll(i64::try_from(wall.elapsed().as_millis())?);
+    ensure!(
+        client.peer.device.outgoing.len() == 1,
+        "expected one distinct later datagram"
+    );
+    let later = client
+        .peer
+        .device
+        .outgoing
+        .pop_front()
+        .ok_or_else(|| anyhow::anyhow!("missing distinct later packet"))?;
+    ensure!(later.len() == 1400);
+    let result = client.transport.tunnel.encapsulate(&later, &mut encrypted);
+    let TunnResult::WriteToNetwork(later) = result else {
+        anyhow::bail!("distinct later encryption was not immediately ready");
+    };
+    ensure!(
+        later[..16] != old_report.prefix,
+        "distinct data reused the retired header"
+    );
+    owner.send_reserved(later, reporter, wall.elapsed())?;
+    let error = match owner.apply(&old_report, wall.elapsed()) {
+        Ok(_) => anyhow::bail!("retired feedback matched a later same-socket send"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_remote::Error>()
+            == Some(&crate::outer_remote::Error::Unmatched),
+        "retired feedback matched a later same-socket send"
+    );
+    ensure!(
+        owner.outer_mtu() == 1600,
+        "retired feedback changed the same-socket budget"
+    );
+    loop {
+        if let Some(received) = owner.receive()? {
+            ensure!(
+                received.record.mtu == 1400,
+                "unexpected later remote path MTU"
+            );
+            ensure!(owner.apply(&received, wall.elapsed())?);
+            break;
+        }
+        owner.advance(wall.elapsed())?;
+        thread::sleep(Duration::from_millis(1));
+    }
+    ensure!(owner.outer_mtu() == 1400, "later feedback did not commit");
     let remote = client.transport.remote;
     let mut alternate = remote;
     alternate.set_port(
@@ -396,7 +458,7 @@ fn exchange(
     receive_udp(client, destination, &safe, wall)?;
     ensure!(queue.read()?.is_none() && client.transport.staged_packets == 0);
     println!(
-        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, retired_feedback_rejected=true, wrong_socket_rejected=true, peer_transition=true, owned_exchange=true, failed_payload_replayed=false",
+        "PASS remote router MTU: inner_ipv6={ipv6}, outer_ipv6={}, reported_mtu=1400, quoted_header_bytes={}, safe_bytes={}, same_socket_counter_rejected=true, same_socket_stale_rejected=true, retired_feedback_rejected=true, wrong_socket_rejected=true, peer_transition=true, owned_exchange=true, failed_payload_replayed=false",
         client.transport.remote.is_ipv6(),
         quoted_len.min(16),
         safe.len()
