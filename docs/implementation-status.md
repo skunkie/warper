@@ -39,6 +39,12 @@ TUN MTU in both directions, concurrent 64 KiB
 TCP transfers to two destinations, data received before half-close and a
 response after it, bounded bridge queues, explicit shutdown, and interface
 removal (`target/evidence/phase-0/tun-boundary/README.md`).
+The Linux fixture also forces kernel fragmentation of datagrams one byte above
+the 1280-byte reassembly limit. Both fragment sets reach the bridge, no reply
+arrives within the 200 ms observation, and a later supported datagram succeeds
+for both destinations and IP families
+(`target/evidence/phase-0/tun-oversized/README.md`). This is
+bounded rejection evidence, not support for larger datagrams.
 This is limited feasibility evidence, not complete host-networking acceptance;
 it does not exercise production backends, macOS, or the remaining MTU and
 failure gates. The sandboxed environment denies TUN access; the isolated run

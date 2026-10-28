@@ -641,6 +641,14 @@ Completed packets retain source/destination/protocol, have normalized IP
 length/fragment headers, and undergo the existing transport checksum and
 policy validation. This does not implement PMTU or outgoing fragmentation.
 
+The isolated Linux TUN fixture also forces kernel fragmentation of UDP
+datagrams one byte over the 1280-byte reassembly limit. It observes initial
+and final fragments for two destinations in both families, receives no reply
+within 200 ms for those datagrams, and verifies subsequent supported datagrams
+succeed.
+This tests rejection and continued operation, not forwarding or reassembly of
+datagrams above the limit.
+
 The shared implementation is `experiments/reassembly.rs`; host adapter tests
 and probes remain under `experiments/host-stack/src/`. Controlled packet
 splitting lives in `experiments/fragment_fixture.rs`. Concrete entry points are:

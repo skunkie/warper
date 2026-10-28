@@ -19,6 +19,10 @@ import tempfile
 TUNSETIFF = 0x400454CA
 IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
+# Linux UAPI values; force kernel fragmentation for this isolated fixture.
+IP_MTU_DISCOVER = 10
+IPV6_MTU_DISCOVER = 23
+PMTUDISC_DONT = 0
 INTERFACE = "tun-feasibility"
 MTU = 1280
 TRANSFER = 65536
@@ -65,7 +69,25 @@ def boundary_udp_flow(packet, ipv6):
     return source, destination
 
 
-async def from_tun(fd, bridge, ipv6=False, boundary=None):
+def udp_fragment(packet, ipv6):
+    if ipv6:
+        if len(packet) < 48 or packet[0] >> 4 != 6 or packet[6] != 44 or packet[40] != socket.IPPROTO_UDP:
+            return None
+        field = struct.unpack_from("!H", packet, 42)[0]
+        identity = struct.unpack_from("!I", packet, 44)[0]
+        destination = socket.inet_ntop(socket.AF_INET6, packet[24:40])
+        return destination, identity, field >> 3, bool(field & 1)
+    if len(packet) < 20 or packet[0] != 0x45 or packet[9] != socket.IPPROTO_UDP:
+        return None
+    field = struct.unpack_from("!H", packet, 6)[0]
+    if not field & 0x3FFF:
+        return None
+    identity = struct.unpack_from("!H", packet, 4)[0]
+    destination = socket.inet_ntop(socket.AF_INET, packet[16:20])
+    return destination, identity, field & 0x1FFF, bool(field & 0x2000)
+
+
+async def from_tun(fd, bridge, ipv6=False, boundary=None, fragments=None):
     loop = asyncio.get_running_loop()
     while True:
         await ready(fd)
@@ -79,6 +101,17 @@ async def from_tun(fd, bridge, ipv6=False, boundary=None):
             flow = boundary_udp_flow(packet, ipv6)
             if flow is not None:
                 boundary.add(flow)
+        if fragments is not None:
+            fragment = udp_fragment(packet, ipv6)
+            if fragment is not None:
+                destination, identity, offset, more = fragment
+                key = (destination, identity)
+                if key not in fragments and len(fragments) >= 4:
+                    raise RuntimeError("fragment observation capacity exceeded")
+                observed = fragments.setdefault(key, set())
+                if (offset, more) not in observed and len(observed) >= 4:
+                    raise RuntimeError("fragment range observation capacity exceeded")
+                observed.add((offset, more))
         await loop.sock_sendall(bridge, packet)
 
 
@@ -145,6 +178,15 @@ async def udp_exchange(source, destination, offset, ipv6):
         client.bind((source, 41000 + offset))
         target = (destination, 9000 if offset == 1 else 9100)
         maximum = MTU - (48 if ipv6 else 28)
+        client.setsockopt(socket.IPPROTO_IPV6 if ipv6 else socket.IPPROTO_IP,
+                          IPV6_MTU_DISCOVER if ipv6 else IP_MTU_DISCOVER, PMTUDISC_DONT)
+        await loop.sock_sendto(client, b"\x7f" * (maximum + 1), target)
+        try:
+            await asyncio.wait_for(loop.sock_recvfrom(client, MTU + 1), 0.2)
+        except TimeoutError:
+            pass
+        else:
+            raise RuntimeError("oversized fragmented UDP received a reply")
         for payload in (b"", b"\x31", b"\x72" * 257, b"\x53" * maximum):
             await loop.sock_sendto(client, payload, target)
             actual, sender = await loop.sock_recvfrom(client, MTU + 1)
@@ -171,8 +213,8 @@ async def exchange(fd, executable, ipv6, directory):
             else:
                 raise RuntimeError("adapter bridge setup deadline exceeded")
             bridge.connect(remote)
-            ingress_boundary, egress_boundary = set(), set()
-            tasks = [asyncio.create_task(from_tun(fd, bridge, ipv6, ingress_boundary)),
+            ingress_boundary, egress_boundary, fragments = set(), set(), {}
+            tasks = [asyncio.create_task(from_tun(fd, bridge, ipv6, ingress_boundary, fragments)),
                      asyncio.create_task(to_tun(fd, bridge, ipv6, egress_boundary))]
             source = "fd66:66::2" if ipv6 else "10.66.66.2"
             destinations = ("fd66:66::91", "fd66:66::92") if ipv6 else ("10.66.66.91", "10.66.66.92")
@@ -185,13 +227,18 @@ async def exchange(fd, executable, ipv6, directory):
                     group.create_task(tcp_exchange(source, destination, i))
             if ingress_boundary != {(41001, 9000), (41002, 9100)} or egress_boundary != {(9000, 41001), (9100, 41002)}:
                 raise RuntimeError("maximum UDP datagrams did not cross the TUN at its MTU")
+            for destination in destinations:
+                if not any(address == destination and (0, True) in observed
+                           and any(offset > 0 and not more for offset, more in observed)
+                           for (address, _), observed in fragments.items()):
+                    raise RuntimeError("oversized UDP did not produce a complete kernel fragment set")
             await loop.sock_sendall(bridge, b"")
             if await asyncio.wait_for(process.wait(), 2) != 0:
                 raise RuntimeError("adapter failed during shutdown")
             for task in tasks:
                 if task.done():
                     task.result()
-            print(f"PASS kernel TUN metadata, 64 KiB TCP full-duplex, half-close and 1280-byte UDP: IPv6={ipv6}", flush=True)
+            print(f"PASS kernel TUN 64 KiB TCP, 1280-byte UDP and oversized UDP fragment rejection: IPv6={ipv6}", flush=True)
         finally:
             primary = sys.exception()
             for task in tasks:
