@@ -1412,34 +1412,16 @@ mod tests {
             let mac_offset = corrupt.len() - 32;
             corrupt[mac_offset] ^= 1;
             let server_address = server.transport.socket.local_addr().unwrap();
-            assert_eq!(
-                client
-                    .transport
-                    .socket
-                    .send_to(&corrupt, server_address)
-                    .unwrap(),
-                corrupt.len()
-            );
-            wait_for_outer(
-                &server.transport.socket,
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-            server
-                .transport
-                .pump(&mut server.peer, Duration::ZERO)
-                .unwrap();
-            assert_eq!(
-                client
-                    .transport
-                    .socket
-                    .recv_from(&mut output)
-                    .unwrap_err()
-                    .kind(),
-                io::ErrorKind::WouldBlock
-            );
-            assert!(!server.peer.device.has_ingress());
-
+            for _ in 0..PACKET_CAPACITY {
+                assert_eq!(
+                    client
+                        .transport
+                        .socket
+                        .send_to(&corrupt, server_address)
+                        .unwrap(),
+                    corrupt.len()
+                );
+            }
             assert_eq!(
                 client
                     .transport
@@ -1457,6 +1439,28 @@ mod tests {
                 .transport
                 .pump(&mut server.peer, Duration::ZERO)
                 .unwrap();
+            assert_eq!(server.transport.received_outer, PACKET_CAPACITY);
+            assert_eq!(
+                client
+                    .transport
+                    .socket
+                    .recv_from(&mut output)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(!server.peer.device.has_ingress());
+
+            wait_for_outer(
+                &server.transport.socket,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            server
+                .transport
+                .pump(&mut server.peer, Duration::ZERO)
+                .unwrap();
+            assert_eq!(server.transport.received_outer, PACKET_CAPACITY + 1);
             wait_for_outer(
                 &client.transport.socket,
                 Instant::now() + Duration::from_secs(2),

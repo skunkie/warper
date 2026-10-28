@@ -241,9 +241,10 @@ The experimental UDP transport now discards BoringTun's stale-initiation
 timestamp error, completes the original handshake, and receives encrypted
 inner data in both outer IP families. Other malformed input still returns an
 error; dropping the endpoint releases its socket. A damaged initiation MAC is
-also discarded without a response; the original valid initiation subsequently
-receives a response in both outer families. Production policy for other
-rejected datagrams and sustained hostile traffic remains undecided.
+also discarded without a response. A finite burst filling the per-pump packet
+limit defers a queued valid initiation to the next pump, which responds in both
+outer families. This does not establish fairness under sustained hostile traffic.
+Production policy for other rejected datagrams remains undecided.
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
