@@ -134,6 +134,7 @@ rustup show
 cargo fetch --locked
 cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
+./scripts/verify-feasibility.sh host-stack --tun
 ./scripts/verify-feasibility.sh host-stack --mtu-check
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
@@ -147,7 +148,10 @@ Tests require permission to bind loopback UDP sockets. On Linux, the harness
 also requires Bash, Git, coreutils (`timeout`), util-linux (`unshare`),
 iproute2, Python 3, and enabled unprivileged user/network/mount namespaces.
 It builds before isolation and creates disposable namespaces. Packet-only
-mode enables only loopback. Kernel-peer mode also requires a kernel with
+mode enables only loopback. The TUN scope requires an accessible
+`/dev/net/tun` and permission to create an interface in the disposable user
+and network namespaces. Its nonpersistent interface is closed and its removal
+verified independently of the Rust runtime. Kernel-peer mode also requires a kernel with
 WireGuard support and creates an owned `wg-feasibility` interface entirely
 inside that namespace. The helper never touches resolver settings, the host
 bus, or persistent host state. The timeout supervises the process group;
@@ -394,18 +398,16 @@ The required gate entry points are also available:
 
 They run the packet experiment but **return nonzero while the full gate is
 incomplete**, even if the packet or kernel-peer experiment passes. Host-facing
-TUN/utun traffic, distinct SSH/SOCKS backend instances, production contracts,
+complete host TUN/utun acceptance, distinct SSH/SOCKS backend instances, production contracts,
 backend outage/crash cleanup, and MTU/ICMP acceptance are still
 unimplemented or unverified. Kernel tests will require a disposable
 TUN-capable Linux environment; native macOS gates require a separate runner.
 The [network-stack ADR](adr/0002-network-stack.md) remains proposed.
 
-The current development environment exposes a kernel TUN driver but has
-no `/dev/net/tun` and denies creation of a temporary device node even in a
-private tmpfs/user/network/mount namespace. Record the denied capability as
-unverified TUN acceptance; do not change the live host to work around it.
-Continue independent peer/adapter work while arranging a disposable
-TUN-capable environment for that gate.
+The sandbox may deny access to `/dev/net/tun`; an approved unsandboxed run
+still uses disposable namespaces and must never change the live host to work
+around missing device access. Linux TUN evidence does not establish native
+macOS utun behavior or the complete host acceptance gate.
 
 Each harness run writes environment/revision information, the lockfile,
 build/probe output, exit status, and explicit unrun gates into a unique

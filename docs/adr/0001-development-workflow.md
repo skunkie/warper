@@ -53,7 +53,9 @@ and their dependencies retain heapless 0.8 alongside 0.9. Bitflags 1 is
 used by the stack candidates alongside bitflags 2 in Linux socket tooling.
 Syn 1 and 2 remain in procedural macro dependency chains alongside syn 3:
 the former through Linux WireGuard peer tooling, the latter through BoringTun
-and the wrapper. These exceptions do not exclude whole dependency trees or
+and the wrapper. Windows-sys 0.52 remains in BoringTun and rustix dependency
+metadata alongside 0.61 from Tokio's networking support; Windows is not a
+supported target. These exceptions do not exclude whole dependency trees or
 change advisory, license, or source checks. Reconsider each exception when its
 dependency chain or the stack comparison changes, and remove it when no longer
 needed.

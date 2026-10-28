@@ -118,6 +118,15 @@ them, independently of reusable socket slots. Tests cover queue rollback,
 both half-close orders, slow readers, and typed timeout/reset/cancellation
 errors. `accepted_probe.rs` retains and joins controlled handler tasks.
 
+The Linux TUN fixture connects kernel TCP and UDP clients to the combined
+runtime through a bounded local datagram bridge. It checks two destinations,
+backend selection, original tuples, half-close, and empty and unequal UDP
+datagrams in both IP families, then joins the runtime and independently
+verifies interface removal. See `target/evidence/phase-0/tun/README.md` and
+`./scripts/verify-feasibility.sh host-stack --tun`. This is not evidence of
+native macOS utun, production backend forwarding, or complete MTU and failure
+acceptance; the stack decision remains proposed.
+
 This is an experimental TCP boundary, not a selected production adapter.
 Production scheduling, aggregate integration stress, and kernel TUN traffic
 remain unproven. Backend indices

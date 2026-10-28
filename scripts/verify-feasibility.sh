@@ -3,17 +3,17 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Packet and independent kernel-peer probes; full Phase 0 gates remain open.
+# Packet, Linux TUN, and independent kernel-peer probes; full gates remain open.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--kernel-peer|--mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--kernel-peer|--mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
@@ -21,21 +21,22 @@ if [[ "$scope" == --kernel-peer && "$probe" != wireguard-stack ]]; then
     echo "--kernel-peer requires wireguard-stack" >&2
     exit 2
 fi
-if [[ "$scope" == --mtu-check && "$probe" != host-stack ]]; then
-    echo "--mtu-check requires host-stack" >&2
+if [[ ( "$scope" == --mtu-check || "$scope" == --tun ) && "$probe" != host-stack ]]; then
+    echo "$scope requires host-stack" >&2
     exit 2
 fi
 if [[ ( "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check || "$scope" == --router-mtu-check ) && "$probe" != wireguard-stack ]]; then
     echo "$scope requires wireguard-stack" >&2
     exit 2
 fi
-if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate || "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check || "$scope" == --router-mtu-check ) ]]; then
+if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate || "$scope" == --tun || "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check || "$scope" == --router-mtu-check ) ]]; then
     echo "--rekey requires wireguard-stack with a packet or kernel probe scope" >&2
     exit 2
 fi
 probe_arguments=()
 isolation_mode=packet
 if [[ "$scope" == --mtu-check ]]; then probe_arguments+=(--mtu-check); fi
+if [[ "$scope" == --tun ]]; then isolation_mode=tun; fi
 if [[ "$scope" == --outer-mtu-check ]]; then
     probe_arguments+=(--outer-mtu-check)
     isolation_mode=outer
@@ -59,6 +60,7 @@ if [[ "$scope" == --router-mtu-check ]]; then
     done
 fi
 timeout_seconds=20
+if [[ "$scope" == --tun ]]; then timeout_seconds=35; fi
 if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=50; fi
 if [[ "$rekey" == --rekey ]]; then
     probe_arguments+=(--rekey)
@@ -119,7 +121,12 @@ cat "$run_directory/probe.log"
         echo "NOT RUN remote router MTU discovery or concurrent physical-path TCP sizing"
     fi
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
-    echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
+    if [[ "$scope" == --tun ]]; then
+        echo "kernel_tun_probe_exit=$status"
+        echo "NOT RUN native macOS utun or distinct SSH/SOCKS protocol backend instances"
+    else
+        echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
+    fi
     if [[ "$scope" == --router-mtu-check ]]; then
         echo "router_mtu_probe_exit=$status"
         echo "NOT RUN short-quote support or general physical-path policy"

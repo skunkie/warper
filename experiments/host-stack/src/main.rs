@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Packet-level candidate checks; these do not establish kernel TUN acceptance.
+//! Host-stack candidate checks and an isolated Linux TUN bridge.
 
 mod accepted_probe;
 mod adapter;
@@ -27,6 +27,8 @@ mod reassembly;
 mod reassembly_tests;
 mod runtime;
 mod runtime_probe;
+#[cfg(target_os = "linux")]
+mod tun_probe;
 mod udp_adapter;
 mod udp_probe;
 
@@ -50,6 +52,10 @@ async fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments == ["--mtu-check"] {
         return mtu_probe::run_probe();
+    }
+    #[cfg(target_os = "linux")]
+    if arguments.len() == 3 && arguments[0] == "--tun-bridge" {
+        return tun_probe::run(&arguments[1], &arguments[2]).await;
     }
     if arguments.is_empty() {
         for ipv6 in [false, true] {

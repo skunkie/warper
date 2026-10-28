@@ -16,7 +16,7 @@ gates remain open.
 | Phase | Status | Evidence / next unmet gate |
 | --- | --- | --- |
 | Development infrastructure | Available | `scripts/check.sh` runs licensing, workflow/composite lint, shell lint, and harness tests; CI enables Rust jobs once workspace prerequisites exist |
-| 0: Baseline and feasibility | In progress | Isolated probes under `experiments/` produce evidence under `target/evidence/phase-0/`. TCP/UDP candidates preserve dynamic/shared destinations, frozen metadata, bounded retained buffers/messages, expiry, and cancellation. A combined wake-driven runtime now runs both through bounded packet channels, library/lifecycle deadlines, rotating output priority, blocked-output expiry, explicit shutdown, and joined failure cleanup; evidence is indexed in `target/evidence/phase-0/runtime/README.md`. UDP admission evidence remains in `target/evidence/phase-0/udp/README.md`. Active sockets work through BoringTun and an independent Linux kernel WireGuard peer, including both inner families, empty datagrams, FIN, handshake-loss retry, and completed rekey (`target/evidence/phase-0/kernel/README.md`). Wrapper comparison remains rejected. Next: finalized initial production contracts, kernel TUN and outage/MTU/ICMP evidence |
+| 0: Baseline and feasibility | In progress | Isolated probes under `experiments/` produce evidence under `target/evidence/phase-0/`. The combined runtime exchanges Linux kernel TUN TCP/UDP traffic in both IP families through two destinations (`target/evidence/phase-0/tun/README.md`). Active sockets work through BoringTun and an independent Linux kernel WireGuard peer, including both inner families, empty datagrams, FIN, handshake-loss retry, and completed rekey (`target/evidence/phase-0/kernel/README.md`). Wrapper comparison remains rejected. Next: finalized initial production contracts and remaining outage/MTU/ICMP evidence |
 | Contract gate before production dependencies | Pending Phase 0 | Complete `implementation-contracts.md` with selected APIs and source links |
 | 1: Headless Linux service slice | Not started | Depends on feasibility, initial contracts, authorized control, and client-independent lifecycle |
 | 2: Linux DNS and routing | Not started | Depends on fixed-CIDR lifecycle; NET-10/NET-11 cover grace/endpoint publication, and NET-12 requires global retained-state admission/renewal/exhaustion evidence |
@@ -32,11 +32,14 @@ final ACKs; native macOS test results remain separate from Linux evidence
 (`target/evidence/phase-0/macos-readiness/README.md`).
 `tests/fixtures/configuration/cases.toml` captures parser and capability
 expectations; executable production parser/CLI registration remains Phase 1.
-TUN device provisioning is denied here even inside disposable namespaces;
-its kernel gate remains unverified. This does not block independent
-peer and adapter experiments. Linux kernel WireGuard interface creation and
-retirement work in disposable namespaces independently of the unavailable
-TUN device; this does not establish host TUN interception.
+The isolated Linux TUN fixture now exercises kernel TCP and UDP clients through
+the combined runtime for both families and two destination/backend selections.
+It verifies original tuples, empty and unequal datagrams, TCP response after
+half-close, bounded bridge queues, explicit shutdown, and interface removal.
+This is limited feasibility evidence, not complete host-networking acceptance;
+it does not exercise production backends, macOS, or the remaining MTU and
+failure gates. The sandboxed environment denies TUN access; the isolated run
+used the approved unsandboxed execution environment.
 
 WireGuard packet-level failure probes now cover bounded handshake staging,
 transient TCP/UDP loss, setup/application-response deadlines, cancellation,

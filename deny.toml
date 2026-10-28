@@ -33,6 +33,7 @@ skip = [
     { crate = "smoltcp@0.12.0", reason = "wrapper candidate comparison" },
     { crate = "syn@1.0.109", reason = "Linux WireGuard peer tooling macros" },
     { crate = "syn@2.0.119", reason = "BoringTun and wrapper dependency macros" },
+    { crate = "windows-sys@0.52.0", reason = "WireGuard experiment's transitive platform dependencies" },
 ]
 
 [sources]

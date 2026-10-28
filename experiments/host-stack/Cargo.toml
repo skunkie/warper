@@ -15,7 +15,7 @@ anyhow.workspace = true
 futures.workspace = true
 netstack-smoltcp.workspace = true
 smoltcp.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

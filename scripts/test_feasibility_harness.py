@@ -22,6 +22,9 @@ class FeasibilityHarnessTests(unittest.TestCase):
         shutil.copyfile(Path(__file__).with_name("verify-feasibility.sh"), harness)
         shutil.copyfile(Path(__file__).with_name("run-feasibility-isolated.sh"), root / "scripts/run-feasibility-isolated.sh")
         shutil.copyfile(Path(__file__).with_name("run-router-mtu-isolated.sh"), root / "scripts/run-router-mtu-isolated.sh")
+        (root / "scripts/tun_feasibility.py").write_text(
+            f'import sys\nprint("fixture-tun", *sys.argv[1:])\nsys.exit({probe_exit})\n'
+        )
         (root / "Cargo.lock").write_text("# synthetic lockfile\n")
         tools = root / "tools"
         tools.mkdir()
@@ -72,6 +75,24 @@ class FeasibilityHarnessTests(unittest.TestCase):
         self.assertIn("fixture-probe --mtu-check", (evidence / "probe.log").read_text())
         self.assertIn("mtu_probe_exit=1", (evidence / "result.txt").read_text())
         self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_tun_scope_records_success_and_failure_without_claiming_other_gates(self):
+        for probe_exit in (0, 7):
+            result, evidence = self.run_harness(probe="host-stack", scope="--tun", probe_exit=probe_exit)
+            self.assertEqual(result.returncode, probe_exit, result.stderr)
+            self.assertIn("fixture-tun", (evidence / "probe.log").read_text())
+            outcome = (evidence / "result.txt").read_text()
+            self.assertIn(f"kernel_tun_probe_exit={probe_exit}", outcome)
+            self.assertIn("NOT RUN native macOS utun", outcome)
+            self.assertEqual("PASS tun" in outcome, probe_exit == 0)
+
+    def test_tun_scope_rejects_wrong_probe_and_initial_namespace(self):
+        harness = str(Path(__file__).with_name("verify-feasibility.sh"))
+        result = subprocess.run(["bash", harness, "wireguard-stack", "--tun"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        result, evidence = self.run_harness(probe="host-stack", scope="--tun", mapping="0 0 4294967295")
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((evidence.parents[3] / "ip-commands.log").exists())
 
     def test_mtu_scope_rejects_wireguard_before_build_or_network_setup(self):
         result = subprocess.run(["bash", str(Path(__file__).with_name("verify-feasibility.sh")), "wireguard-stack", "--mtu-check"], capture_output=True, text=True, timeout=10)
