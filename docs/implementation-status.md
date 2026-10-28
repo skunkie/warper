@@ -226,11 +226,11 @@ four inner/outer family combinations
 a router and egress;
 independent physical paths and production route verification remain open.
 The router fixture also lowers one owned veth with both reservations pending,
-explicitly cancels its reservation, and commits the unaffected owner's report.
+explicitly invalidates that owner, and commits the unaffected owner's report.
 After the harness restores the link, a replacement socket completes a distinct
 operation in all four family combinations
-(`target/evidence/phase-0/interrupted-routed-path/README.md`). Automatic change
-detection and the interval before explicit cancellation remain unverified.
+(`target/evidence/phase-0/invalidated-routed-path/README.md`). Automatic change
+detection and the interval before explicit invalidation remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter
 rejection and stale-report rejection before committing a distinct later
 report in all four family combinations

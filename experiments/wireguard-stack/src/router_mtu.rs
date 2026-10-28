@@ -638,7 +638,16 @@ fn interrupted_path(
     let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
     crate::router_path::write_marker(directory, &format!("down.{suffix}.request"))?;
     wait_marker(directory, &format!("down.{suffix}.ready"))?;
-    second.cancel_reservation();
+    second.invalidate_path();
+    let error = match second.send_reserved(&[0; 64], second_reporter, wall.elapsed()) {
+        Ok(()) => anyhow::bail!("invalidated path accepted a send"),
+        Err(error) => error,
+    };
+    ensure!(
+        error.downcast_ref::<crate::outer_owner::Error>()
+            == Some(&crate::outer_owner::Error::Unavailable),
+        "invalidated path did not reject the send"
+    );
     let report = loop {
         if let Some(report) = first.receive()? {
             break report;

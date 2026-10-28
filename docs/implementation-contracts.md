@@ -1249,11 +1249,15 @@ report and commits only its own reduction, in all four inner/outer family
 combinations. The links share a router and egress; this does not prove physical
 path verification or concurrent stack resizing. A harness-owned interruption of
 the second veth with both reservations outstanding is acknowledged before the
-probe explicitly cancels its reservation. The first owner commits its report
+probe explicitly invalidates its owner, revoking its reservation and preventing
+further sends. The first owner commits its report
 while the link is down; after restoration the second replaces its socket and
 commits feedback for a distinct send. The fixture covers all family combinations
 and independently cleans up. It does not establish automatic invalidation or
-safe behavior before the explicit cancellation. Required further evidence includes
+safe behavior before explicit invalidation. The experimental invalidation is
+idempotent and rejects sends, feedback, and reads until socket replacement;
+failed replacement remains unavailable. It does not discover path changes.
+Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.

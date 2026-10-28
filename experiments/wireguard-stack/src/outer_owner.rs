@@ -181,6 +181,11 @@ impl Owner {
         self.reservation.cancel();
     }
 
+    pub(super) fn invalidate_path(&mut self) {
+        self.reservation.cancel();
+        self.queue = None;
+    }
+
     pub(super) fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }
@@ -292,6 +297,84 @@ mod tests {
             flags: MsgFlags::MSG_ERRQUEUE,
             prefix: packet[..16].try_into().unwrap(),
             quoted_len: 16,
+        }
+    }
+
+    #[test]
+    fn invalidated_path_rejects_io_until_replacement_and_retires_feedback() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            let reporter: IpAddr = if ipv6 { "::1" } else { "127.0.0.1" }.parse().unwrap();
+            let mut owner = Owner::new(
+                crate::loopback_address(ipv6),
+                peer.local_addr().unwrap(),
+                1600,
+            )
+            .unwrap();
+            let initial_address = owner.local_addr().unwrap();
+            let original = packet(1);
+            owner
+                .send_reserved(&original, reporter, Duration::ZERO)
+                .unwrap();
+            let stale = report(&owner, &original, reporter);
+            let mut buffer = [0; 128];
+            let (length, _) = peer.recv_from(&mut buffer).unwrap();
+            assert_eq!(&buffer[..length], &original);
+
+            owner.invalidate_path();
+            owner.invalidate_path();
+            for error in [
+                owner
+                    .send_reserved(&packet(2), reporter, Duration::ZERO)
+                    .unwrap_err(),
+                owner.apply(&stale, Duration::ZERO).unwrap_err(),
+                owner.receive_datagram(&mut buffer).unwrap_err(),
+            ] {
+                assert_eq!(error.downcast_ref::<Error>(), Some(&Error::Unavailable));
+            }
+            assert!(
+                matches!(owner.receive(), Err(error) if error.downcast_ref::<Error>() == Some(&Error::Unavailable))
+            );
+            assert_eq!(
+                UdpSocket::bind(initial_address).unwrap_err().kind(),
+                io::ErrorKind::AddrInUse
+            );
+            let failure = owner
+                .reconnect_with(peer.local_addr().unwrap(), 1600, |_, _| {
+                    Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+                })
+                .unwrap_err();
+            assert_eq!(
+                failure.downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::ConnectionRefused
+            );
+            assert!(
+                matches!(owner.receive(), Err(error) if error.downcast_ref::<Error>() == Some(&Error::Unavailable))
+            );
+            owner.reconnect(peer.local_addr().unwrap(), 1600).unwrap();
+            let replacement_address = owner.local_addr().unwrap();
+            assert_ne!(initial_address, replacement_address);
+            let next = packet(2);
+            owner
+                .send_reserved(&next, reporter, Duration::ZERO)
+                .unwrap();
+            let (length, _) = peer.recv_from(&mut buffer).unwrap();
+            assert_eq!(&buffer[..length], &next);
+            assert_eq!(
+                owner
+                    .apply(&stale, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<crate::outer_remote::Error>(),
+                Some(&crate::outer_remote::Error::Unmatched)
+            );
+            assert_eq!(owner.outer_mtu(), 1600);
+            let current = report(&owner, &next, reporter);
+            assert!(owner.apply(&current, Duration::ZERO).unwrap());
+            assert_eq!(owner.outer_mtu(), 1400);
+            drop(owner);
+            drop(UdpSocket::bind(initial_address).unwrap());
+            drop(UdpSocket::bind(replacement_address).unwrap());
         }
     }
 
