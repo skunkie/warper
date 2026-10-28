@@ -649,6 +649,14 @@ succeed.
 This tests rejection and continued operation, not forwarding or reassembly of
 datagrams above the limit.
 
+A separate Linux TUN scope sets an IPv4 route MTU of 1000 bytes while retaining
+the interface's 1280-byte MTU. It observes kernel-generated fragments of a
+1252-byte UDP payload for each of two destinations, then verifies the complete
+payload, original tuple, backend selection, and 1280-byte unfragmented reply.
+The oversized-rejection sequence runs separately because discarded assemblies
+retain their two slots until expiry. Native IPv6 fragmentation of an in-limit
+datagram and production route handling remain unverified.
+
 The shared implementation is `experiments/reassembly.rs`; host adapter tests
 and probes remain under `experiments/host-stack/src/`. Controlled packet
 splitting lives in `experiments/fragment_fixture.rs`. Concrete entry points are:

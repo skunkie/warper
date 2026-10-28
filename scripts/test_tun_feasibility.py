@@ -119,6 +119,32 @@ class TunBridgeTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(4):
                 self.assertEqual(len(await asyncio.wait_for(loop.sock_recv(adapter, 1281), 1)), 20)
 
+    async def test_fragment_header_observation_rejects_conflicts_and_short_input(self):
+        for short in (False, True):
+            tun, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            bridge, adapter = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            for endpoint in (tun, peer, bridge, adapter):
+                self.addCleanup(endpoint.close)
+                endpoint.setblocking(False)
+            headers = {}
+            task = asyncio.create_task(tun_feasibility.from_tun(tun.fileno(), bridge, fragments={}, fragment_headers=headers))
+            packet = bytearray(28)
+            packet[0] = 0x45
+            packet[9] = socket.IPPROTO_UDP
+            packet[16:20] = socket.inet_pton(socket.AF_INET, "10.66.66.91")
+            struct.pack_into("!H", packet, 4, 42)
+            struct.pack_into("!H", packet, 6, 0x2000)
+            struct.pack_into("!HHH", packet, 20, 41001, 9000, 1260)
+            loop = asyncio.get_running_loop()
+            if not short:
+                await loop.sock_sendall(peer, packet)
+                self.assertEqual(await asyncio.wait_for(loop.sock_recv(adapter, 1281), 1), packet)
+                self.assertEqual(headers, {("10.66.66.91", 42): (41001, 9000, 1260)})
+                struct.pack_into("!H", packet, 22, 9100)
+            await loop.sock_sendall(peer, packet[:20] if short else packet)
+            with self.assertRaisesRegex(RuntimeError, "first fragment|conflicting first"):
+                await asyncio.wait_for(task, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

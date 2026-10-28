@@ -45,6 +45,11 @@ arrives within the 200 ms observation, and a later supported datagram succeeds
 for both destinations and IP families
 (`target/evidence/phase-0/tun-oversized/README.md`). This is
 bounded rejection evidence, not support for larger datagrams.
+An isolated Linux IPv4 route with a 1000-byte MTU now forces kernel
+fragmentation of supported 1252-byte UDP payloads. The combined runtime
+reassembles and replies for two destinations while preserving payload and
+metadata (`target/evidence/phase-0/tun-fragments/README.md`). This does not
+establish native IPv6 fragmentation or production route handling.
 The isolated TUN crash fixture also joins the external packet bridge, kills
 the experimental adapter after UDP traffic, and completes fresh TCP/UDP
 traffic using a new adapter on the same fixture interface in both families,

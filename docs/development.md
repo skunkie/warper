@@ -136,6 +136,7 @@ cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
 ./scripts/verify-feasibility.sh host-stack --tun
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
+./scripts/verify-feasibility.sh host-stack --tun-fragment-check
 ./scripts/verify-feasibility.sh host-stack --mtu-check
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
@@ -156,6 +157,9 @@ verified independently of the Rust runtime. The TUN crash scope kills the
 experimental adapter after UDP traffic, after first joining the external
 packet bridge, and runs fresh traffic with a new adapter on the same fixture
 interface. It does not test service recovery or replay old application data.
+The TUN fragment scope also lowers a private IPv4 route MTU to 1000 bytes and
+checks kernel-generated fragments of an otherwise supported UDP datagram. It
+does not establish native IPv6 fragmentation below IPv6's minimum link MTU.
 Kernel-peer mode also requires a kernel with
 WireGuard support and creates an owned `wg-feasibility` interface entirely
 inside that namespace. The helper never touches resolver settings, the host

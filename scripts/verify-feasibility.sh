@@ -7,13 +7,13 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--tun-crash-check|--kernel-peer|--mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--tun-crash-check|--tun-fragment-check|--kernel-peer|--mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --tun-crash-check && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --tun-crash-check && "$scope" != --tun-fragment-check && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
@@ -21,7 +21,7 @@ if [[ "$scope" == --kernel-peer && "$probe" != wireguard-stack ]]; then
     echo "--kernel-peer requires wireguard-stack" >&2
     exit 2
 fi
-if [[ ( "$scope" == --mtu-check || "$scope" == --tun || "$scope" == --tun-crash-check ) && "$probe" != host-stack ]]; then
+if [[ ( "$scope" == --mtu-check || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ) && "$probe" != host-stack ]]; then
     echo "$scope requires host-stack" >&2
     exit 2
 fi
@@ -29,7 +29,7 @@ if [[ ( "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check || "$sco
     echo "$scope requires wireguard-stack" >&2
     exit 2
 fi
-if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check || "$scope" == --router-mtu-check ) ]]; then
+if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$scope" == gate || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check || "$scope" == --outer-mtu-check || "$scope" == --kernel-mtu-check || "$scope" == --router-mtu-check ) ]]; then
     echo "--rekey requires wireguard-stack with a packet or kernel probe scope" >&2
     exit 2
 fi
@@ -40,6 +40,10 @@ if [[ "$scope" == --tun ]]; then isolation_mode=tun; fi
 if [[ "$scope" == --tun-crash-check ]]; then
     isolation_mode=tun
     probe_arguments+=(--crash-after-udp)
+fi
+if [[ "$scope" == --tun-fragment-check ]]; then
+    isolation_mode=tun
+    probe_arguments+=(--fragmented-ipv4)
 fi
 if [[ "$scope" == --outer-mtu-check ]]; then
     probe_arguments+=(--outer-mtu-check)
@@ -66,6 +70,7 @@ fi
 timeout_seconds=20
 if [[ "$scope" == --tun ]]; then timeout_seconds=35; fi
 if [[ "$scope" == --tun-crash-check ]]; then timeout_seconds=60; fi
+if [[ "$scope" == --tun-fragment-check ]]; then timeout_seconds=50; fi
 if [[ "$scope" == --kernel-peer ]]; then timeout_seconds=50; fi
 if [[ "$rekey" == --rekey ]]; then
     probe_arguments+=(--rekey)
@@ -126,9 +131,10 @@ cat "$run_directory/probe.log"
         echo "NOT RUN remote router MTU discovery or concurrent physical-path TCP sizing"
     fi
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
-    if [[ "$scope" == --tun || "$scope" == --tun-crash-check ]]; then
+    if [[ "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ]]; then
         echo "kernel_tun_probe_exit=$status"
         if [[ "$scope" == --tun-crash-check ]]; then echo "tun_crash_probe_exit=$status"; fi
+        if [[ "$scope" == --tun-fragment-check ]]; then echo "tun_fragment_probe_exit=$status"; fi
         echo "NOT RUN native macOS utun or distinct SSH/SOCKS protocol backend instances"
     else
         echo "NOT RUN kernel TUN/utun traffic, distinct SSH/SOCKS protocol backend instances"
