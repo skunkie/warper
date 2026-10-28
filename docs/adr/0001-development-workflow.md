@@ -47,6 +47,17 @@ Use MIT for the project and SPDX/REUSE metadata for files. Credit Aleksandr
 Khamis for the original WARP idea and retain that author's notice in the
 project license. New project and development-file copyright uses skunkie.
 
+The duplicate-version policy skips only the exact versions listed in
+`deny.toml`. The wrapper comparison retains smoltcp 0.12 alongside 0.14,
+and their dependencies retain heapless 0.8 alongside 0.9. Bitflags 1 is
+used by the stack candidates alongside bitflags 2 in Linux socket tooling.
+Syn 1 and 2 remain in procedural macro dependency chains alongside syn 3:
+the former through Linux WireGuard peer tooling, the latter through BoringTun
+and the wrapper. These exceptions do not exclude whole dependency trees or
+change advisory, license, or source checks. Reconsider each exception when its
+dependency chain or the stack comparison changes, and remove it when no longer
+needed.
+
 ## Consequences
 
 - Planning-stage Cargo jobs are explicitly not run, without fake packages.
