@@ -241,7 +241,11 @@ invalidation for IPv4 and IPv6
 (`target/evidence/phase-0/rule-notification/README.md`). An address-only
 subscription also observes removal and restoration of a source address with
 both owners invalidated
-(`target/evidence/phase-0/address-notification/README.md`). Route-event
+(`target/evidence/phase-0/address-notification/README.md`). The harness also
+checks source-bound route lookup results for both paths and families before
+traffic and after restoration
+(`target/evidence/phase-0/route-lookups/README.md`). These lookups omit socket
+marks and ports and are not race-free path verification. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter

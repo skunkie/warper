@@ -681,6 +681,12 @@ before the notification is processed, or physical
 interface failure. Notification loss, truncation and malformed input fail
 closed in the experimental owner.
 
+Before traffic and after each restored source address, the harness checks the
+private client namespace kernel route lookup for both fixture sources and
+destinations. It verifies one unicast result with the expected source, gateway,
+and egress interface in each family. The lookup does not model socket marks,
+ports, or a concurrent routing change, and is not production path verification.
+
 The harness also removes and restores the second source-specific default route
 and, in a separate exchange, its policy rule while both owners have pending
 reservations. The experimental Linux route

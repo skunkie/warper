@@ -1273,7 +1273,11 @@ exchange uses a separate address-only subscription to observe removal of the sou
 address and conservatively invalidates both owners before recovery. This does
 not attribute an event to one path or establish a race-free production route
 snapshot and notification protocol.
-Required further evidence includes
+The isolated harness checks source-bound kernel route lookups for both fixture
+paths before traffic and after restoration. It verifies destination, source,
+gateway, interface, and an unambiguous unicast result, but does not include
+socket marks or ports, verify exemptions, or close the snapshot/notification
+race. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.

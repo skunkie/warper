@@ -135,6 +135,8 @@ nsenter --net="/proc/$client_anchor/ns/net" bash -eu -c '
     ip -6 route add default via fd77:3::1 dev client1 table 100
     ip -6 rule add from fd77:3::2/128 table 100
 '
+route_checker=$(dirname "${BASH_SOURCE[0]}")/verify_router_paths.py
+nsenter --net="/proc/$client_anchor/ns/net" python3 "$route_checker"
 nsenter --net="/proc/$server_anchor/ns/net" bash -eu -c '
     ip link set lo up
     ip addr add 198.19.0.2/24 dev server0
@@ -218,6 +220,7 @@ supervise_interruptions() {
             nsenter --net="/proc/$client_anchor/ns/net" ip -6 route replace fd77:3::/64 dev client1 table 100
             nsenter --net="/proc/$client_anchor/ns/net" ip -6 route replace default via fd77:3::1 dev client1 table 100
         fi
+        nsenter --net="/proc/$client_anchor/ns/net" python3 "$route_checker"
         : > "$control_directory/address.up.$suffix.ready"
     done
 }
