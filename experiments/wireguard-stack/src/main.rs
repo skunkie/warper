@@ -24,6 +24,8 @@ mod udp_feedback;
 mod udp_feedback_probe;
 
 #[cfg(target_os = "linux")]
+mod idle_watch;
+#[cfg(target_os = "linux")]
 mod kernel_mtu;
 #[cfg(target_os = "linux")]
 mod kernel_peer;

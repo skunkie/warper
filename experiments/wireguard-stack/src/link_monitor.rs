@@ -21,6 +21,7 @@ pub(super) enum Error {
     InvalidMessage,
     Lost,
     UnexpectedSender,
+    WorkerFailed,
     Socket(Errno),
 }
 

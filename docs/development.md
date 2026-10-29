@@ -700,8 +700,11 @@ rule, and address scenarios, each owner retains link, route/rule,
 and address subscriptions and checks them before sends, reads, and feedback.
 The interrupted-link scenario guards the affected owner; its comparison owner
 remains unmonitored. A change or notification error invalidates a guarded owner.
-Idle owners are not supervised, and other fixture transport sockets remain
-outside this check.
+For the second owner in each route, rule, and address scenario, a retained
+worker also polls while the owner is idle and signals a supervisor. The
+fixture observes the change, refreshes the owner, and joins the worker on
+success or failure. Other fixture sockets and idle owners remain outside this
+experiment; observing a change and invalidating the owner are separate steps.
 
 The harness also removes and restores the second source-specific default route
 and, in a separate exchange, its policy rule while both owners have pending

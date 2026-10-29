@@ -1294,8 +1294,11 @@ link, route/rule, and address subscriptions opened before candidate verification
 link interruption scenario guards its affected owner; the comparison owner is
 unmonitored. Each guarded owner checks its subscriptions before sends, reads
 and feedback, invalidating on a queued change or receive error; replacement of
-an attached monitor is rejected. This does not supervise idle owners or close
-the race between a poll and the subsequent operation. Required further evidence includes
+an attached monitor is rejected. For the second owner in route/rule and address scenarios, a retained worker
+also observes changes while idle and wakes a supervisor, which refreshes the
+owner; the worker is joined on success and failure. Other fixture owners are
+not idle-supervised. Observation and invalidation remain separate, and this
+does not close the race between a poll and the subsequent operation. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.

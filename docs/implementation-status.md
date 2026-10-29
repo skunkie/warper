@@ -260,8 +260,12 @@ In route/rule and address recovery scenarios, both owners retain link,
 route/rule, and address subscriptions and poll before sends, reads, and
 feedback; the link-interruption scenario guards only the affected owner
 (`target/evidence/phase-0/combined-owner-monitor/README.md`). Changes or
-notification errors invalidate guarded owners. Idle supervision, unguarded
-fixture sockets, and the poll-to-operation interval remain open. Route-event
+notification errors invalidate guarded owners. In route, rule, and address
+scenarios, a retained worker observes changes while the second owner is idle
+and wakes the supervisor, which refreshes that owner and joins the worker
+(`target/evidence/phase-0/idle-path-watch/README.md`). Observation and owner
+invalidation are separate; idle supervision of other owners, unguarded fixture
+sockets, and the poll-to-operation interval remain open. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified. The bounded notification poll now
 drains unrelated messages before reporting an empty queue and fails closed if

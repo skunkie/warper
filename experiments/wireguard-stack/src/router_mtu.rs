@@ -733,6 +733,28 @@ fn route_change(
     directory: &Path,
     change: &str,
 ) -> Result<()> {
+    let monitor = crate::link_monitor::PathWatch::new("client1")?;
+    let result = crate::idle_watch::run(
+        move || monitor.poll(),
+        |observer| {
+            route_change_monitored(client, destination, ipv6, wall, directory, change, observer)
+        },
+    );
+    if result.is_ok() {
+        println!("PASS idle path watcher joined: change={change}");
+    }
+    result
+}
+
+fn route_change_monitored(
+    client: &mut Endpoint,
+    destination: SocketAddr,
+    ipv6: bool,
+    wall: Instant,
+    directory: &Path,
+    change: &str,
+    observer: crate::idle_watch::Observer,
+) -> Result<()> {
     let outer_ipv6 = client.transport.remote.is_ipv6();
     let (first_local, second_local, first_reporter, second_reporter): (
         IpAddr,
@@ -755,7 +777,6 @@ fn route_change(
         )
     };
     let first_monitor = crate::link_monitor::PathWatch::new("client0")?;
-    let second_monitor = crate::link_monitor::PathWatch::new("client1")?;
     let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
@@ -770,7 +791,8 @@ fn route_change(
     )?;
     let initial = [first.local_addr()?, second.local_addr()?];
     first.attach_monitor(move || first_monitor.poll())?;
-    second.attach_monitor(move || second_monitor.poll())?;
+    let owner_observer = observer.clone();
+    second.attach_monitor(move || owner_observer.poll())?;
     for (owner, reporter, marker) in [
         (&mut first, first_reporter, 0x77),
         (&mut second, second_reporter, 0x79),
@@ -780,6 +802,11 @@ fn route_change(
     let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
     crate::router_path::write_marker(directory, &format!("{change}.down.{suffix}.request"))?;
     wait_marker(directory, &format!("{change}.down.{suffix}.ready"))?;
+    ensure!(
+        observer.wait(Duration::from_secs(1))? == Some(true),
+        "idle path watcher did not observe the change"
+    );
+    println!("PASS idle path watcher: change={change}, inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
     let deadline = Instant::now() + Duration::from_secs(1);
     for owner in [&mut first, &mut second] {
         loop {
