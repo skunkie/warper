@@ -113,6 +113,39 @@ impl Monitor {
     }
 }
 
+pub(super) struct PathWatch {
+    link: Monitor,
+    routes: Monitor,
+    addresses: Monitor,
+}
+
+impl PathWatch {
+    pub(super) fn new(interface: &str) -> Result<Self, Error> {
+        Ok(Self {
+            link: Monitor::new(interface)?,
+            routes: Monitor::routes()?,
+            addresses: Monitor::addresses()?,
+        })
+    }
+
+    pub(super) fn poll(&self) -> Result<bool, Error> {
+        any_change(
+            [&self.link, &self.routes, &self.addresses]
+                .into_iter()
+                .map(Monitor::poll),
+        )
+    }
+}
+
+fn any_change(results: impl IntoIterator<Item = Result<bool, Error>>) -> Result<bool, Error> {
+    for result in results {
+        if result? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn drain(mut receive: impl FnMut() -> Result<Option<bool>, Error>) -> Result<bool, Error> {
     // Bound work under unrelated event traffic. Saturation is uncertain, so a
     // caller must invalidate rather than treating the queue as drained.
@@ -141,6 +174,7 @@ fn classify(
     parse(bytes, scope)
 }
 
+#[cfg(test)]
 pub(super) fn apply(
     owner: &mut crate::outer_owner::Owner,
     notification: Result<bool, Error>,
@@ -230,6 +264,18 @@ mod tests {
         bytes[4..6].copy_from_slice(&nix::libc::RTM_NEWLINK.to_ne_bytes());
         bytes[20..24].copy_from_slice(&index.to_ne_bytes());
         bytes
+    }
+
+    #[test]
+    fn combined_monitor_rejects_changes_and_errors_from_any_subscription() {
+        assert_eq!(any_change([Ok(false), Ok(false), Ok(false)]), Ok(false));
+        for index in 0..3 {
+            let mut results = [Ok(false); 3];
+            results[index] = Ok(true);
+            assert_eq!(any_change(results), Ok(true));
+            results[index] = Err(Error::Lost);
+            assert_eq!(any_change(results), Err(Error::Lost));
+        }
     }
 
     #[test]

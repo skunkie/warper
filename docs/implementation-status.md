@@ -256,11 +256,12 @@ socket's actual UDP endpoints before publication; failure leaves it unavailable
 two-path scenarios now require the same candidate check
 (`target/evidence/phase-0/initial-candidate/README.md`). Other fixture sockets,
 socket marks, actual socket routing, and race-free verification remain open.
-In route/rule and address recovery scenarios, owners now retain separate
-subscriptions and poll before sends, reads, and feedback, failing closed on
-change or notification error
-(`target/evidence/phase-0/owner-monitor/README.md`). Idle supervision, combined
-change coverage, and the poll-to-operation interval remain open. Route-event
+In route/rule and address recovery scenarios, both owners retain link,
+route/rule, and address subscriptions and poll before sends, reads, and
+feedback; the link-interruption scenario guards only the affected owner
+(`target/evidence/phase-0/combined-owner-monitor/README.md`). Changes or
+notification errors invalidate guarded owners. Idle supervision, unguarded
+fixture sockets, and the poll-to-operation interval remain open. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified. The bounded notification poll now
 drains unrelated messages before reporting an empty queue and fails closed if

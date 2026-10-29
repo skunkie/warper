@@ -623,6 +623,7 @@ fn interrupted_path(
             "198.20.0.1".parse()?,
         )
     };
+    let monitor = crate::link_monitor::PathWatch::new("client1")?;
     let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
@@ -635,7 +636,7 @@ fn interrupted_path(
         1600,
         verify_candidate_path,
     )?;
-    let monitor = crate::link_monitor::Monitor::new("client1")?;
+    second.attach_monitor(move || monitor.poll())?;
     let first_address = first.local_addr()?;
     let second_address = second.local_addr()?;
     for (owner, reporter, marker) in [
@@ -649,8 +650,15 @@ fn interrupted_path(
     wait_marker(directory, &format!("down.{suffix}.ready"))?;
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
-        if crate::link_monitor::apply(&mut second, monitor.poll())? {
-            break;
+        match second.refresh_path() {
+            Ok(()) => {}
+            Err(error)
+                if error.downcast_ref::<crate::outer_owner::Error>()
+                    == Some(&crate::outer_owner::Error::Unavailable) =>
+            {
+                break;
+            }
+            Err(error) => return Err(error),
         }
         if Instant::now() >= deadline {
             second.invalidate_path();
@@ -684,7 +692,9 @@ fn interrupted_path(
     );
     crate::router_path::write_marker(directory, &format!("up.{suffix}.request"))?;
     wait_marker(directory, &format!("up.{suffix}.ready"))?;
+    let monitor = crate::link_monitor::PathWatch::new("client1")?;
     second.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
+    second.attach_monitor(move || monitor.poll())?;
     send_path_datagram(
         client,
         &mut second,
@@ -744,8 +754,8 @@ fn route_change(
             "198.20.0.1".parse()?,
         )
     };
-    let first_monitor = change_monitor(change)?;
-    let second_monitor = change_monitor(change)?;
+    let first_monitor = crate::link_monitor::PathWatch::new("client0")?;
+    let second_monitor = crate::link_monitor::PathWatch::new("client1")?;
     let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
@@ -802,8 +812,8 @@ fn route_change(
     }
     crate::router_path::write_marker(directory, &format!("{change}.up.{suffix}.request"))?;
     wait_marker(directory, &format!("{change}.up.{suffix}.ready"))?;
-    let first_monitor = change_monitor(change)?;
-    let second_monitor = change_monitor(change)?;
+    let first_monitor = crate::link_monitor::PathWatch::new("client0")?;
+    let second_monitor = crate::link_monitor::PathWatch::new("client1")?;
     first.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
     first.attach_monitor(move || first_monitor.poll())?;
     second.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
@@ -834,13 +844,6 @@ fn route_change(
     }
     println!("PASS routed {change} change: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
     Ok(())
-}
-
-fn change_monitor(change: &str) -> Result<crate::link_monitor::Monitor> {
-    Ok(match change {
-        "address" => crate::link_monitor::Monitor::addresses()?,
-        _ => crate::link_monitor::Monitor::routes()?,
-    })
 }
 
 fn verify_candidate_path(local: SocketAddr, remote: SocketAddr) -> Result<()> {
