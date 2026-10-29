@@ -251,7 +251,7 @@ fn transfer(client: &mut Endpoint, server: &mut Endpoint, limit: usize) -> Resul
             let sequence = tcp.seq_number();
             client
                 .transport
-                .watch_pmtu(packet, frame.destination, now)?;
+                .watch_pmtu(&client.peer, packet, frame.destination, now)?;
             // Established handshake ACK precedes this first application write.
             client
                 .transport
@@ -391,7 +391,7 @@ pub(super) fn drain(peer: &mut Peer, output: &mut Vec<u8>, limit: usize) -> Resu
 mod tests {
     use super::*;
 
-    fn feedback_fixture(ipv6: bool) -> (Endpoint, Vec<u8>) {
+    fn feedback_fixture(ipv6: bool) -> (Endpoint, Vec<u8>, Vec<u8>) {
         let (mut endpoint, _) = create_pair_with_outer(ipv6, false).unwrap();
         let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
             .parse()
@@ -439,22 +439,22 @@ mod tests {
             .send_slice(&[0x61; 4096])
             .unwrap();
         client.poll(20);
-        let packet = client.device.outgoing.pop_front().unwrap();
-        client.device.outgoing.clear();
+        let packet = client.device.outgoing.front().unwrap().clone();
         endpoint
             .transport
-            .watch_pmtu(&packet, destination, Duration::ZERO)
+            .watch_pmtu(&client, &packet, destination, Duration::ZERO)
             .unwrap();
+        client.device.outgoing.clear();
         let feedback = crate::pmtu_fixture::too_big(&packet, ipv6, MTU).unwrap();
         endpoint.peer = client;
-        (endpoint, feedback)
+        (endpoint, feedback, packet)
     }
 
     #[test]
     fn transient_seed_failure_retains_feedback_until_bounded_retry() {
         use smoltcp::phy::Device;
         for ipv6 in [false, true] {
-            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
             let retained_bytes = endpoint
                 .peer
                 .sockets
@@ -543,7 +543,7 @@ mod tests {
     fn busy_queue_is_retained_until_retry_and_permanent_seed_failure_is_surfaced() {
         use smoltcp::phy::Device;
         for ipv6 in [false, true] {
-            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
             let error = endpoint
                 .transport
                 .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || {
@@ -587,9 +587,148 @@ mod tests {
     }
 
     #[test]
+    fn reservation_rejects_packet_not_owned_by_peer() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, _, packet) = feedback_fixture(ipv6);
+            endpoint.transport.pmtu_feedback.as_mut().unwrap().commit();
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            let reporter: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            let replacement = Peer::with_mtu(source, 40000, 1500).unwrap();
+            let error = endpoint
+                .transport
+                .watch_pmtu(&replacement, &packet, reporter, Duration::ZERO)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuPacketNotOwned)
+            );
+            assert!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline()
+                    .is_none()
+            );
+            assert!(
+                endpoint
+                    .transport
+                    .pmtu_owner
+                    .as_ref()
+                    .unwrap()
+                    .ptr_eq(&endpoint.peer.identity())
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_feedback_rejects_a_different_peer_and_can_resume_on_its_owner() {
+        use smoltcp::phy::Device;
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            let replacement = Peer::with_mtu(source, 40000, 1500).unwrap();
+            let original = std::mem::replace(&mut endpoint.peer, replacement);
+            let error = endpoint
+                .transport
+                .pump(&mut endpoint.peer, Duration::from_millis(10))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuOwnerMismatch)
+            );
+            assert_eq!(endpoint.transport.now, Duration::ZERO);
+            let error = endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuOwnerMismatch)
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pending_pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .packet,
+                feedback
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline(),
+                Some(Duration::from_secs(1))
+            );
+            assert_eq!(
+                endpoint.peer.device.capabilities().max_transmission_unit,
+                1500
+            );
+            endpoint.peer = original;
+            endpoint.transport.now = Duration::from_millis(10);
+            endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap();
+            assert!(endpoint.transport.pending_pmtu_feedback.is_none());
+            assert_eq!(
+                endpoint.peer.device.capabilities().max_transmission_unit,
+                MTU
+            );
+        }
+    }
+
+    #[test]
+    fn retired_peer_does_not_transfer_feedback_to_identical_replacement() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            endpoint.peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+            let error = endpoint
+                .transport
+                .pump(&mut endpoint.peer, Duration::from_millis(10))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuOwnerMismatch)
+            );
+            assert!(endpoint.transport.pending_pmtu_feedback.is_some());
+        }
+    }
+
+    #[test]
     fn pending_feedback_blocks_replacement_after_reservation_retirement() {
         for ipv6 in [false, true] {
-            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
             assert!(
                 endpoint
                     .transport
@@ -604,7 +743,7 @@ mod tests {
                 .unwrap();
             let error = endpoint
                 .transport
-                .watch_pmtu(&[], reporter, Duration::ZERO)
+                .watch_pmtu(&endpoint.peer, &[], reporter, Duration::ZERO)
                 .unwrap_err();
             assert_eq!(
                 error.downcast_ref::<crate::pmtu_feedback::Error>(),
@@ -623,7 +762,7 @@ mod tests {
     fn oversized_feedback_cannot_allocate_a_pending_response() {
         use smoltcp::wire::{Icmpv4Packet, Icmpv6Packet, Ipv4Packet, Ipv6Packet};
         for ipv6 in [false, true] {
-            let (mut endpoint, mut feedback) = feedback_fixture(ipv6);
+            let (mut endpoint, mut feedback, _) = feedback_fixture(ipv6);
             feedback.resize(MTU + 1, 0);
             if ipv6 {
                 let mut ip = Ipv6Packet::new_checked(feedback.as_mut_slice()).unwrap();
@@ -667,7 +806,7 @@ mod tests {
     fn retained_feedback_expiry_surfaces_without_reconfiguration() {
         use smoltcp::phy::Device;
         for ipv6 in [false, true] {
-            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
             assert!(
                 endpoint
                     .transport
@@ -694,7 +833,7 @@ mod tests {
 
     #[test]
     fn transport_restores_seed_source_after_failure_and_reports_missing_source() {
-        let (mut endpoint, feedback) = feedback_fixture(false);
+        let (mut endpoint, feedback, _) = feedback_fixture(false);
         endpoint.transport.seed_source =
             Some(Box::new(
                 || Err(std::io::ErrorKind::PermissionDenied.into()),

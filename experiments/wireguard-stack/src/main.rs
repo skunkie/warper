@@ -51,7 +51,10 @@ mod router_tcp;
 use std::{
     fmt, io,
     net::{IpAddr, SocketAddr, UdpSocket},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -77,6 +80,8 @@ enum TransportFailure {
     InnerDestination,
     PmtuFeedbackTooLarge,
     SeedSourceMissing,
+    PmtuOwnerMismatch,
+    PmtuPacketNotOwned,
 }
 
 impl fmt::Display for TransportFailure {
@@ -118,6 +123,7 @@ struct Transport {
     reassembly: reassembly::Reassembler,
     udp_feedback: Option<udp_feedback::Reservation>,
     pmtu_feedback: Option<pmtu_feedback::Tracker>,
+    pmtu_owner: Option<Weak<()>>,
     pending_pmtu_feedback: Option<PendingPmtuFeedback>,
     seed_source: Option<SeedSource>,
     pmtu_fixture: Option<pmtu_probe::PathFixture>,
@@ -186,6 +192,7 @@ impl Transport {
     }
 
     fn pump(&mut self, peer: &mut Peer, now: Duration) -> Result<()> {
+        self.ensure_pmtu_owner(peer)?;
         self.reassembly.advance(now)?;
         self.now = now;
         if let Some(tracker) = self.pmtu_feedback.as_mut() {
@@ -268,6 +275,7 @@ impl Transport {
 
     fn watch_pmtu(
         &mut self,
+        peer: &Peer,
         packet: &[u8],
         reporter: std::net::IpAddr,
         now: Duration,
@@ -283,9 +291,18 @@ impl Transport {
         {
             return Err(pmtu_feedback::Error::Busy.into());
         }
+        if !peer
+            .device
+            .outgoing
+            .iter()
+            .any(|queued| queued.as_slice() == packet)
+        {
+            return Err(TransportFailure::PmtuPacketNotOwned.into());
+        }
         let mut tracker = pmtu_feedback::Tracker::default();
         tracker.reserve(packet, reporter, now, Duration::from_secs(1))?;
         self.pmtu_feedback = Some(tracker);
+        self.pmtu_owner = Some(peer.identity());
         Ok(())
     }
 
@@ -350,6 +367,23 @@ impl Transport {
         Ok(())
     }
 
+    fn ensure_pmtu_owner(&self, peer: &Peer) -> Result<()> {
+        let active = self.pending_pmtu_feedback.is_some()
+            || self
+                .pmtu_feedback
+                .as_ref()
+                .is_some_and(|tracker| tracker.next_deadline().is_some());
+        if active
+            && self
+                .pmtu_owner
+                .as_ref()
+                .is_none_or(|owner| !owner.ptr_eq(&peer.identity()))
+        {
+            return Err(TransportFailure::PmtuOwnerMismatch.into());
+        }
+        Ok(())
+    }
+
     fn with_seed_source<T>(
         &mut self,
         operation: impl FnOnce(&mut Self, &mut dyn FnMut() -> io::Result<u64>) -> Result<T>,
@@ -369,6 +403,7 @@ impl Transport {
         packet: &[u8],
         seed: impl FnOnce() -> io::Result<u64>,
     ) -> Result<bool> {
+        self.ensure_pmtu_owner(peer)?;
         let Some(tracker) = self.pmtu_feedback.as_mut() else {
             return Ok(false);
         };
@@ -405,6 +440,7 @@ impl Transport {
         peer: &mut Peer,
         seed: impl FnOnce() -> io::Result<u64>,
     ) -> Result<()> {
+        self.ensure_pmtu_owner(peer)?;
         if self
             .pending_pmtu_feedback
             .as_ref()
@@ -614,6 +650,7 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         udp_feedback: None,
         pmtu_feedback: None,
+        pmtu_owner: None,
         pending_pmtu_feedback: None,
         seed_source: Some(Box::new(platform_seed)),
         pmtu_fixture: None,
@@ -670,6 +707,7 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         udp_feedback: None,
         pmtu_feedback: None,
+        pmtu_owner: None,
         pending_pmtu_feedback: None,
         seed_source: Some(Box::new(platform_seed)),
         pmtu_fixture: None,

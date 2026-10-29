@@ -810,12 +810,12 @@ mod tests {
                     .destination;
                 endpoint
                     .transport
-                    .watch_pmtu(&packet, reporter, now)
+                    .watch_pmtu(&endpoint.peer, &packet, reporter, now)
                     .unwrap();
                 assert_eq!(
                     endpoint
                         .transport
-                        .watch_pmtu(&packet, reporter, now)
+                        .watch_pmtu(&endpoint.peer, &packet, reporter, now)
                         .unwrap_err()
                         .downcast_ref::<crate::pmtu_feedback::Error>(),
                     Some(&crate::pmtu_feedback::Error::Busy)

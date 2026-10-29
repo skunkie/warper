@@ -4,7 +4,12 @@
 
 //! Bounded raw-IP device and active sockets for controlled experimental peers.
 
-use std::{collections::VecDeque, io, net::IpAddr};
+use std::{
+    collections::VecDeque,
+    io,
+    net::IpAddr,
+    sync::{Arc, Weak},
+};
 
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
@@ -117,6 +122,12 @@ pub struct Peer {
     pub sockets: SocketSet<'static>,
     pub tcp: SocketHandle,
     pub udp: SocketHandle,
+    // The WireGuard owner uses this token to distinguish peer instances.
+    #[allow(
+        dead_code,
+        reason = "the shared host probe does not consume peer identity"
+    )]
+    pub identity: Arc<()>,
 }
 
 impl Peer {
@@ -153,7 +164,17 @@ impl Peer {
             sockets,
             tcp,
             udp,
+            identity: Arc::new(()),
         })
+    }
+
+    /// Weak instance identity for experimental ownership checks.
+    #[allow(
+        dead_code,
+        reason = "the shared host probe does not consume peer identity"
+    )]
+    pub fn identity(&self) -> Weak<()> {
+        Arc::downgrade(&self.identity)
     }
 
     pub fn poll(&mut self, elapsed_ms: i64) {
