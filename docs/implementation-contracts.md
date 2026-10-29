@@ -909,8 +909,9 @@ experimental pump is called;
 there is no independent timer wakeup. Expiry and other errors remain visible
 to the owner, and shutdown drops the retained response. The reservation is admitted only for a packet present in the experimental
 `Peer` output queue and binds a weak identity for that peer; attempts to pump,
-apply or retry against a different peer are rejected before state mutation. This does not bind an individual TCP socket lifetime within that peer
-or prevent a caller replacing its socket. This is a controlled driver policy,
+apply or retry against a different peer are rejected before state mutation. This does reject a missing or closed TCP socket before reservation or feedback work.
+This does not distinguish a new socket placed in the same slot or a later
+connection reusing the same tuple. This is a controlled driver policy,
 not production supervision. The experimental transport owns an injectable,
 nonblocking seed source; a controlled encrypted-peer test forces one transient
 source failure and verifies that the same TCP transfer completes after retry.

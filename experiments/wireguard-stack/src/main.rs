@@ -82,6 +82,7 @@ enum TransportFailure {
     SeedSourceMissing,
     PmtuOwnerMismatch,
     PmtuPacketNotOwned,
+    PmtuFlowRetired,
 }
 
 impl fmt::Display for TransportFailure {
@@ -299,6 +300,9 @@ impl Transport {
         {
             return Err(TransportFailure::PmtuPacketNotOwned.into());
         }
+        if !peer_has_live_tcp(peer) {
+            return Err(TransportFailure::PmtuFlowRetired.into());
+        }
         let mut tracker = pmtu_feedback::Tracker::default();
         tracker.reserve(packet, reporter, now, Duration::from_secs(1))?;
         self.pmtu_feedback = Some(tracker);
@@ -380,6 +384,9 @@ impl Transport {
                 .is_none_or(|owner| !owner.ptr_eq(&peer.identity()))
         {
             return Err(TransportFailure::PmtuOwnerMismatch.into());
+        }
+        if active && !peer_has_live_tcp(peer) {
+            return Err(TransportFailure::PmtuFlowRetired.into());
         }
         Ok(())
     }
@@ -473,6 +480,13 @@ impl Drop for Transport {
             tracker.cancel();
         }
     }
+}
+
+fn peer_has_live_tcp(peer: &Peer) -> bool {
+    peer.sockets.iter().any(|(handle, socket)| {
+        handle == peer.tcp
+            && matches!(socket, smoltcp::socket::Socket::Tcp(socket) if socket.state() != tcp::State::Closed)
+    })
 }
 
 fn retryable_pmtu_failure(error: &anyhow::Error) -> bool {

@@ -726,6 +726,95 @@ mod tests {
     }
 
     #[test]
+    fn deferred_feedback_rejects_closed_or_removed_tcp_socket() {
+        for ipv6 in [false, true] {
+            for removed in [false, true] {
+                let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
+                assert!(
+                    endpoint
+                        .transport
+                        .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                            std::io::ErrorKind::WouldBlock.into()
+                        ),)
+                        .unwrap()
+                );
+                if removed {
+                    endpoint.peer.sockets.remove(endpoint.peer.tcp);
+                } else {
+                    endpoint
+                        .peer
+                        .sockets
+                        .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                        .abort();
+                }
+                endpoint.transport.now = Duration::from_millis(10);
+                let error = endpoint
+                    .transport
+                    .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                    .unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<crate::TransportFailure>(),
+                    Some(&crate::TransportFailure::PmtuFlowRetired)
+                );
+                assert_eq!(
+                    endpoint
+                        .transport
+                        .pending_pmtu_feedback
+                        .as_ref()
+                        .unwrap()
+                        .packet,
+                    feedback
+                );
+                assert_eq!(
+                    endpoint
+                        .transport
+                        .pmtu_feedback
+                        .as_ref()
+                        .unwrap()
+                        .next_deadline(),
+                    Some(Duration::from_secs(1))
+                );
+                assert_eq!(endpoint.transport.pmtu_reductions, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn reservation_rejects_closed_tcp_socket_even_with_queued_packet() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, _, packet) = feedback_fixture(ipv6);
+            endpoint.transport.pmtu_feedback.as_mut().unwrap().commit();
+            endpoint
+                .peer
+                .sockets
+                .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                .abort();
+            endpoint.peer.device.outgoing.push_back(packet.clone());
+            let reporter: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            let error = endpoint
+                .transport
+                .watch_pmtu(&endpoint.peer, &packet, reporter, Duration::ZERO)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFlowRetired)
+            );
+            assert!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline()
+                    .is_none()
+            );
+            assert_eq!(endpoint.peer.device.outgoing.pop_front().unwrap(), packet);
+        }
+    }
+
+    #[test]
     fn pending_feedback_blocks_replacement_after_reservation_retirement() {
         for ipv6 in [false, true] {
             let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
