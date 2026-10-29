@@ -66,3 +66,51 @@ pub fn rebuild_components(
     *original = interface;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::{
+        socket::tcp,
+        wire::{Ipv4Packet, Ipv6Packet, TcpPacket},
+    };
+    use std::net::IpAddr;
+
+    fn first_sequence_after_replacement(ipv6: bool) -> i32 {
+        let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+            .parse()
+            .unwrap();
+        let destination: IpAddr = if ipv6 { "fd66:66::3" } else { "10.66.66.3" }
+            .parse()
+            .unwrap();
+        let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+        rebuild_interface(&mut peer, 1280, 0).unwrap();
+        peer.sockets
+            .get_mut::<tcp::Socket>(peer.tcp)
+            .connect(
+                peer.interface.context(),
+                (destination, 9000),
+                (source, 40001),
+            )
+            .unwrap();
+        peer.poll(1);
+        let packet = peer.device.outgoing.pop_front().unwrap();
+        let payload = if ipv6 {
+            Ipv6Packet::new_checked(&packet).unwrap().payload()
+        } else {
+            Ipv4Packet::new_checked(&packet).unwrap().payload()
+        };
+        TcpPacket::new_checked(payload).unwrap().seq_number().0
+    }
+
+    #[test]
+    fn fixed_replacement_seed_repeats_tcp_sequence_across_interfaces() {
+        for ipv6 in [false, true] {
+            assert_eq!(
+                first_sequence_after_replacement(ipv6),
+                first_sequence_after_replacement(ipv6),
+                "fixed replacement seeds repeat the first TCP sequence"
+            );
+        }
+    }
+}

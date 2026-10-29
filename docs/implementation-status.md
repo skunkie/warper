@@ -154,7 +154,12 @@ now replaces the interface while retaining established TCP sockets: partially
 acknowledged bytes complete after reduction from 1500 to 1280, including FIN
 and a response, with no application resubmission. Queued packets block device
 reconfiguration; addresses, routes and any-IP policy survive
-(`target/evidence/phase-0/interface-mtu/README.md`). A controlled shared-interface
+(`target/evidence/phase-0/interface-mtu/README.md`). A negative control now
+shows that separate replacements with the fixture's fixed seed emit the same
+initial TCP sequence for an identical new connection in both families
+(`target/evidence/phase-0/interface-seed-reset/README.md`). Nonblocking fresh
+entropy and other production interface state remain unresolved. A controlled
+shared-interface
 probe now retains two simultaneous TCP flows and one UDP datagram across a
 1500-to-1280 reduction in both families. Feedback quoting the other flow is
 rejected before matched feedback triggers the reduction; deliberately lost

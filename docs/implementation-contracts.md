@@ -885,8 +885,12 @@ retaining the original `SocketSet`, socket handles, endpoints, TCP buffers,
 sequence/acknowledgement state, and timers. It copies interface addresses,
 routes and any-IP policy and uses the current controlled monotonic time.
 Selected features have no neighbor, SLAAC, multicast or fragmentation state
-to transfer. The fixture re-seeds interface randomness; production entropy and
-state-transfer policy remain unproven. Reduction is interface-wide and also
+to transfer. The fixture uses a fixed seed on each replacement. A negative
+control shows that two replacement interfaces emit the same initial TCP
+sequence for the same new connection in both families. The sequence is
+observable on the wire; no production uniqueness or security claim follows.
+A production design needs fresh entropy without blocking the async driver,
+and a policy for any other interface state. Reduction is interface-wide and also
 lowers the device receive limit; multiple flows and asymmetric paths are not
 established. This is not a generic interface migration API.
 

@@ -374,8 +374,10 @@ and any-IP policy, under the selected features' limited interface state.
 
 This is an executable alternative to new TCP packet rewriting or a stack
 fork, not an accepted production approach. Reduction affects the whole
-interface and receive limit, and the fixture re-seeds interface randomness.
-Production entropy/state transfer, multiple/asymmetric paths, queued UDP,
+interface and receive limit, and the fixture resets interface randomness to a
+fixed seed. Separate replacements can emit the same initial TCP sequence for
+the same new connection. Nonblocking fresh entropy and other production state
+transfer, multiple/asymmetric paths, queued UDP,
 feedback validation, per-path budgets/expiry and WireGuard propagation still
 need contracts and evidence. The raw ICMP negative control remains, the MTU
 gate remains nonzero, and this ADR stays proposed.
