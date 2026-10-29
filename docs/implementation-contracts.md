@@ -230,8 +230,10 @@ HostAdapter::cancel(&mut self)
 
 The default MTU remains 1280 bytes. The experimental `with_mtu` constructor
 accepts 1280–1500 and returns `InvalidMtu` outside that range; ingress is bounded
-by the current device MTU. This is a TCP-only probe interface, not YAML or CLI
-configuration or a dynamic PMTU implementation. The UDP candidate and production
+by the current device MTU. Oversized ingress returns `PacketTooLarge { mtu }`,
+separate from resource exhaustion; it does not itself emit ICMP or retry data.
+This is a TCP-only probe interface, not YAML or CLI configuration or a dynamic
+PMTU implementation. The UDP candidate and production
 runtime remain separately constrained. Library IP/TCP parsers validate lengths,
 checksums, ports, and supported headers before admission. The
 candidate rejects UDP/IPv6 extension transports with `UnsupportedProtocol`;

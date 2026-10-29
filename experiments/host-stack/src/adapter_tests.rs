@@ -199,7 +199,7 @@ fn invalid_and_unselected_packets_do_not_reserve_flows() {
     assert_eq!(host.inject(&corrupt), Err(AdmissionError::MalformedPacket));
     assert_eq!(
         host.inject(&vec![0; MTU + 1]),
-        Err(AdmissionError::ResourceLimit)
+        Err(AdmissionError::PacketTooLarge { mtu: MTU })
     );
     let unselected = syn(
         "192.0.2.2:40000".parse().unwrap(),
@@ -747,6 +747,11 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
     for ipv6 in [false, true] {
         let (mut host, mut accepted) =
             HostAdapter::with_mtu(Limits::default(), select_backend, 1500).unwrap();
+        assert_eq!(
+            host.inject(&[0; 1501]),
+            Err(AdmissionError::PacketTooLarge { mtu: 1500 })
+        );
+        assert_eq!(host.active_flows(), 0);
         let address = source(ipv6, 2).unwrap();
         let destination = SocketAddr::new(source(ipv6, 91).unwrap().ip(), 9100);
         let mut peers = [
@@ -790,7 +795,7 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             HostAdapter::new(Limits::default(), select_backend).unwrap();
         assert_eq!(
             default_host.inject(&packet),
-            Err(AdmissionError::ResourceLimit)
+            Err(AdmissionError::PacketTooLarge { mtu: MTU })
         );
         default_host.cancel();
         assert_eq!(host.inject(&packet), Ok(flow.metadata.id));
@@ -810,7 +815,10 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         assert!(host.device.outgoing.is_empty());
         crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, MTU, 100)
             .unwrap();
-        assert_eq!(host.inject(&packet), Err(AdmissionError::ResourceLimit));
+        assert_eq!(
+            host.inject(&packet),
+            Err(AdmissionError::PacketTooLarge { mtu: MTU })
+        );
         assert_eq!(host.active_flows(), 1);
         assert!(flow.stream.read(&mut [0; 16]).now_or_never().is_none());
         host.cancel();

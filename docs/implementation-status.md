@@ -142,8 +142,11 @@ feedback or exercise the production runtime or physical path attribution. The
 TCP adapter now offers an experimental 1280–1500 MTU constructor; its
 ingress limit follows the current device MTU. Controlled tests admit exact
 1500-byte packets in both families and reject them at the default or reduced
-1280-byte MTU (`target/evidence/phase-0/accepted-ingress-mtu/README.md`). UDP,
-production configuration and runtime integration remain separately constrained.
+1280-byte MTU (`target/evidence/phase-0/accepted-ingress-mtu/README.md`). It now
+reports a typed `PacketTooLarge { mtu }` separately from resource exhaustion
+(`target/evidence/phase-0/typed-ingress-mtu/README.md`); the runtime still counts
+such rejection without emitting ICMP. UDP, production configuration and runtime
+integration remain separately constrained.
 A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed

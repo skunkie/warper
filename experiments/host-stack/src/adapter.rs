@@ -58,6 +58,7 @@ pub struct FlowMetadata {
 pub enum AdmissionError {
     InvalidLimits,
     InvalidMtu,
+    PacketTooLarge { mtu: usize },
     MalformedPacket,
     UnsupportedProtocol,
     UnselectedDestination,
@@ -474,8 +475,9 @@ impl HostAdapter {
         if self.cancelled {
             return Err(AdmissionError::Cancelled);
         }
-        if packet.len() > self.device.capabilities().max_transmission_unit {
-            return Err(AdmissionError::ResourceLimit);
+        let mtu = self.device.capabilities().max_transmission_unit;
+        if packet.len() > mtu {
+            return Err(AdmissionError::PacketTooLarge { mtu });
         }
         let (source, destination, syn) = tcp_metadata(packet)?;
         if let Some(flow) = self
