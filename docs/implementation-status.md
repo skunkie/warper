@@ -35,7 +35,7 @@ assessment is:
 | --- | --- |
 | Minimal workspace and checks | Present. `scripts/check.sh` exercises the workspace, infrastructure and dependency policy. |
 | Configuration and reference fixtures | Present as design and fixture cases; production parser/CLI tests belong to Phase 1. |
-| Host-facing role | Partial. The Linux TUN fixture exercises two destination selections, TCP/UDP and both families; its handlers are experimental, and the explicit dynamic MTU check fails for both families. The TUN run does not establish macOS behavior or real protocol backends. |
+| Host-facing role | Partial. The Linux TUN fixture exercises two distinct controlled TCP backend listeners, UDP and both families; the explicit dynamic MTU check fails for both families. The TUN run does not establish macOS behavior or real protocol backends. |
 | WireGuard-side role | Partial. Active TCP/UDP and rekey have been exercised against a Linux kernel peer; the packet and routed PMTU experiments have narrower ownership and transport limits than a finalized adapter. |
 | Stack decision and evidence package | Open. ADR 0002 is proposed, so it does not yet select a production stack and its limitations. The default feasibility commands intentionally return incomplete after their packet probes, and the evidence index must identify the final gate runs and revision. |
 | Initial implementation contracts | Open. Selected stack interfaces are not finalized or demonstrated by compile-checked production-facing contracts. The contract completion checklist also requires fault-injection evidence for driver acknowledgements, rollback, task termination, and DNS reference and retained-state boundaries. |
@@ -66,6 +66,11 @@ final ACKs; native macOS test results remain separate from Linux evidence
 expectations; executable production parser/CLI registration remains Phase 1.
 The isolated Linux TUN fixture now exercises kernel TCP and UDP clients through
 the combined runtime for both families and two destination/backend selections.
+TCP flows now relay to two distinct controlled loopback listeners, which verify
+different payloads and respond after FIN; backend disconnect is reported as a
+failure (`target/evidence/phase-0/tun-distinct-backends/README.md`). The
+listeners are fixture peers, not SSH or SOCKS implementations. UDP still uses
+the controlled association handler.
 It verifies original tuples, empty and unequal datagrams up to the 1280-byte
 TUN MTU in both directions, concurrent 64 KiB
 TCP transfers to two destinations, data received before half-close and a

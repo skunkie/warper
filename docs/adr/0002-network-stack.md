@@ -122,16 +122,16 @@ The Linux TUN fixture connects kernel TCP and UDP clients to the combined
 runtime through a bounded local datagram bridge. It checks two destinations,
 backend selection, original tuples, concurrent 64 KiB TCP transfers with data
 before and after half-close, and empty and unequal UDP datagrams up to the
-1280-byte TUN MTU in both directions and IP families. It then joins the runtime
-and independently verifies interface removal. See
-`target/evidence/phase-0/tun-boundary/README.md` and
+1280-byte TUN MTU in both directions and IP families. The TCP flows relay to
+two distinct controlled loopback listeners; UDP remains a synthetic handler.
+It then joins the runtime and independently verifies interface removal. See
+`target/evidence/phase-0/tun-distinct-backends/README.md` and
 `./scripts/verify-feasibility.sh host-stack --tun`. This is not evidence of
 native macOS utun, production backend forwarding, or complete MTU and failure
 acceptance; the stack decision remains proposed.
 
 This is an experimental TCP boundary, not a selected production adapter.
-Production scheduling, aggregate integration stress, and kernel TUN traffic
-remain unproven. Backend indices
+Production scheduling and aggregate integration stress remain unproven. Backend indices
 and limits are synthetic prototype inputs, not implemented YAML/service
 contracts. The [accepted TCP boundary](../implementation-contracts.md#7-experimental-accepted-tcp-boundary)
 records concrete signatures, ownership, and remaining decisions.

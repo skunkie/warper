@@ -875,6 +875,17 @@ any quoted packet's ultimate origin. Matching minimum quotes cannot distinguish
 identical datagrams; deadlines/ownership limit stale-operation exposure and do
 not establish cryptographic anti-spoofing.
 
+## Controlled TUN Backend Dispatch
+
+The Linux TUN fixture creates two separate loopback TCP listeners in its
+disposable network namespace. Accepted flows retain their selected backend ID
+and are relayed to the corresponding listener; each peer checks a distinct
+synthetic payload, echoes it, and responds after FIN. Listener and relay tasks
+are owned and joined by the fixture. The listeners are controlled feasibility
+peers, not SSH or SOCKS implementations, and UDP remains a separate synthetic
+association handler. A successful fixture does not complete NET-01 or the
+production backend contract.
+
 ## 17. Experimental Interface MTU Reduction
 
 Status: a sizing-control feasibility probe, not complete PMTU discovery.

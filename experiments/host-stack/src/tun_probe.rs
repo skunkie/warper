@@ -9,7 +9,7 @@ use std::{net::SocketAddr, time::Duration};
 use anyhow::{Context, Result, ensure};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::UnixDatagram,
+    net::{TcpListener, TcpStream, UnixDatagram},
     task::JoinSet,
 };
 
@@ -32,8 +32,17 @@ pub async fn run(local: &str, remote: &str) -> Result<()> {
         crate::udp_probe::select_backend,
         64,
     )?;
+    let first_backend = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let second_backend = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let backends = [first_backend.local_addr()?, second_backend.local_addr()?];
+    ensure!(
+        backends[0] != backends[1],
+        "backend fixture listeners collided"
+    );
     let mut runner = tokio::spawn(runtime.run());
     let mut handlers = JoinSet::new();
+    handlers.spawn(serve_backend(first_backend, 0x61));
+    handlers.spawn(serve_backend(second_backend, 0x62));
     let mut runner_finished = false;
     let outcome = tokio::time::timeout(Duration::from_secs(15), async {
         let mut packet = [0; MTU + 1];
@@ -56,7 +65,8 @@ pub async fn run(local: &str, remote: &str) -> Result<()> {
                 accepted = channels.tcp.recv() => {
                     let flow = accepted.context("TCP acceptance closed")?;
                     validate_metadata(flow.metadata.source, flow.metadata.destination, flow.metadata.backend, false)?;
-                    handlers.spawn(handle_tcp(flow));
+                    let backend = backend_address(flow.metadata.backend, &backends)?;
+                    handlers.spawn(handle_tcp(flow, backend));
                 }
                 accepted = channels.udp.recv() => {
                     let association = accepted.context("UDP acceptance closed")?;
@@ -137,9 +147,40 @@ fn validate_metadata(
     Ok(())
 }
 
-async fn handle_tcp(flow: AcceptedFlow) -> Result<()> {
-    let expected = 0x60 + flow.metadata.backend.0;
-    transfer_tcp(flow.stream, expected).await
+fn backend_address(backend: BackendId, backends: &[SocketAddr; 2]) -> Result<SocketAddr> {
+    match backend {
+        BackendId(1) => Ok(backends[0]),
+        BackendId(2) => Ok(backends[1]),
+        _ => anyhow::bail!("unknown controlled backend"),
+    }
+}
+
+async fn serve_backend(listener: TcpListener, expected: u8) -> Result<()> {
+    let (stream, _) = listener.accept().await?;
+    transfer_tcp(stream, expected).await
+}
+
+async fn handle_tcp(flow: AcceptedFlow, backend: SocketAddr) -> Result<()> {
+    relay_tcp(flow.stream, backend).await
+}
+
+async fn relay_tcp(
+    mut downstream: impl AsyncRead + AsyncWrite + Unpin,
+    backend: SocketAddr,
+) -> Result<()> {
+    let mut upstream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(backend))
+        .await
+        .context("controlled backend connect deadline exceeded")??;
+    let (request, response) = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await?;
+    ensure!(
+        request == TRANSFER as u64,
+        "TCP relay request length changed"
+    );
+    ensure!(
+        response == (TRANSFER + RESPONSE.len()) as u64,
+        "TCP relay response length changed"
+    );
+    Ok(())
 }
 
 async fn transfer_tcp(mut stream: impl AsyncRead + AsyncWrite + Unpin, expected: u8) -> Result<()> {
@@ -224,6 +265,76 @@ mod tests {
                 assert!(response.is_empty());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn backend_relay_preserves_full_duplex_and_fin() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = serve_backend(listener, 0x61);
+        let (mut client, downstream) = tokio::io::duplex(1024);
+        let relay = relay_tcp(downstream, address);
+        let application = async move {
+            client.write_all(&vec![0x61; TRANSFER]).await?;
+            client.shutdown().await?;
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).await?;
+            Ok::<_, std::io::Error>(response)
+        };
+        let (response, relay_result, peer_result) =
+            tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::join!(application, relay, peer)
+            })
+            .await
+            .unwrap();
+        let response = response.unwrap();
+        relay_result.unwrap();
+        peer_result.unwrap();
+        assert_eq!(response.len(), TRANSFER + RESPONSE.len());
+        assert!(response[..TRANSFER].iter().all(|byte| *byte == 0x61));
+        assert_eq!(&response[TRANSFER..], RESPONSE);
+    }
+
+    #[tokio::test]
+    async fn backend_disconnect_fails_the_relay_and_joins_the_peer() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = async move {
+            let (stream, _) = listener.accept().await?;
+            drop(stream);
+            Ok::<(), std::io::Error>(())
+        };
+        let (mut client, downstream) = tokio::io::duplex(1024);
+        client.write_all(b"synthetic").await.unwrap();
+        client.shutdown().await.unwrap();
+        let (result, peer_result) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay_tcp(downstream, address), peer)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err(), "an incomplete backend exchange must fail");
+        peer_result.unwrap();
+    }
+
+    #[test]
+    fn backend_selection_rejects_unknown_identity() {
+        let backends = [
+            "127.0.0.1:10001".parse().unwrap(),
+            "127.0.0.1:10002".parse().unwrap(),
+        ];
+        assert_eq!(
+            backend_address(BackendId(1), &backends).unwrap(),
+            backends[0]
+        );
+        assert_eq!(
+            backend_address(BackendId(2), &backends).unwrap(),
+            backends[1]
+        );
+        assert!(backend_address(BackendId(3), &backends).is_err());
     }
 
     #[test]

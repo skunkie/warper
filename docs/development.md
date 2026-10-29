@@ -155,8 +155,10 @@ It builds before isolation and creates disposable namespaces. Packet-only
 mode enables only loopback. The TUN scope requires an accessible
 `/dev/net/tun` and permission to create an interface in the disposable user
 and network namespaces. Its nonpersistent interface is closed and its removal
-verified independently of the Rust runtime. The TUN crash scope kills the
-experimental adapter after UDP traffic, after first joining the external
+verified independently of the Rust runtime. The TUN TCP flows relay to two
+distinct controlled loopback listeners in the namespace; these are fixture
+peers, not SSH or SOCKS backends. UDP uses a synthetic association handler.
+The TUN crash scope kills the experimental adapter after UDP traffic, after first joining the external
 packet bridge, and runs fresh traffic with a new adapter on the same fixture
 interface. It does not test service recovery or replay old application data.
 The TUN fragment scope also lowers a private IPv4 route MTU to 1000 bytes and
