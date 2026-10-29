@@ -67,11 +67,30 @@ impl Owner {
         Self::new_with_mode(local, remote, outer_mtu, true)
     }
 
+    pub(super) fn new_remote_probe_verified(
+        local: SocketAddr,
+        remote: SocketAddr,
+        outer_mtu: usize,
+        verify: impl FnOnce(SocketAddr, SocketAddr) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Self> {
+        Self::new_using(local, remote, outer_mtu, true, verify)
+    }
+
     fn new_with_mode(
         local: SocketAddr,
         remote: SocketAddr,
         outer_mtu: usize,
         remote_probe: bool,
+    ) -> anyhow::Result<Self> {
+        Self::new_using(local, remote, outer_mtu, remote_probe, |_, _| Ok(()))
+    }
+
+    fn new_using(
+        local: SocketAddr,
+        remote: SocketAddr,
+        outer_mtu: usize,
+        remote_probe: bool,
+        verify: impl FnOnce(SocketAddr, SocketAddr) -> anyhow::Result<()>,
     ) -> anyhow::Result<Self> {
         Self::validate_peer(local, remote)?;
         let budget = PathBudget::new(outer_mtu, remote.is_ipv6())?;
@@ -79,6 +98,7 @@ impl Owner {
         socket.set_nonblocking(true)?;
         socket.connect(remote)?;
         let queue = Self::enable_queue(&socket, remote_probe)?;
+        verify(socket.local_addr()?, socket.peer_addr()?)?;
         Ok(Self {
             socket,
             queue: Some(queue),
@@ -396,6 +416,45 @@ mod tests {
             drop(UdpSocket::bind(first_address).unwrap());
             drop(UdpSocket::bind(second_address).unwrap());
             drop(UdpSocket::bind(replacement_address).unwrap());
+        }
+    }
+
+    #[test]
+    fn initial_owner_requires_candidate_verification_before_publication() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let remote = peer.local_addr().unwrap();
+            let mut candidate = None;
+            let result = Owner::new_using(
+                crate::loopback_address(ipv6),
+                remote,
+                1600,
+                false,
+                |local, actual_remote| {
+                    candidate = Some(local);
+                    assert_eq!(actual_remote, remote);
+                    Err(Error::PathVerification.into())
+                },
+            );
+            assert!(
+                matches!(result, Err(error) if error.downcast_ref::<Error>() == Some(&Error::PathVerification))
+            );
+            drop(UdpSocket::bind(candidate.unwrap()).unwrap());
+            let mut owner = Owner::new_using(
+                crate::loopback_address(ipv6),
+                remote,
+                1600,
+                false,
+                |local, actual_remote| {
+                    assert_ne!(local.port(), 0);
+                    assert_eq!(actual_remote, remote);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            owner
+                .send_reserved(&packet(1), remote.ip(), Duration::ZERO)
+                .unwrap();
         }
     }
 

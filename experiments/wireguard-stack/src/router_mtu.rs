@@ -523,15 +523,17 @@ fn overlapping_paths(
             "198.20.0.1".parse()?,
         )
     };
-    let mut first = Owner::new_remote_probe(
+    let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
         1600,
+        verify_candidate_path,
     )?;
-    let mut second = Owner::new_remote_probe(
+    let mut second = Owner::new_remote_probe_verified(
         SocketAddr::new(second_local, 0),
         client.transport.remote,
         1600,
+        verify_candidate_path,
     )?;
     let first_address = first.local_addr()?;
     let second_address = second.local_addr()?;
@@ -621,15 +623,17 @@ fn interrupted_path(
             "198.20.0.1".parse()?,
         )
     };
-    let mut first = Owner::new_remote_probe(
+    let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
         1600,
+        verify_candidate_path,
     )?;
-    let mut second = Owner::new_remote_probe(
+    let mut second = Owner::new_remote_probe_verified(
         SocketAddr::new(second_local, 0),
         client.transport.remote,
         1600,
+        verify_candidate_path,
     )?;
     let monitor = crate::link_monitor::Monitor::new("client1")?;
     let first_address = first.local_addr()?;
@@ -740,15 +744,17 @@ fn route_change(
             "198.20.0.1".parse()?,
         )
     };
-    let mut first = Owner::new_remote_probe(
+    let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
         1600,
+        verify_candidate_path,
     )?;
-    let mut second = Owner::new_remote_probe(
+    let mut second = Owner::new_remote_probe_verified(
         SocketAddr::new(second_local, 0),
         client.transport.remote,
         1600,
+        verify_candidate_path,
     )?;
     let initial = [first.local_addr()?, second.local_addr()?];
     let monitor = match change {

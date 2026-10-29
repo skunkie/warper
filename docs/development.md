@@ -692,7 +692,8 @@ not prove notification delivery ordering or cover changes after the check. The
 lookup does not model socket marks or a concurrent routing change, and is not
 production path verification. For link, route, rule, and address recovery, each
 candidate socket also undergoes a monitored lookup using its actual source and
-destination UDP ports before the owner publishes it. Initial socket creation does not use that candidate check.
+destination UDP ports before the owner publishes it. Initial owners in the two-path and recovery scenarios also use that candidate
+check. Other fixture transport sockets remain outside it.
 
 The harness also removes and restores the second source-specific default route
 and, in a separate exchange, its policy rule while both owners have pending

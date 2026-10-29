@@ -1284,8 +1284,9 @@ socket marks, verify exemptions, or close the snapshot/notification race.
 During link, route, rule, and address recovery, the experimental owner verifies
 the candidate socket's actual addresses and UDP ports before publication.
 Verification failure leaves the owner unavailable and releases the candidate.
-Initial sockets, real socket routing and production integration
-remain unverified. Required further evidence includes
+Initial owners in the two-path and recovery scenarios also require this check;
+other fixture sockets, real socket routing and production integration remain
+unverified. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.

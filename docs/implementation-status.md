@@ -251,9 +251,10 @@ network changes and notification errors during the queries
 ordering and the period after the check remain unverified. In the link, route, rule,
 and address recovery cases, a replacement owner verifies the candidate
 socket's actual UDP endpoints before publication; failure leaves it unavailable
-(`target/evidence/phase-0/link-candidate/README.md`). Initial socket creation,
-socket marks, actual socket routing, and race-free verification
-remain open. Route-event
+(`target/evidence/phase-0/link-candidate/README.md`). Initial owners in these
+two-path scenarios now require the same candidate check
+(`target/evidence/phase-0/initial-candidate/README.md`). Other fixture sockets,
+socket marks, actual socket routing, and race-free verification remain open. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter
