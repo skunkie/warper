@@ -623,8 +623,10 @@ raw-stack features. A controlled shared-interface probe reserves feedback for
 one of two TCP flows with oversized unacknowledged packets. It rejects feedback
 quoting the other flow, then applies matched feedback to reduce the shared
 interface from 1500 to 1280. Both flows retransmit and complete FIN while a
-distinct UDP datagram is delivered once in each IP family. This does not
-establish general path attribution or exercise the production runtime. PMTU and the remaining fragmentation strategy must be
+distinct UDP datagram is delivered once in each IP family. When queued packets
+make replacement busy, the fixture verifies that the packet queue, both TCP
+send queues, original MTU, and reservation survive for a controlled retry. This
+does not establish general path attribution or exercise the production runtime. PMTU and the remaining fragmentation strategy must be
 resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
 generation by a raw peer does not prove error propagation through the host
 runtime or active backend API. Kernel TUN, route/path changes, and native

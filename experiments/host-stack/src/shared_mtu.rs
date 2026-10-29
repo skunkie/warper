@@ -4,7 +4,7 @@
 
 //! Controlled shared-interface TCP and UDP behavior during an MTU reduction.
 
-use std::time::Duration;
+use std::{io, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use smoltcp::{
@@ -53,15 +53,17 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
     }
     client.poll(60);
     let mut quotes = [None, None];
-    let mut dropped_packets = 0;
+    let queued = client.device.outgoing.clone();
+    let dropped_packets = queued.len();
+    let send_queues =
+        client_handles.map(|handle| client.sockets.get::<tcp::Socket>(handle).send_queue());
     let header_len = if ipv6 { 40 } else { 20 };
-    while let Some(packet) = client.device.outgoing.pop_front() {
-        dropped_packets += 1;
+    for packet in &queued {
         let tcp = TcpPacket::new_checked(&packet[header_len..])?;
         if !tcp.payload().is_empty() && packet.len() > MTU {
             match tcp.dst_port() {
-                9000 if quotes[0].is_none() => quotes[0] = Some(packet),
-                9001 if quotes[1].is_none() => quotes[1] = Some(packet),
+                9000 if quotes[0].is_none() => quotes[0] = Some(packet.clone()),
+                9001 if quotes[1].is_none() => quotes[1] = Some(packet.clone()),
                 _ => {}
             }
         }
@@ -91,6 +93,34 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
             && tracker.next_deadline().is_some()
     );
     let feedback = crate::pmtu_fixture::too_big(&first_quote, ipv6, MTU)?;
+    let busy = match crate::mtu_reduction::apply_feedback(
+        &mut client,
+        &mut tracker,
+        &feedback,
+        Duration::from_millis(61),
+    ) {
+        Ok(_) => anyhow::bail!("queued packets did not prevent interface replacement"),
+        Err(error) => error,
+    };
+    ensure!(
+        matches!(busy.downcast_ref::<io::Error>(), Some(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    ensure!(
+        client.device.outgoing == queued,
+        "busy resize changed queued packets"
+    );
+    ensure!(
+        client.device.capabilities().max_transmission_unit == 1500
+            && tracker.next_deadline().is_some()
+    );
+    for (handle, expected) in client_handles.into_iter().zip(send_queues) {
+        ensure!(
+            client.sockets.get::<tcp::Socket>(handle).send_queue() == expected,
+            "busy resize changed retained TCP bytes"
+        );
+    }
+    // Deliberate network loss: both TCP stacks retain their own retry state.
+    client.device.outgoing.clear();
     ensure!(
         crate::mtu_reduction::apply_feedback(
             &mut client,
@@ -159,7 +189,7 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
             let completed = *completed_at.get_or_insert(now);
             if now - completed >= 100 {
                 println!(
-                    "PASS matched shared interface MTU reduction: IPv6={ipv6}, tcp_flows=2, udp_datagrams=1, tcp_bytes=8192, dropped_packets={dropped_packets}, controlled_ms={}",
+                    "PASS matched shared interface MTU reduction: IPv6={ipv6}, tcp_flows=2, udp_datagrams=1, tcp_bytes=8192, busy_retained=true, dropped_packets={dropped_packets}, controlled_ms={}",
                     now - 61
                 );
                 return Ok(());

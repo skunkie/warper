@@ -127,8 +127,11 @@ probe now retains two simultaneous TCP flows and one UDP datagram across a
 1500-to-1280 reduction in both families. Feedback quoting the other flow is
 rejected before matched feedback triggers the reduction; deliberately lost
 oversized TCP packets retransmit without application resubmission
-(`target/evidence/phase-0/matched-shared-mtu/README.md`). This does not exercise
-the production runtime or establish general path attribution. A single reserved outstanding
+(`target/evidence/phase-0/matched-shared-mtu/README.md`). With both flows
+queued, a busy replacement now preserves the packet queue, both TCP send
+queues, MTU, and reservation until a controlled retry
+(`target/evidence/phase-0/busy-shared-mtu/README.md`). This does not exercise the
+production runtime or establish general path attribution. A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
 quotes and queue-busy retry are covered
