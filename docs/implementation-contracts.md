@@ -1281,10 +1281,10 @@ queries. It does not establish notification ordering or cover the interval after
 the check. The lookup verifies destination, source,
 gateway, interface, and an unambiguous unicast result, but does not include
 socket marks, verify exemptions, or close the snapshot/notification race.
-During route, rule, and address recovery, the experimental owner also verifies
+During link, route, rule, and address recovery, the experimental owner verifies
 the candidate socket's actual addresses and UDP ports before publication.
 Verification failure leaves the owner unavailable and releases the candidate.
-Initial sockets, link recovery, real socket routing and production integration
+Initial sockets, real socket routing and production integration
 remain unverified. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across

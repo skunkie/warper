@@ -690,10 +690,9 @@ lookup, the checker subscribes to link, address, route, and rule notifications;
 it rejects a queued notification or receive error after the queries. This does
 not prove notification delivery ordering or cover changes after the check. The
 lookup does not model socket marks or a concurrent routing change, and is not
-production path verification. For route, rule, and address recovery, each
+production path verification. For link, route, rule, and address recovery, each
 candidate socket also undergoes a monitored lookup using its actual source and
-destination UDP ports before the owner publishes it. Link recovery and initial
-socket creation do not use that candidate check.
+destination UDP ports before the owner publishes it. Initial socket creation does not use that candidate check.
 
 The harness also removes and restores the second source-specific default route
 and, in a separate exchange, its policy rule while both owners have pending

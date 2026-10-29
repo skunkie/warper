@@ -248,11 +248,11 @@ acknowledged (`target/evidence/phase-0/route-recovery/README.md`). A mismatch
 prevents replacement in the fixture. A pre-lookup subscription rejects queued
 network changes and notification errors during the queries
 (`target/evidence/phase-0/monitored-route-lookups/README.md`). Notification
-ordering and the period after the check remain unverified. In the route, rule,
+ordering and the period after the check remain unverified. In the link, route, rule,
 and address recovery cases, a replacement owner verifies the candidate
 socket's actual UDP endpoints before publication; failure leaves it unavailable
-(`target/evidence/phase-0/candidate-route/README.md`). Initial socket creation,
-link recovery, socket marks, actual socket routing, and race-free verification
+(`target/evidence/phase-0/link-candidate/README.md`). Initial socket creation,
+socket marks, actual socket routing, and race-free verification
 remain open. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.

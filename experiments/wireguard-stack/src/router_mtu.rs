@@ -680,7 +680,7 @@ fn interrupted_path(
     );
     crate::router_path::write_marker(directory, &format!("up.{suffix}.request"))?;
     wait_marker(directory, &format!("up.{suffix}.ready"))?;
-    second.reconnect(client.transport.remote, 1600)?;
+    second.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
     send_path_datagram(
         client,
         &mut second,
