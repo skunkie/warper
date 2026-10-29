@@ -308,7 +308,8 @@ shorter quotes remain unresolved.
 
 The internal `--router-mtu-check DIRECTORY` form is reserved for the isolated
 router harness. Its private control directory coordinates interruption and
-restoration of a fixture-owned link; the probe does not configure host links.
+restoration of a fixture-owned link and private policy route; the probe does not
+configure host links or routes.
 The standalone no-directory form remains available for the existing routed
 checks and does not request an interruption. Both forms require a mapped user
 namespace and controlled router topology; they are not production commands.

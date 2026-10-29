@@ -230,8 +230,14 @@ uses a Linux link notification to invalidate that owner, and commits the
 unaffected owner's report.
 After the harness restores the link, a replacement socket completes a distinct
 operation in all four family combinations
-(`target/evidence/phase-0/link-notification/README.md`). Continuous monitoring,
-route changes and the interval before notification processing remain unverified.
+(`target/evidence/phase-0/link-notification/README.md`). The fixture also
+removes and restores a source-specific route with two reservations pending; an
+experimental route listener conservatively invalidates both owners on any route
+event, then replacement sockets complete distinct operations
+(`target/evidence/phase-0/route-notification/README.md`). An intermittent
+routed TCP tuple failure in an earlier run remains unexplained. Route-event
+attribution, continuous monitoring, route verification and the interval before
+notification processing remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter
 rejection and stale-report rejection before committing a distinct later
 report in all four family combinations

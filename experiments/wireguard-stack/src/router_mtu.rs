@@ -192,6 +192,7 @@ fn exchange(
     overlapping_paths(client, destination, ipv6, wall)?;
     if let Some(directory) = directory {
         interrupted_path(client, destination, ipv6, wall, directory)?;
+        route_change(client, destination, ipv6, wall, directory)?;
     }
     ensure!(
         queue.read()?.is_none(),
@@ -704,6 +705,122 @@ fn interrupted_path(
     drop(UdpSocket::bind(second_address)?);
     drop(UdpSocket::bind(restored_address)?);
     println!("PASS interrupted routed path: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
+    Ok(())
+}
+
+fn route_change(
+    client: &mut Endpoint,
+    destination: SocketAddr,
+    ipv6: bool,
+    wall: Instant,
+    directory: &Path,
+) -> Result<()> {
+    let outer_ipv6 = client.transport.remote.is_ipv6();
+    let (first_local, second_local, first_reporter, second_reporter): (
+        IpAddr,
+        IpAddr,
+        IpAddr,
+        IpAddr,
+    ) = if outer_ipv6 {
+        (
+            "fd77:1::2".parse()?,
+            "fd77:3::2".parse()?,
+            "fd77:1::1".parse()?,
+            "fd77:3::1".parse()?,
+        )
+    } else {
+        (
+            "198.18.0.2".parse()?,
+            "198.20.0.2".parse()?,
+            "198.18.0.1".parse()?,
+            "198.20.0.1".parse()?,
+        )
+    };
+    let mut first = Owner::new_remote_probe(
+        SocketAddr::new(first_local, 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let mut second = Owner::new_remote_probe(
+        SocketAddr::new(second_local, 0),
+        client.transport.remote,
+        1600,
+    )?;
+    let initial = [first.local_addr()?, second.local_addr()?];
+    let monitor = crate::link_monitor::Monitor::routes()?;
+    for (owner, reporter, marker) in [
+        (&mut first, first_reporter, 0x77),
+        (&mut second, second_reporter, 0x79),
+    ] {
+        send_path_datagram(client, owner, destination, reporter, ipv6, marker, wall)?;
+    }
+    ensure!(
+        !monitor.poll()?,
+        "route notification was already pending before the fixture change"
+    );
+    let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
+    crate::router_path::write_marker(directory, &format!("route.down.{suffix}.request"))?;
+    wait_marker(directory, &format!("route.down.{suffix}.ready"))?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let notification = monitor.poll();
+        let first_result = crate::link_monitor::apply(&mut first, notification);
+        let second_result = crate::link_monitor::apply(&mut second, notification);
+        let first_changed = first_result?;
+        let second_changed = second_result?;
+        ensure!(
+            first_changed == second_changed,
+            "route notification was applied inconsistently"
+        );
+        if first_changed {
+            break;
+        }
+        if Instant::now() >= deadline {
+            first.invalidate_path();
+            second.invalidate_path();
+            anyhow::bail!("route notification deadline exceeded");
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    for (owner, reporter) in [(&mut first, first_reporter), (&mut second, second_reporter)] {
+        let error = match owner.send_reserved(&[0; 64], reporter, wall.elapsed()) {
+            Ok(()) => anyhow::bail!("route-invalidated path accepted a send"),
+            Err(error) => error,
+        };
+        ensure!(
+            error.downcast_ref::<crate::outer_owner::Error>()
+                == Some(&crate::outer_owner::Error::Unavailable)
+        );
+    }
+    crate::router_path::write_marker(directory, &format!("route.up.{suffix}.request"))?;
+    wait_marker(directory, &format!("route.up.{suffix}.ready"))?;
+    first.reconnect(client.transport.remote, 1600)?;
+    second.reconnect(client.transport.remote, 1600)?;
+    let restored = [first.local_addr()?, second.local_addr()?];
+    for (owner, reporter, marker) in [
+        (&mut first, first_reporter, 0x7b),
+        (&mut second, second_reporter, 0x7d),
+    ] {
+        send_path_datagram(client, owner, destination, reporter, ipv6, marker, wall)?;
+    }
+    for owner in [&mut first, &mut second] {
+        let report = loop {
+            if let Some(report) = owner.receive()? {
+                break report;
+            }
+            owner.advance(wall.elapsed())?;
+            thread::sleep(Duration::from_millis(1));
+        };
+        ensure!(
+            owner.apply(&report, wall.elapsed())?,
+            "restored path did not reduce"
+        );
+    }
+    drop((first, second));
+    for address in initial.into_iter().chain(restored) {
+        drop(UdpSocket::bind(address)?);
+    }
+    println!("PASS routed path change: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
     Ok(())
 }
 

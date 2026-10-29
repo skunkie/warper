@@ -665,7 +665,7 @@ before either reservation is retired. Each receives a genuine report from its
 own router-facing address, rejects the other owner's report, and commits its
 own reduction independently. All inner/outer family combinations run. Both
 links converge at the same router and egress; this does not verify independent
-physical NICs, concurrent stack resizing, or route-change notifications.
+physical NICs or concurrent stack resizing.
 
 With the harness-provided private tmpfs control directory, the probe also
 keeps both reservations outstanding while the harness lowers the second router
@@ -676,10 +676,19 @@ unaffected path's report. The harness
 raises the link and restores its IPv6 address; a replacement socket sends a
 distinct datagram and commits its own new report. The harness owns link mutation
 and independently removes its links and control mount even on failure. This
-controlled sequence does not establish continuous monitoring, route-change
-detection, safe behavior before the notification is processed, or physical
+controlled sequence does not establish continuous monitoring, safe behavior
+before the notification is processed, or physical
 interface failure. Notification loss, truncation and malformed input fail
 closed in the experimental owner.
+
+The harness also removes and restores the second source-specific default route
+while both owners have pending reservations. The experimental Linux route
+listener invalidates both owners on any IPv4 or IPv6 route event, because it
+does not attribute events to individual paths. Both reject sends until the
+harness restores the route and the probe replaces their sockets; distinct sends
+then obtain their own reports. This conservative fixture behavior does not
+establish route verification, event attribution, continuous monitoring, or
+safety during the interval before event processing.
 
 `run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links,
 interruption supervisor and kernel-peer subprocess. Ready/stop files use a
