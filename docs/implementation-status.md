@@ -161,8 +161,13 @@ A test-only bounded channel now reserves capacity before removing feedback;
 full or closed output preserves the queued handle, and a received handle retains
 its lease (`target/evidence/phase-0/feedback-channel/README.md`). A controlled
 Unix datagram pair now delivers the exact feedback while the handle remains live (`target/evidence/phase-0/feedback-datagram/README.md`).
-TUN handoff, kernel acknowledgement, and cross-instance lifetime remain
-unverified. It is not wired to the runtime and does not establish a production
+A separate Linux TUN fixture delivers synthetic too-big feedback to connected
+UDP senders in both families. The kernel reports the reduced path MTU, refuses
+an oversized send, and transmits a smaller datagram
+(`target/evidence/phase-0/tun-udp-pmtu/README.md`). It does not exercise the
+feedback candidate, TCP sender adaptation, or a retained flow lease. TUN
+handoff of the candidate, kernel acknowledgement, and cross-instance lifetime
+remain unverified. It is not wired to the runtime and does not establish a production
 rate policy. UDP, production configuration and runtime integration
 remain separately constrained.
 A single reserved outstanding

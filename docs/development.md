@@ -135,6 +135,8 @@ cargo fetch --locked
 cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --packet-only
 ./scripts/verify-feasibility.sh host-stack --tun
+# Independent Linux UDP sender feedback fixture (disposable namespaces):
+PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 15s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_tun_pmtu
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --tun-fragment-check
 ./scripts/verify-feasibility.sh host-stack --mtu-check
