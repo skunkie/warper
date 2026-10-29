@@ -149,9 +149,14 @@ such rejection without emitting ICMP. A test-only response candidate now
 validates exact packet length, checksum, supported headers, selected address
 categories, and accepted flow ownership before constructing bounded feedback in
 both families (`target/evidence/phase-0/owned-ingress-feedback/README.md`). It
-has no TCP sequence acceptance or directed-broadcast verification, runtime
-output admission, rate limit, verified reporter policy, or sender adaptation
-evidence. UDP, production configuration and runtime integration
+has no TCP sequence acceptance, directed-broadcast verification, verified
+reporter policy, or sender adaptation evidence. A test-only candidate now
+queues bounded feedback with a one-second per-flow cooldown, preserving the
+output queue and cooldown on refusal
+(`target/evidence/phase-0/ingress-feedback-queue/README.md`). Queued responses
+have no flow-lifetime ownership, so delayed delivery across retirement or tuple
+reuse is unverified. It is not wired to the runtime and does not establish a
+production rate policy. UDP, production configuration and runtime integration
 remain separately constrained.
 A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised

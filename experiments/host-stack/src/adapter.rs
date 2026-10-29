@@ -39,6 +39,8 @@ use crate::packet_peer::{BYTE_CAPACITY, MTU, PacketDevice};
 
 const MAX_FLOW_SLOTS: usize = 16;
 const IO_CHUNK_BYTES: usize = 1024;
+#[cfg(test)]
+const FEEDBACK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlowId(pub u64);
@@ -75,7 +77,10 @@ pub enum AdmissionError {
 enum TooBigFeedbackError {
     Cancelled,
     InvalidPacket,
+    InvalidTime,
     NotOversized,
+    QueueFull,
+    RateLimited,
     UnsupportedFragmentation,
     WrongFlow,
 }
@@ -227,6 +232,8 @@ struct FlowState {
     previous_state: tcp::State,
     application_eof: bool,
     network_eof: bool,
+    #[cfg(test)]
+    last_feedback: Option<Duration>,
 }
 
 struct Slot {
@@ -414,6 +421,36 @@ impl HostAdapter {
         }
         crate::pmtu_fixture::too_big(bytes, ipv6, mtu)
             .map_err(|_| TooBigFeedbackError::InvalidPacket)
+    }
+
+    #[cfg(test)]
+    fn queue_too_big_for_owned_flow(&mut self, bytes: &[u8]) -> Result<(), TooBigFeedbackError> {
+        let response = self.too_big_for_owned_flow(bytes)?;
+        if self.device.outgoing.len() >= crate::packet_peer::PACKET_CAPACITY {
+            return Err(TooBigFeedbackError::QueueFull);
+        }
+        let (source, destination, _) =
+            tcp_metadata(bytes).map_err(|_| TooBigFeedbackError::InvalidPacket)?;
+        let flow = self
+            .slots
+            .iter_mut()
+            .filter_map(|slot| slot.flow.as_mut())
+            .find(|flow| flow.metadata.source == source && flow.metadata.destination == destination)
+            .ok_or(TooBigFeedbackError::WrongFlow)?;
+        if let Some(previous) = flow.last_feedback {
+            let elapsed = self
+                .now
+                .checked_sub(previous)
+                .ok_or(TooBigFeedbackError::InvalidTime)?;
+            if elapsed < FEEDBACK_INTERVAL {
+                return Err(TooBigFeedbackError::RateLimited);
+            }
+        }
+        // The adapter is exclusively borrowed, so this bounded capacity check
+        // and publication form one synchronous admission without an await.
+        self.device.outgoing.push_back(response);
+        flow.last_feedback = Some(self.now);
+        Ok(())
     }
 
     pub fn poll_io(&mut self, cx: &mut Context<'_>, now: Duration) -> Result<(), AdmissionError> {
@@ -652,6 +689,8 @@ impl HostAdapter {
             previous_state: tcp::State::Listen,
             application_eof: false,
             network_eof: false,
+            #[cfg(test)]
+            last_feedback: None,
         });
         self.next_id = next_id;
         self.statistics.admitted = self.statistics.admitted.saturating_add(1);

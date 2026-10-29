@@ -754,9 +754,11 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         assert_eq!(host.active_flows(), 0);
         let address = source(ipv6, 2).unwrap();
         let destination = SocketAddr::new(source(ipv6, 91).unwrap().ip(), 9100);
+        let second_address = source(ipv6, 3).unwrap();
+        let second_destination = SocketAddr::new(source(ipv6, 92).unwrap().ip(), 9101);
         let mut peers = [
             Peer::with_mtu(address.ip(), address.port(), 1500).unwrap(),
-            peer(ipv6, 3).unwrap(),
+            Peer::with_mtu(second_address.ip(), second_address.port(), 1500).unwrap(),
         ];
         let first = &mut peers[0];
         first
@@ -764,16 +766,32 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             .get_mut::<tcp::Socket>(first.tcp)
             .connect(first.interface.context(), destination, address)
             .unwrap();
-        let mut flow = None;
+        let second = &mut peers[1];
+        second
+            .sockets
+            .get_mut::<tcp::Socket>(second.tcp)
+            .connect(
+                second.interface.context(),
+                second_destination,
+                second_address,
+            )
+            .unwrap();
+        let mut flows = Vec::new();
         for step in 0..50 {
             exchange(&mut host, &mut peers, Duration::from_millis(step))
                 .await
                 .unwrap();
-            if let Ok(accepted_flow) = accepted.try_recv() {
-                flow = Some(accepted_flow);
+            while let Ok(accepted_flow) = accepted.try_recv() {
+                flows.push(accepted_flow);
             }
         }
-        let mut flow = flow.unwrap();
+        assert_eq!(flows.len(), 2);
+        flows.sort_by_key(|flow| flow.metadata.source.ip());
+        let second_flow = flows.pop().unwrap();
+        let mut flow = flows.pop().unwrap();
+        assert_ne!(flow.metadata.backend, second_flow.metadata.backend);
+        assert_eq!(second_flow.metadata.source, second_address);
+        assert_eq!(second_flow.metadata.destination, second_destination);
         assert_eq!(flow.metadata.source, address);
         assert_eq!(flow.metadata.destination, destination);
         let first = &mut peers[0];
@@ -836,7 +854,7 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             host.inject(&packet),
             Err(AdmissionError::PacketTooLarge { mtu: MTU })
         );
-        assert_eq!(host.active_flows(), 1);
+        assert_eq!(host.active_flows(), 2);
         assert!(flow.stream.read(&mut [0; 16]).now_or_never().is_none());
         let first = &mut peers[0];
         first.poll(100);
@@ -856,6 +874,25 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             host.inject(&oversized),
             Err(AdmissionError::PacketTooLarge { mtu: MTU })
         );
+        let second = &mut peers[1];
+        second.poll(100);
+        second.device.outgoing.clear();
+        assert_eq!(
+            second
+                .sockets
+                .get_mut::<tcp::Socket>(second.tcp)
+                .send_slice(&sample)
+                .unwrap(),
+            sample.len()
+        );
+        second.poll(101);
+        let second_oversized = second.device.outgoing.pop_front().unwrap();
+        assert_eq!(second_oversized.len(), 1500);
+        assert_eq!(
+            host.inject(&second_oversized),
+            Err(AdmissionError::PacketTooLarge { mtu: MTU })
+        );
+        let second_response = host.too_big_for_owned_flow(&second_oversized).unwrap();
         let response = host.too_big_for_owned_flow(&oversized).unwrap();
         assert!(response.len() <= MTU);
         let mut tracker = crate::pmtu_feedback::Tracker::default();
@@ -868,6 +905,45 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             )
             .unwrap();
         assert_eq!(tracker.reduction(&response, Duration::ZERO), Ok(Some(MTU)));
+
+        for _ in 0..crate::packet_peer::PACKET_CAPACITY {
+            host.device.outgoing.push_back(vec![0]);
+        }
+        let full_queue = host.device.outgoing.clone();
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::QueueFull)
+        );
+        assert_eq!(host.device.outgoing, full_queue);
+        host.device.outgoing.clear();
+        let admitted_at = host.now;
+        assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
+        assert_eq!(host.take_packet().unwrap(), response);
+        assert_eq!(host.queue_too_big_for_owned_flow(&second_oversized), Ok(()));
+        assert_eq!(host.take_packet().unwrap(), second_response);
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::RateLimited)
+        );
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&second_oversized),
+            Err(TooBigFeedbackError::RateLimited)
+        );
+        assert!(!host.has_packet());
+        host.now = Duration::ZERO;
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::InvalidTime)
+        );
+        host.now = admitted_at + Duration::from_millis(999);
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::RateLimited)
+        );
+        host.now = admitted_at + Duration::from_secs(1);
+        assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
+        assert_eq!(host.take_packet().unwrap(), response);
+        assert!(!host.has_packet());
 
         let mut corrupted = oversized.clone();
         *corrupted.last_mut().unwrap() ^= 1;
@@ -960,7 +1036,7 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
                 Err(TooBigFeedbackError::UnsupportedFragmentation)
             );
         }
-        assert_eq!(host.active_flows(), 1);
+        assert_eq!(host.active_flows(), 2);
         assert!(flow.stream.read(&mut [0; 16]).now_or_never().is_none());
         let socket = host
             .slots
@@ -982,7 +1058,11 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             host.too_big_for_owned_flow(&oversized),
             Err(TooBigFeedbackError::Cancelled)
         );
-        drop(flow);
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::Cancelled)
+        );
+        drop((flow, second_flow));
         assert_eq!(host.lifetimes.available_permits(), 2);
     }
 }
