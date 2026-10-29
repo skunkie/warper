@@ -744,6 +744,8 @@ fn route_change(
             "198.20.0.1".parse()?,
         )
     };
+    let first_monitor = change_monitor(change)?;
+    let second_monitor = change_monitor(change)?;
     let mut first = Owner::new_remote_probe_verified(
         SocketAddr::new(first_local, 0),
         client.transport.remote,
@@ -757,43 +759,36 @@ fn route_change(
         verify_candidate_path,
     )?;
     let initial = [first.local_addr()?, second.local_addr()?];
-    let monitor = match change {
-        "address" => crate::link_monitor::Monitor::addresses()?,
-        _ => crate::link_monitor::Monitor::routes()?,
-    };
+    first.attach_monitor(move || first_monitor.poll())?;
+    second.attach_monitor(move || second_monitor.poll())?;
     for (owner, reporter, marker) in [
         (&mut first, first_reporter, 0x77),
         (&mut second, second_reporter, 0x79),
     ] {
         send_path_datagram(client, owner, destination, reporter, ipv6, marker, wall)?;
     }
-    ensure!(
-        !monitor.poll()?,
-        "route notification was already pending before the fixture change"
-    );
     let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
     crate::router_path::write_marker(directory, &format!("{change}.down.{suffix}.request"))?;
     wait_marker(directory, &format!("{change}.down.{suffix}.ready"))?;
     let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        let notification = monitor.poll();
-        let first_result = crate::link_monitor::apply(&mut first, notification);
-        let second_result = crate::link_monitor::apply(&mut second, notification);
-        let first_changed = first_result?;
-        let second_changed = second_result?;
-        ensure!(
-            first_changed == second_changed,
-            "route notification was applied inconsistently"
-        );
-        if first_changed {
-            break;
+    for owner in [&mut first, &mut second] {
+        loop {
+            match owner.refresh_path() {
+                Ok(()) => {}
+                Err(error)
+                    if error.downcast_ref::<crate::outer_owner::Error>()
+                        == Some(&crate::outer_owner::Error::Unavailable) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+            if Instant::now() >= deadline {
+                owner.invalidate_path();
+                anyhow::bail!("path notification deadline exceeded");
+            }
+            thread::sleep(Duration::from_millis(1));
         }
-        if Instant::now() >= deadline {
-            first.invalidate_path();
-            second.invalidate_path();
-            anyhow::bail!("route notification deadline exceeded");
-        }
-        thread::sleep(Duration::from_millis(1));
     }
     for (owner, reporter) in [(&mut first, first_reporter), (&mut second, second_reporter)] {
         let error = match owner.send_reserved(&[0; 64], reporter, wall.elapsed()) {
@@ -807,8 +802,12 @@ fn route_change(
     }
     crate::router_path::write_marker(directory, &format!("{change}.up.{suffix}.request"))?;
     wait_marker(directory, &format!("{change}.up.{suffix}.ready"))?;
+    let first_monitor = change_monitor(change)?;
+    let second_monitor = change_monitor(change)?;
     first.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
+    first.attach_monitor(move || first_monitor.poll())?;
     second.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
+    second.attach_monitor(move || second_monitor.poll())?;
     let restored = [first.local_addr()?, second.local_addr()?];
     for (owner, reporter, marker) in [
         (&mut first, first_reporter, 0x7b),
@@ -835,6 +834,13 @@ fn route_change(
     }
     println!("PASS routed {change} change: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
     Ok(())
+}
+
+fn change_monitor(change: &str) -> Result<crate::link_monitor::Monitor> {
+    Ok(match change {
+        "address" => crate::link_monitor::Monitor::addresses()?,
+        _ => crate::link_monitor::Monitor::routes()?,
+    })
 }
 
 fn verify_candidate_path(local: SocketAddr, remote: SocketAddr) -> Result<()> {

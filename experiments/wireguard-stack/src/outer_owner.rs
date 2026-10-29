@@ -19,10 +19,13 @@ use crate::{
 const MAX_RETIRED_SOCKETS: usize = 8;
 const MAX_SESSIONS_PER_SOCKET: usize = 8;
 
+type PathMonitor = Box<dyn FnMut() -> Result<bool, crate::link_monitor::Error> + Send>;
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Error {
     InvalidPeer,
     InvalidPacket,
+    MonitorAlreadyAttached,
     RetiredSocketLimit,
     NonIncreasingCounter,
     PathVerification,
@@ -45,6 +48,7 @@ pub(super) struct Owner {
     sessions: Vec<SessionCounter>,
     reservation: Reservation,
     budget: PathBudget,
+    monitor: Option<PathMonitor>,
     remote_probe: bool,
 }
 
@@ -106,6 +110,7 @@ impl Owner {
             sessions: Vec::with_capacity(MAX_SESSIONS_PER_SOCKET),
             reservation: Reservation::default(),
             budget,
+            monitor: None,
             remote_probe,
         })
     }
@@ -126,6 +131,7 @@ impl Owner {
         now: Duration,
         send: impl FnOnce(&UdpSocket, &[u8]) -> io::Result<usize>,
     ) -> anyhow::Result<()> {
+        self.refresh_path()?;
         let queue = self.queue.as_ref().ok_or(Error::Unavailable)?;
         self.budget.check_datagram(packet.len())?;
         self.reservation
@@ -148,6 +154,7 @@ impl Owner {
     }
 
     pub(super) fn apply(&mut self, report: &ReceivedError, now: Duration) -> anyhow::Result<bool> {
+        self.refresh_path()?;
         let queue = self.queue.as_ref().ok_or(Error::Unavailable)?;
         self.reservation.apply(queue, report, &mut self.budget, now)
     }
@@ -196,6 +203,7 @@ impl Owner {
         // so their local ports cannot receive traffic for a later generation.
         self.reservation.cancel();
         self.queue = None;
+        self.monitor = None;
         local.set_port(0);
         let socket = UdpSocket::bind(local)?;
         socket.set_nonblocking(true)?;
@@ -210,7 +218,8 @@ impl Owner {
         Ok(())
     }
 
-    pub(super) fn receive_datagram(&self, buffer: &mut [u8]) -> anyhow::Result<Option<usize>> {
+    pub(super) fn receive_datagram(&mut self, buffer: &mut [u8]) -> anyhow::Result<Option<usize>> {
+        self.refresh_path()?;
         let queue = self.queue.as_ref().ok_or(Error::Unavailable)?;
         queue.verify_socket()?;
         match self.socket.recv_from(buffer) {
@@ -227,9 +236,41 @@ impl Owner {
         self.reservation.cancel();
     }
 
+    pub(super) fn attach_monitor(
+        &mut self,
+        monitor: impl FnMut() -> Result<bool, crate::link_monitor::Error> + Send + 'static,
+    ) -> anyhow::Result<()> {
+        self.queue.as_ref().ok_or(Error::Unavailable)?;
+        if self.monitor.is_some() {
+            return Err(Error::MonitorAlreadyAttached.into());
+        }
+        self.monitor = Some(Box::new(monitor));
+        self.refresh_path()
+    }
+
+    pub(super) fn refresh_path(&mut self) -> anyhow::Result<()> {
+        self.queue.as_ref().ok_or(Error::Unavailable)?;
+        let result = match self.monitor.as_mut() {
+            Some(monitor) => monitor(),
+            None => return Ok(()),
+        };
+        match result {
+            Ok(false) => Ok(()),
+            Ok(true) => {
+                self.invalidate_path();
+                Err(Error::Unavailable.into())
+            }
+            Err(error) => {
+                self.invalidate_path();
+                Err(error.into())
+            }
+        }
+    }
+
     pub(super) fn invalidate_path(&mut self) {
         self.reservation.cancel();
         self.queue = None;
+        self.monitor = None;
     }
 
     pub(super) fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -240,7 +281,8 @@ impl Owner {
         self.budget.outer_mtu()
     }
 
-    pub(super) fn receive(&self) -> anyhow::Result<Option<ReceivedError>> {
+    pub(super) fn receive(&mut self) -> anyhow::Result<Option<ReceivedError>> {
+        self.refresh_path()?;
         self.queue.as_ref().ok_or(Error::Unavailable)?.receive()
     }
 
@@ -311,7 +353,10 @@ mod tests {
     use super::*;
     use crate::outer_errors::Record;
     use nix::{errno::Errno, sys::socket::MsgFlags};
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    };
 
     fn packet(counter: u8) -> [u8; 64] {
         let mut packet = [0; 64];
@@ -416,6 +461,110 @@ mod tests {
             drop(UdpSocket::bind(first_address).unwrap());
             drop(UdpSocket::bind(second_address).unwrap());
             drop(UdpSocket::bind(replacement_address).unwrap());
+        }
+    }
+
+    #[test]
+    fn monitored_owner_remains_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Owner>();
+    }
+
+    #[test]
+    fn monitor_cannot_be_replaced_or_attached_after_initial_change() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let remote = peer.local_addr().unwrap();
+            let mut owner = Owner::new(crate::loopback_address(ipv6), remote, 1600).unwrap();
+            owner.attach_monitor(|| Ok(false)).unwrap();
+            assert_eq!(
+                owner
+                    .attach_monitor(|| Ok(false))
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::MonitorAlreadyAttached)
+            );
+            owner.invalidate_path();
+            assert_eq!(
+                owner
+                    .attach_monitor(|| Ok(false))
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            owner.reconnect(remote, 1600).unwrap();
+            assert_eq!(
+                owner
+                    .attach_monitor(|| Ok(true))
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            assert_eq!(
+                owner
+                    .send_reserved(&packet(1), remote.ip(), Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn monitored_operations_fail_closed_on_change_and_notification_loss() {
+        for ipv6 in [false, true] {
+            for operation in 0..4 {
+                for state in [1, 2] {
+                    let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+                    let remote = peer.local_addr().unwrap();
+                    let mut owner =
+                        Owner::new(crate::loopback_address(ipv6), remote, 1600).unwrap();
+                    let signal = Arc::new(AtomicU8::new(0));
+                    let monitor_signal = Arc::clone(&signal);
+                    owner
+                        .attach_monitor(move || match monitor_signal.load(Ordering::SeqCst) {
+                            0 => Ok(false),
+                            1 => Ok(true),
+                            _ => Err(crate::link_monitor::Error::Lost),
+                        })
+                        .unwrap();
+                    let original = packet(1);
+                    owner
+                        .send_reserved(&original, remote.ip(), Duration::ZERO)
+                        .unwrap();
+                    let feedback = report(&owner, &original, remote.ip());
+                    signal.store(state, Ordering::SeqCst);
+                    let result = match operation {
+                        0 => owner.send_reserved(&packet(2), remote.ip(), Duration::ZERO),
+                        1 => owner.apply(&feedback, Duration::ZERO).map(|_| ()),
+                        2 => owner.receive().map(|_| ()),
+                        _ => owner.receive_datagram(&mut [0; 128]).map(|_| ()),
+                    };
+                    let error = result.unwrap_err();
+                    if state == 1 {
+                        assert_eq!(error.downcast_ref::<Error>(), Some(&Error::Unavailable));
+                    } else {
+                        assert_eq!(
+                            error.downcast_ref::<crate::link_monitor::Error>(),
+                            Some(&crate::link_monitor::Error::Lost)
+                        );
+                    }
+                    assert_eq!(
+                        owner
+                            .send_reserved(&packet(3), remote.ip(), Duration::ZERO)
+                            .unwrap_err()
+                            .downcast_ref::<Error>(),
+                        Some(&Error::Unavailable)
+                    );
+                    assert_eq!(
+                        owner
+                            .apply(&feedback, Duration::ZERO)
+                            .unwrap_err()
+                            .downcast_ref::<Error>(),
+                        Some(&Error::Unavailable)
+                    );
+                }
+            }
         }
     }
 
@@ -1189,7 +1338,7 @@ mod tests {
             drop(owner);
 
             // Force reuse instead of depending on the kernel's ephemeral port choice.
-            let replacement = Owner::new(old_local, peer.local_addr().unwrap(), 1600).unwrap();
+            let mut replacement = Owner::new(old_local, peer.local_addr().unwrap(), 1600).unwrap();
             peer.send_to(b"delayed old generation", old_local).unwrap();
             let mut buffer = [0; 128];
             let deadline = std::time::Instant::now() + Duration::from_secs(1);

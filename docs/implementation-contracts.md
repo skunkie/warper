@@ -1289,7 +1289,12 @@ the candidate socket's actual addresses and UDP ports before publication.
 Verification failure leaves the owner unavailable and releases the candidate.
 Initial owners in the two-path and recovery scenarios also require this check;
 other fixture sockets, real socket routing and production integration remain
-unverified. Required further evidence includes
+unverified. In route/rule and address scenarios, each experimental owner retains
+a subscription opened before candidate verification. It checks that monitor
+before sends, reads and feedback, invalidating on a queued change or receive
+error; replacement of an attached monitor is rejected. These separate scenarios
+do not monitor all change classes together, supervise idle owners, or close the
+race between a poll and the subsequent operation. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.
