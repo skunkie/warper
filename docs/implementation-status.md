@@ -130,8 +130,12 @@ oversized TCP packets retransmit without application resubmission
 (`target/evidence/phase-0/matched-shared-mtu/README.md`). With both flows
 queued, a busy replacement now preserves the packet queue, both TCP send
 queues, MTU, and reservation until a controlled retry
-(`target/evidence/phase-0/busy-shared-mtu/README.md`). This does not exercise the
-production runtime or establish general path attribution. A single reserved outstanding
+(`target/evidence/phase-0/busy-shared-mtu/README.md`). A controlled accepted-
+stream adapter test now retains two distinct backend flow records and pending
+application bytes across a direct interface rebuild, completing FIN and releasing
+flow permits in both families
+(`target/evidence/phase-0/accepted-interface-mtu/README.md`). It does not apply
+feedback or exercise the production runtime or physical path attribution. A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
 quotes and queue-busy retry are covered

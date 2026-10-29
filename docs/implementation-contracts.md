@@ -626,8 +626,12 @@ interface from 1500 to 1280. Both flows retransmit and complete FIN while a
 distinct UDP datagram is delivered once in each IP family. When queued packets
 make replacement busy, the fixture verifies that the packet queue, both TCP
 send queues, original MTU, and reservation survive for a controlled retry. This
-does not establish general path attribution or exercise the production runtime. PMTU and the remaining fragmentation strategy must be
-resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
+does not establish general path attribution or exercise the production runtime.
+A separate controlled accepted-stream adapter test directly rebuilds the
+interface while two flows on distinct backends retain pending application data.
+It checks their identities, exact delivery, FIN and permit release in both IP
+families; feedback correlation and UDP are outside that test. PMTU and the
+remaining fragmentation strategy must be resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
 generation by a raw peer does not prove error propagation through the host
 runtime or active backend API. Kernel TUN, route/path changes, and native
 platform behavior remain unverified.

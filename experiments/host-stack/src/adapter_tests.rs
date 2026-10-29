@@ -517,3 +517,141 @@ async fn unread_application_stream_backpressures_peer_and_resumes_after_read() {
         host.cancel();
     }
 }
+
+#[tokio::test]
+async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() {
+    for ipv6 in [false, true] {
+        let (mut host, mut accepted) = HostAdapter::new(Limits::default(), select_backend).unwrap();
+        host.device.configure_mtu(1500).unwrap();
+        assert_eq!(
+            smoltcp::phy::Device::capabilities(&host.device).max_transmission_unit,
+            1500
+        );
+        let mut peers = [peer(ipv6, 2).unwrap(), peer(ipv6, 3).unwrap()];
+        let destinations = [
+            SocketAddr::new(source(ipv6, 91).unwrap().ip(), 9100),
+            SocketAddr::new(source(ipv6, 92).unwrap().ip(), 9101),
+        ];
+        for index in 0..2 {
+            let peer = &mut peers[index];
+            peer.sockets
+                .get_mut::<tcp::Socket>(peer.tcp)
+                .connect(
+                    peer.interface.context(),
+                    destinations[index],
+                    source(ipv6, 2 + index as u8).unwrap(),
+                )
+                .unwrap();
+        }
+        let mut flows = Vec::new();
+        for step in 0..50 {
+            exchange(&mut host, &mut peers, Duration::from_millis(step))
+                .await
+                .unwrap();
+            while let Ok(flow) = accepted.try_recv() {
+                flows.push(flow);
+            }
+        }
+        assert_eq!(flows.len(), 2);
+        flows.sort_by_key(|flow| flow.metadata.source.ip());
+        let metadata = [flows[0].metadata, flows[1].metadata];
+        assert_ne!(metadata[0].id, metadata[1].id);
+        assert_ne!(metadata[0].backend, metadata[1].backend);
+        for index in 0..2 {
+            assert_eq!(metadata[index].destination, destinations[index]);
+            assert_eq!(
+                Some(metadata[index].backend),
+                select_backend(destinations[index])
+            );
+            flows[index]
+                .stream
+                .write_all(&[0x31 + index as u8; 512])
+                .await
+                .unwrap();
+        }
+        let mut received = [Vec::new(), Vec::new()];
+        for step in 50..100 {
+            exchange(&mut host, &mut peers, Duration::from_millis(step))
+                .await
+                .unwrap();
+            for index in 0..2 {
+                let peer = &mut peers[index];
+                let socket = peer.sockets.get_mut::<tcp::Socket>(peer.tcp);
+                while socket.can_recv() {
+                    socket
+                        .recv(|bytes| {
+                            received[index].extend_from_slice(bytes);
+                            (bytes.len(), ())
+                        })
+                        .unwrap();
+                }
+            }
+        }
+        for index in 0..2 {
+            assert_eq!(received[index], vec![0x31 + index as u8; 512]);
+            flows[index]
+                .stream
+                .write_all(&[0x61 + index as u8; 512])
+                .await
+                .unwrap();
+            flows[index].stream.shutdown().await.unwrap();
+        }
+        assert!(!host.device.has_ingress());
+        assert!(host.device.outgoing.is_empty());
+        crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, 1280, 100)
+            .unwrap();
+        assert_eq!(host.active_flows(), 2);
+        assert_eq!(
+            smoltcp::phy::Device::capabilities(&host.device).max_transmission_unit,
+            1280
+        );
+        for expected in metadata {
+            assert!(
+                host.slots
+                    .iter()
+                    .filter_map(|slot| slot.flow.as_ref())
+                    .any(|flow| flow.metadata == expected)
+            );
+        }
+        assert!(host.interface.any_ip());
+        assert_eq!([flows[0].metadata, flows[1].metadata], metadata);
+        let mut finished = [false; 2];
+        // The pinned TCP stack retains TIME-WAIT for ten controlled seconds.
+        for step in 100..30000 {
+            exchange(&mut host, &mut peers, Duration::from_millis(step))
+                .await
+                .unwrap();
+            for index in 0..2 {
+                let peer = &mut peers[index];
+                let socket = peer.sockets.get_mut::<tcp::Socket>(peer.tcp);
+                while socket.can_recv() {
+                    socket
+                        .recv(|bytes| {
+                            received[index].extend_from_slice(bytes);
+                            (bytes.len(), ())
+                        })
+                        .unwrap();
+                    assert!(received[index].len() <= 1024);
+                }
+                if !socket.may_recv() && !finished[index] {
+                    socket.close();
+                    finished[index] = true;
+                }
+            }
+            if finished == [true, true] && host.active_flows() == 0 {
+                break;
+            }
+        }
+        assert_eq!(finished, [true, true]);
+        assert_eq!(host.active_flows(), 0);
+        for (index, actual) in received.iter().enumerate() {
+            let mut expected = vec![0x31 + index as u8; 512];
+            expected.extend([0x61 + index as u8; 512]);
+            assert_eq!(actual, &expected);
+        }
+        assert_eq!(host.statistics().finished, 2);
+        host.cancel();
+        drop(flows);
+        assert_eq!(host.lifetimes.available_permits(), 2);
+    }
+}
