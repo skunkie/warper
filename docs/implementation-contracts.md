@@ -215,6 +215,8 @@ entry points, exercised by source tests, are:
 ```text
 HostAdapter::new(Limits, fn(SocketAddr) -> Option<BackendId>)
     -> Result<(HostAdapter, mpsc::Receiver<AcceptedFlow>), AdmissionError>
+HostAdapter::with_mtu(Limits, fn(SocketAddr) -> Option<BackendId>, usize)
+    -> Result<(HostAdapter, mpsc::Receiver<AcceptedFlow>), AdmissionError>
 HostAdapter::inject(&mut self, &[u8]) -> Result<FlowId, AdmissionError>
 HostAdapter::poll_io(&mut self, &mut Context<'_>, Duration)
     -> Result<(), AdmissionError>
@@ -226,8 +228,12 @@ HostAdapter::cancel(&mut self)
 
 ### Admission and Publication
 
-Input is limited to the 1280-byte MTU. Library IP/TCP parsers validate
-lengths, checksums, ports, and supported headers before admission. The
+The default MTU remains 1280 bytes. The experimental `with_mtu` constructor
+accepts 1280–1500 and returns `InvalidMtu` outside that range; ingress is bounded
+by the current device MTU. This is a TCP-only probe interface, not YAML or CLI
+configuration or a dynamic PMTU implementation. The UDP candidate and production
+runtime remain separately constrained. Library IP/TCP parsers validate lengths,
+checksums, ports, and supported headers before admission. The
 candidate rejects UDP/IPv6 extension transports with `UnsupportedProtocol`;
 fragmented/malformed IPv4 is rejected by the configured library parser.
 A non-SYN packet without an owner is `UnknownFlow`. An unmatched
@@ -632,10 +638,10 @@ interface while two flows on distinct backends retain pending application data.
 It checks their identities, exact delivery, FIN and permit release in both IP
 families. With output queued for both flows, a busy rebuild preserves the queue,
 TCP send state, MTU and flow ownership before delivery and retry. Feedback
-correlation and UDP are outside that test. The test sets the device MTU
-directly; adapter ingress still has a fixed 1280-byte admission limit, so this
-does not establish a supported 1500-byte adapter configuration. PMTU and the
-remaining fragmentation strategy must be resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
+correlation and UDP are outside that test. The test uses the experimental TCP
+adapter MTU constructor; it does not establish a production MTU configuration.
+PMTU and the remaining fragmentation strategy must be resolved before the
+MTU/ICMP gate or stack ADR can be accepted. ICMP
 generation by a raw peer does not prove error propagation through the host
 runtime or active backend API. Kernel TUN, route/path changes, and native
 platform behavior remain unverified.

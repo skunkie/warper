@@ -19,7 +19,7 @@ use std::{
 use futures::task::AtomicWaker;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage},
-    phy::ChecksumCapabilities,
+    phy::{ChecksumCapabilities, Device},
     socket::tcp,
     time::Instant,
     wire::{
@@ -57,6 +57,7 @@ pub struct FlowMetadata {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionError {
     InvalidLimits,
+    InvalidMtu,
     MalformedPacket,
     UnsupportedProtocol,
     UnselectedDestination,
@@ -243,6 +244,14 @@ impl HostAdapter {
         limits: Limits,
         select_backend: fn(SocketAddr) -> Option<BackendId>,
     ) -> Result<(Self, Receiver<AcceptedFlow>), AdmissionError> {
+        Self::with_mtu(limits, select_backend, MTU)
+    }
+
+    pub fn with_mtu(
+        limits: Limits,
+        select_backend: fn(SocketAddr) -> Option<BackendId>,
+        mtu: usize,
+    ) -> Result<(Self, Receiver<AcceptedFlow>), AdmissionError> {
         if limits.flows == 0
             || limits.flows > MAX_FLOW_SLOTS
             || limits.accepted == 0
@@ -256,7 +265,7 @@ impl HostAdapter {
         {
             return Err(AdmissionError::InvalidLimits);
         }
-        let mut device = PacketDevice::default();
+        let mut device = PacketDevice::with_mtu(mtu).map_err(|_| AdmissionError::InvalidMtu)?;
         let mut config = Config::new(HardwareAddress::Ip);
         config.random_seed = 91;
         let mut interface = Interface::new(config, &mut device, Instant::from_millis(0));
@@ -465,7 +474,7 @@ impl HostAdapter {
         if self.cancelled {
             return Err(AdmissionError::Cancelled);
         }
-        if packet.len() > MTU {
+        if packet.len() > self.device.capabilities().max_transmission_unit {
             return Err(AdmissionError::ResourceLimit);
         }
         let (source, destination, syn) = tcp_metadata(packet)?;

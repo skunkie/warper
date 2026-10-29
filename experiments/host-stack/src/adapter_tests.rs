@@ -521,8 +521,8 @@ async fn unread_application_stream_backpressures_peer_and_resumes_after_read() {
 #[tokio::test]
 async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() {
     for ipv6 in [false, true] {
-        let (mut host, mut accepted) = HostAdapter::new(Limits::default(), select_backend).unwrap();
-        host.device.configure_mtu(1500).unwrap();
+        let (mut host, mut accepted) =
+            HostAdapter::with_mtu(Limits::default(), select_backend, 1500).unwrap();
         assert_eq!(
             smoltcp::phy::Device::capabilities(&host.device).max_transmission_unit,
             1500
@@ -730,6 +730,91 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
         assert_eq!(host.statistics().finished, 2);
         host.cancel();
         drop(flows);
+        assert_eq!(host.lifetimes.available_permits(), 2);
+    }
+}
+
+#[tokio::test]
+async fn ingress_respects_current_experimental_mtu_in_both_families() {
+    use futures::FutureExt;
+
+    for invalid in [1279, 1501] {
+        assert!(matches!(
+            HostAdapter::with_mtu(Limits::default(), select_backend, invalid),
+            Err(AdmissionError::InvalidMtu)
+        ));
+    }
+    for ipv6 in [false, true] {
+        let (mut host, mut accepted) =
+            HostAdapter::with_mtu(Limits::default(), select_backend, 1500).unwrap();
+        let address = source(ipv6, 2).unwrap();
+        let destination = SocketAddr::new(source(ipv6, 91).unwrap().ip(), 9100);
+        let mut peers = [
+            Peer::with_mtu(address.ip(), address.port(), 1500).unwrap(),
+            peer(ipv6, 3).unwrap(),
+        ];
+        let first = &mut peers[0];
+        first
+            .sockets
+            .get_mut::<tcp::Socket>(first.tcp)
+            .connect(first.interface.context(), destination, address)
+            .unwrap();
+        let mut flow = None;
+        for step in 0..50 {
+            exchange(&mut host, &mut peers, Duration::from_millis(step))
+                .await
+                .unwrap();
+            if let Ok(accepted_flow) = accepted.try_recv() {
+                flow = Some(accepted_flow);
+            }
+        }
+        let mut flow = flow.unwrap();
+        assert_eq!(flow.metadata.source, address);
+        assert_eq!(flow.metadata.destination, destination);
+        let first = &mut peers[0];
+        first.poll(50);
+        first.device.outgoing.clear();
+        let sample = vec![0x6a; if ipv6 { 1440 } else { 1460 }];
+        assert_eq!(
+            first
+                .sockets
+                .get_mut::<tcp::Socket>(first.tcp)
+                .send_slice(&sample)
+                .unwrap(),
+            sample.len()
+        );
+        first.poll(51);
+        let packet = first.device.outgoing.pop_front().unwrap();
+        assert_eq!(packet.len(), 1500);
+        let (mut default_host, _default_accepted) =
+            HostAdapter::new(Limits::default(), select_backend).unwrap();
+        assert_eq!(
+            default_host.inject(&packet),
+            Err(AdmissionError::ResourceLimit)
+        );
+        default_host.cancel();
+        assert_eq!(host.inject(&packet), Ok(flow.metadata.id));
+        let mut actual = Vec::new();
+        for step in 52..100 {
+            exchange(&mut host, &mut peers, Duration::from_millis(step))
+                .await
+                .unwrap();
+            let mut buffer = [0; 2048];
+            if let Some(result) = flow.stream.read(&mut buffer).now_or_never() {
+                let count = result.unwrap();
+                actual.extend_from_slice(&buffer[..count]);
+            }
+        }
+        assert_eq!(actual, sample);
+        assert!(!host.device.has_ingress());
+        assert!(host.device.outgoing.is_empty());
+        crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, MTU, 100)
+            .unwrap();
+        assert_eq!(host.inject(&packet), Err(AdmissionError::ResourceLimit));
+        assert_eq!(host.active_flows(), 1);
+        assert!(flow.stream.read(&mut [0; 16]).now_or_never().is_none());
+        host.cancel();
+        drop(flow);
         assert_eq!(host.lifetimes.available_permits(), 2);
     }
 }
