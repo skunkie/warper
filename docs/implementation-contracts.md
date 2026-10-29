@@ -1277,8 +1277,9 @@ The isolated harness checks source-bound kernel route lookups for both fixture
 paths before traffic and before acknowledging each restoration. Failure prevents
 the experimental replacement socket from proceeding. A subscription established
 before the lookups rejects queued changes or notification errors after the
-queries. It does not establish notification ordering or cover the interval after
-the check. The lookup verifies destination, source,
+queries. A controlled private-namespace route change between queries produces
+a real notification and rejects the snapshot. This does not establish general
+notification ordering or cover the interval after the check. The lookup verifies destination, source,
 gateway, interface, and an unambiguous unicast result, but does not include
 socket marks, verify exemptions, or close the snapshot/notification race.
 During link, route, rule, and address recovery, the experimental owner verifies

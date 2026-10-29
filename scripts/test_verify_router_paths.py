@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from verify_router_paths import PATHS, main, matches_route
+from verify_router_paths import NetworkChanged, PATHS, main, matches_route
 
 
 class RouteLookupTests(unittest.TestCase):
@@ -62,6 +62,23 @@ class RouteLookupTests(unittest.TestCase):
                                   ("192.0.2.1", 32001, destination, 9010)):
                     with self.subTest(candidate=candidate), self.assertRaises(ValueError):
                         main(candidate)
+
+    def test_route_change_between_queries_rejects_snapshot(self):
+        results = [
+            SimpleNamespace(stdout=json.dumps([dict(zip(("dst", "from", "gateway", "dev"), path))]))
+            for path in PATHS
+        ]
+        with patch("verify_router_paths.socket.socket") as factory:
+            monitor = factory.return_value.__enter__.return_value
+            with patch("verify_router_paths.subprocess.run", side_effect=results) as run:
+                def change():
+                    monitor.bind.assert_called_once()
+                    self.assertEqual(run.call_count, 1)
+                    monitor.recvmsg.return_value = (b"notification", [], 0, (0, 0))
+
+                with self.assertRaises(NetworkChanged):
+                    main(after_first_query=change)
+                self.assertEqual(run.call_count, len(PATHS))
 
     def test_change_or_notification_loss_during_lookup_rejects_snapshot(self):
         results = [

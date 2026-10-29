@@ -246,8 +246,9 @@ checks source-bound route lookup results for both paths and families before
 traffic and before each link, route, rule, or address restoration is
 acknowledged (`target/evidence/phase-0/route-recovery/README.md`). A mismatch
 prevents replacement in the fixture. A pre-lookup subscription rejects queued
-network changes and notification errors during the queries
-(`target/evidence/phase-0/monitored-route-lookups/README.md`). Notification
+network changes and notification errors during the queries. A real route
+change between queries now rejects the snapshot in the isolated fixture
+(`target/evidence/phase-0/route-snapshot-change/README.md`). Notification
 ordering and the period after the check remain unverified. In the link, route, rule,
 and address recovery cases, a replacement owner verifies the candidate
 socket's actual UDP endpoints before publication; failure leaves it unavailable

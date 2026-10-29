@@ -137,6 +137,30 @@ nsenter --net="/proc/$client_anchor/ns/net" bash -eu -c '
 '
 route_checker=$(dirname "${BASH_SOURCE[0]}")/verify_router_paths.py
 nsenter --net="/proc/$client_anchor/ns/net" python3 "$route_checker"
+# This mutation is confined to the private client network namespace and the
+# temporary table used by this probe. The namespace cleanup is independent.
+nsenter --net="/proc/$client_anchor/ns/net" python3 - "$route_checker" <<'PYCODE'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("route_checker", sys.argv[1])
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
+
+def change_route():
+    route = ["ip", "route", "add", "blackhole", "203.0.113.0/24", "table", "200"]
+    subprocess.run(route, check=True, timeout=2)
+    route[2] = "del"
+    subprocess.run(route, check=True, timeout=2)
+
+try:
+    checker.main(after_first_query=change_route)
+except checker.NetworkChanged:
+    print("PASS route lookup rejects real change during snapshot")
+else:
+    raise SystemExit("FAIL route lookup missed change during snapshot")
+PYCODE
 nsenter --net="/proc/$server_anchor/ns/net" bash -eu -c '
     ip link set lo up
     ip addr add 198.19.0.2/24 dev server0

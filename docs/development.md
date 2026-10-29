@@ -688,7 +688,9 @@ and egress interface in each family. A failed lookup prevents the harness from
 acknowledging restoration, so the probe does not replace its socket. Before
 lookup, the checker subscribes to link, address, route, and rule notifications;
 it rejects a queued notification or receive error after the queries. This does
-not prove notification delivery ordering or cover changes after the check. The
+not prove notification delivery ordering or cover changes after the check. A
+separate private-namespace probe adds and removes an unrelated route between
+queries and verifies that the checker rejects the snapshot. The
 lookup does not model socket marks or a concurrent routing change, and is not
 production path verification. For link, route, rule, and address recovery, each
 candidate socket also undergoes a monitored lookup using its actual source and
