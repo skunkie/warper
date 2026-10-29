@@ -23,6 +23,7 @@ use smoltcp::{
     },
 };
 
+#[cfg(any(test, not(target_os = "linux")))]
 use crate::mtu_reduction::apply_feedback;
 use crate::packet_peer::{MTU, Peer};
 use crate::pmtu_fixture::too_big as too_big_with_mtu;
@@ -241,14 +242,24 @@ fn interface_mtu_reduction(ipv6: bool, advertised_mtu: usize) -> Result<()> {
         accepted_ack.context("missing accepted prefix ACK")?,
         Duration::from_millis(33),
     )?;
+    #[cfg(target_os = "linux")]
+    let reduced = crate::mtu_reduction::apply_feedback(
+        &mut client,
+        &mut tracker,
+        &feedback,
+        Duration::from_millis(34),
+        crate::mtu_reduction::prepare_seed,
+    )?;
+    #[cfg(not(target_os = "linux"))]
+    let reduced = apply_feedback(
+        &mut client,
+        &mut tracker,
+        &feedback,
+        Duration::from_millis(34),
+        || Ok(0x5361),
+    )?;
     ensure!(
-        apply_feedback(
-            &mut client,
-            &mut tracker,
-            &feedback,
-            Duration::from_millis(34),
-            0x5361
-        )?,
+        reduced,
         "valid too-big feedback did not resize the interface"
     );
     ensure!(
@@ -591,7 +602,7 @@ mod tests {
                         &mut tracker,
                         &feedback,
                         Duration::from_millis(1),
-                        seed
+                        || Ok(seed)
                     )
                     .unwrap()
                 );
@@ -620,6 +631,57 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_seed_preserves_matched_feedback_for_retry() {
+        for ipv6 in [false, true] {
+            let packet = tcp_sample(ipv6, 1500).unwrap();
+            let feedback = too_big(&packet, ipv6).unwrap();
+            let (source, destination) = addresses(ipv6).unwrap();
+            let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+            let mut tracker = crate::pmtu_feedback::Tracker::default();
+            tracker
+                .reserve(&packet, destination, Duration::ZERO, Duration::from_secs(1))
+                .unwrap();
+            let mut corrupt = feedback.clone();
+            corrupt[if ipv6 { 42 } else { 22 }] ^= 1;
+            assert!(
+                !apply_feedback(&mut peer, &mut tracker, &corrupt, Duration::ZERO, || Err(
+                    std::io::ErrorKind::WouldBlock.into()
+                ),)
+                .unwrap(),
+                "unmatched feedback must not request a seed"
+            );
+            peer.device.outgoing.push_back(vec![0x53; 100]);
+            let error = crate::mtu_reduction::apply_feedback(
+                &mut peer,
+                &mut tracker,
+                &feedback,
+                Duration::from_millis(1),
+                || Err(std::io::ErrorKind::WouldBlock.into()),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
+            assert_eq!(peer.device.capabilities().max_transmission_unit, 1500);
+            assert_eq!(peer.device.outgoing.pop_front().unwrap(), vec![0x53; 100]);
+            assert!(
+                apply_feedback(
+                    &mut peer,
+                    &mut tracker,
+                    &feedback,
+                    Duration::from_millis(2),
+                    || Ok(1)
+                )
+                .unwrap()
+            );
+            assert_eq!(peer.device.capabilities().max_transmission_unit, MTU);
+            assert!(tracker.next_deadline().is_none());
+        }
+    }
+
+    #[test]
     fn matched_feedback_queue_refusal_preserves_reservation_for_retry() {
         use smoltcp::phy::RxToken;
         for ipv6 in [false, true] {
@@ -644,7 +706,7 @@ mod tests {
                     &mut tracker,
                     &corrupt,
                     Duration::from_millis(1),
-                    0x5361
+                    || Ok(0x5361)
                 )
                 .unwrap()
             );
@@ -655,7 +717,7 @@ mod tests {
                 &mut tracker,
                 &feedback,
                 Duration::from_millis(2),
-                0x5361,
+                || Ok(0x5361),
             )
             .unwrap_err();
             assert_eq!(
@@ -672,7 +734,7 @@ mod tests {
                     &mut tracker,
                     &feedback,
                     Duration::from_millis(3),
-                    0x5361
+                    || Ok(0x5361)
                 )
                 .unwrap()
             );
@@ -684,7 +746,7 @@ mod tests {
                     &mut tracker,
                     &feedback,
                     Duration::from_millis(4),
-                    0x5361
+                    || Ok(0x5361)
                 )
                 .unwrap()
             );
@@ -713,7 +775,7 @@ mod tests {
                     &mut tracker,
                     &feedback,
                     Duration::from_millis(1),
-                    0x5361
+                    || Ok(0x5361)
                 )
                 .unwrap()
             );
@@ -723,7 +785,7 @@ mod tests {
                 &mut tracker,
                 &feedback,
                 Duration::from_secs(1),
-                0x5361,
+                || Ok(0x5361),
             )
             .unwrap_err();
             assert_eq!(

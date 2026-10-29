@@ -157,17 +157,22 @@ reconfiguration; addresses, routes and any-IP policy survive
 (`target/evidence/phase-0/interface-mtu/README.md`). A negative control now
 shows that separate replacements with the fixture's fixed seed emit the same
 initial TCP sequence for an identical new connection in both families
-(`target/evidence/phase-0/interface-seed-reset/README.md`). A new experimental rebuild entry point accepts a caller-provided seed; tests
+(`target/evidence/phase-0/interface-seed-reset/README.md`). An experimental
+rebuild entry point accepts a caller-provided seed; tests
 show distinct controlled seeds change the first TCP sequence, and a busy
 interface retains its state before retry
-(`target/evidence/phase-0/caller-interface-seed/README.md`). Existing
-feedback probes explicitly provide a fixed seed. The matched-feedback API now
-requires the caller to provide that seed, and a controlled test verifies it
-reaches the new interface (`target/evidence/phase-0/feedback-interface-seed/README.md`).
-Nonblocking fresh entropy and other production interface state
-remain unresolved. A controlled
-shared-interface
-probe now retains two simultaneous TCP flows and one UDP datagram across a
+(`target/evidence/phase-0/caller-interface-seed/README.md`). The
+matched-feedback API requires a caller-provided seed, and a controlled test
+verifies it reaches the new interface
+(`target/evidence/phase-0/feedback-interface-seed/README.md`). Some fixtures
+still use a fixed seed.
+A Linux-only controlled path now uses `GRND_NONBLOCK` to prepare a seed after
+matching feedback; unavailable entropy and short reads fail without consuming
+the reservation or changing the interface, and an injected failure can be
+retried (`target/evidence/phase-0/nonblocking-interface-seed/README.md`). The
+experiments surface errors to their owner; production retry, macOS entropy, and
+other production interface state remain unresolved. A controlled
+shared-interface probe now retains two simultaneous TCP flows and one UDP datagram across a
 1500-to-1280 reduction in both families. Feedback quoting the other flow is
 rejected before matched feedback triggers the reduction; deliberately lost
 oversized TCP packets retransmit without application resubmission

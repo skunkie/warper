@@ -526,6 +526,7 @@ dependencies = [
  "anyhow",
  "futures",
  "netstack-smoltcp",
+ "rustix",
  "smoltcp 0.14.0",
  "tokio",
 ]

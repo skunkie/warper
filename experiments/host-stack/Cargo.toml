@@ -17,6 +17,9 @@ netstack-smoltcp.workspace = true
 smoltcp.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 

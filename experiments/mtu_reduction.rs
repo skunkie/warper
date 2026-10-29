@@ -14,12 +14,34 @@ use smoltcp::{
 };
 use std::time::Duration;
 
+/// Request one replacement seed without waiting for Linux's entropy pool.
+/// Failure is returned to the owner; no fallback seed is substituted.
+#[cfg(target_os = "linux")]
+pub fn prepare_seed() -> std::io::Result<u64> {
+    prepare_seed_with(|buffer| {
+        rustix::rand::getrandom(buffer, rustix::rand::GetRandomFlags::NONBLOCK)
+            .map_err(std::io::Error::from)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_seed_with(
+    fill: impl FnOnce(&mut [u8]) -> std::io::Result<usize>,
+) -> std::io::Result<u64> {
+    let mut bytes = [0; 8];
+    if fill(&mut bytes)? != bytes.len() {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(u64::from_ne_bytes(bytes))
+}
+
+/// Request a seed only after feedback matches and a reduction is necessary.
 pub fn apply_feedback(
     peer: &mut Peer,
     tracker: &mut crate::pmtu_feedback::Tracker,
     packet: &[u8],
     now: Duration,
-    random_seed: u64,
+    seed: impl FnOnce() -> std::io::Result<u64>,
 ) -> Result<bool> {
     let Some(mtu) = tracker.reduction(packet, now)? else {
         return Ok(false);
@@ -27,6 +49,7 @@ pub fn apply_feedback(
     if mtu >= peer.device.capabilities().max_transmission_unit {
         return Ok(false);
     }
+    let random_seed = seed()?;
     rebuild_interface(peer, mtu, i64::try_from(now.as_millis())?, random_seed)?;
     tracker.commit();
     Ok(true)
@@ -109,6 +132,28 @@ mod tests {
             Ipv4Packet::new_checked(&packet).unwrap().payload()
         };
         TcpPacket::new_checked(payload).unwrap().seq_number().0
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn seed_preparation_reports_unavailability_and_short_reads() {
+        use std::io;
+        let unavailable = prepare_seed_with(|_| Err(io::ErrorKind::WouldBlock.into())).unwrap_err();
+        assert_eq!(unavailable.kind(), io::ErrorKind::WouldBlock);
+        let short = prepare_seed_with(|buffer| {
+            buffer[..3].copy_from_slice(&[1, 2, 3]);
+            Ok(3)
+        })
+        .unwrap_err();
+        assert_eq!(short.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            prepare_seed_with(|buffer| {
+                buffer.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+                Ok(buffer.len())
+            })
+            .unwrap(),
+            u64::from_ne_bytes([1, 2, 3, 4, 5, 6, 7, 8])
+        );
     }
 
     #[test]

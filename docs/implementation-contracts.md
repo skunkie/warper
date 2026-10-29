@@ -885,16 +885,21 @@ retaining the original `SocketSet`, socket handles, endpoints, TCP buffers,
 sequence/acknowledgement state, and timers. It copies interface addresses,
 routes and any-IP policy and uses the current controlled monotonic time.
 Selected features have no neighbor, SLAAC, multicast or fragmentation state
-to transfer. The fixture uses a fixed seed on each replacement. A negative
+to transfer. A fixed-seed fixture demonstrates the sequence-reset risk. A negative
 control shows that two replacement interfaces emit the same initial TCP
 sequence for the same new connection in both families. The sequence is
 observable on the wire; no production uniqueness or security claim follows.
 The experimental replacement and matched-feedback operations require a
 caller-prepared `u64` seed, allowing the owner to obtain it before entering
-the synchronous rebuild. Existing fixture callers explicitly provide a fixed
-seed and cannot supply production entropy. A production design needs fresh entropy without blocking the async
-driver, and a policy for any other interface state. Reduction is interface-wide and also
-lowers the device receive limit; multiple flows and asymmetric paths are not
+the synchronous rebuild. Some fixture callers explicitly provide a fixed seed
+and cannot supply production entropy. A Linux-only experiment obtains one
+seed using `getrandom` with `GRND_NONBLOCK`: errors or a short read fail before
+interface mutation or reservation consumption, with no retry or fallback.
+Feedback validation may advance the tracker clock before the seed request.
+The controlled host and WireGuard feedback probes use this source on Linux.
+Other fixtures retain fixed seeds; macOS acquisition, integration and the
+production failure and state-transfer policy remain unproven. Reduction is
+interface-wide and also lowers the device receive limit; multiple flows and asymmetric paths are not
 established. This is not a generic interface migration API.
 
 Device reconfiguration accepts only the existing 1280–1500-byte fixture range

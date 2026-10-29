@@ -282,11 +282,22 @@ impl Transport {
         {
             return Err(TransportFailure::InnerDestination.into());
         }
-        if let Some(tracker) = self.pmtu_feedback.as_mut()
-            && mtu_reduction::apply_feedback(peer, tracker, packet, self.now, 0x5361)?
-        {
-            self.pmtu_reductions += 1;
-            return Ok(());
+        if let Some(tracker) = self.pmtu_feedback.as_mut() {
+            #[cfg(target_os = "linux")]
+            let reduced = mtu_reduction::apply_feedback(
+                peer,
+                tracker,
+                packet,
+                self.now,
+                mtu_reduction::prepare_seed,
+            )?;
+            #[cfg(not(target_os = "linux"))]
+            let reduced =
+                mtu_reduction::apply_feedback(peer, tracker, packet, self.now, || Ok(0x5361))?;
+            if reduced {
+                self.pmtu_reductions += 1;
+                return Ok(());
+            }
         }
         if let Some(fixture) = self.pmtu_fixture.as_mut() {
             match fixture.inspect(packet)? {
