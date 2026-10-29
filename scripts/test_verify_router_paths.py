@@ -46,6 +46,23 @@ class RouteLookupTests(unittest.TestCase):
                 main()
             monitor.recvmsg.assert_called_once_with(1)
 
+    def test_socket_lookup_uses_actual_udp_ports_and_rejects_unexpected_endpoints(self):
+        destination, source, gateway, interface = PATHS[1]
+        route = dict(zip(("dst", "from", "gateway", "dev"), (destination, source, gateway, interface)))
+        with patch("verify_router_paths.socket.socket") as factory:
+            factory.return_value.__enter__.return_value.recvmsg.side_effect = BlockingIOError(errno.EAGAIN, "idle")
+            with patch("verify_router_paths.subprocess.run", return_value=SimpleNamespace(stdout=json.dumps([route]))) as run:
+                main((source, 32001, destination, 9010))
+                self.assertEqual(run.call_args.args[0], [
+                    "ip", "-j", "route", "get", destination, "from", source,
+                    "ipproto", "udp", "sport", "32001", "dport", "9010",
+                ])
+                for candidate in ((source, 0, destination, 9010),
+                                  (source, 32001, destination, 65536),
+                                  ("192.0.2.1", 32001, destination, 9010)):
+                    with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                        main(candidate)
+
     def test_change_or_notification_loss_during_lookup_rejects_snapshot(self):
         results = [
             SimpleNamespace(stdout=json.dumps([dict(zip(("dst", "from", "gateway", "dev"), path))]))

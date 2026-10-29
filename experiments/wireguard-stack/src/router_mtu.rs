@@ -19,6 +19,7 @@ use std::{
     fs,
     net::{IpAddr, SocketAddr, UdpSocket},
     path::Path,
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -800,8 +801,8 @@ fn route_change(
     }
     crate::router_path::write_marker(directory, &format!("{change}.up.{suffix}.request"))?;
     wait_marker(directory, &format!("{change}.up.{suffix}.ready"))?;
-    first.reconnect(client.transport.remote, 1600)?;
-    second.reconnect(client.transport.remote, 1600)?;
+    first.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
+    second.reconnect_verified(client.transport.remote, 1600, verify_candidate_path)?;
     let restored = [first.local_addr()?, second.local_addr()?];
     for (owner, reporter, marker) in [
         (&mut first, first_reporter, 0x7b),
@@ -827,6 +828,25 @@ fn route_change(
         drop(UdpSocket::bind(address)?);
     }
     println!("PASS routed {change} change: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
+    Ok(())
+}
+
+fn verify_candidate_path(local: SocketAddr, remote: SocketAddr) -> Result<()> {
+    let checker =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify_router_paths.py");
+    let status = Command::new("timeout")
+        .arg("2s")
+        .arg("python3")
+        .arg(checker)
+        .arg("--socket")
+        .arg(local.ip().to_string())
+        .arg(local.port().to_string())
+        .arg(remote.ip().to_string())
+        .arg(remote.port().to_string())
+        .status()?;
+    if !status.success() {
+        return Err(crate::outer_owner::Error::PathVerification.into());
+    }
     Ok(())
 }
 

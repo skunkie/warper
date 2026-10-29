@@ -248,8 +248,12 @@ acknowledged (`target/evidence/phase-0/route-recovery/README.md`). A mismatch
 prevents replacement in the fixture. A pre-lookup subscription rejects queued
 network changes and notification errors during the queries
 (`target/evidence/phase-0/monitored-route-lookups/README.md`). Notification
-ordering and the period after the check remain unverified. These lookups omit socket
-marks and ports and are not race-free path verification. Route-event
+ordering and the period after the check remain unverified. In the route, rule,
+and address recovery cases, a replacement owner verifies the candidate
+socket's actual UDP endpoints before publication; failure leaves it unavailable
+(`target/evidence/phase-0/candidate-route/README.md`). Initial socket creation,
+link recovery, socket marks, actual socket routing, and race-free verification
+remain open. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter

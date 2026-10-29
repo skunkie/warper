@@ -4,6 +4,7 @@
 
 """Check the controlled router fixture's point-in-time source-bound routes."""
 
+import argparse
 import errno
 import json
 import socket
@@ -39,13 +40,24 @@ def matches_route(rows, destination, source, gateway, interface):
     )
 
 
-def main():
+def main(socket_path=None):
     with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE) as monitor:
         monitor.bind((0, CHANGE_GROUPS))
         monitor.setblocking(False)
-        for destination, source, gateway, interface in PATHS:
+        paths = PATHS
+        if socket_path is not None:
+            source, source_port, destination, destination_port = socket_path
+            if not (1 <= source_port <= 65535 and 1 <= destination_port <= 65535):
+                raise ValueError("invalid fixture socket port")
+            paths = tuple(path for path in PATHS if path[:2] == (destination, source))
+            if len(paths) != 1:
+                raise ValueError("unexpected fixture socket endpoints")
+        for destination, source, gateway, interface in paths:
+            command = ["ip", "-j", "route", "get", destination, "from", source]
+            if socket_path is not None:
+                command += ["ipproto", "udp", "sport", str(source_port), "dport", str(destination_port)]
             result = subprocess.run(
-                ["ip", "-j", "route", "get", destination, "from", source],
+                command,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -61,12 +73,22 @@ def main():
                 raise
         else:
             raise ValueError("network notification arrived during route lookup")
-    print("PASS source-bound fixture route lookups: IPv4 and IPv6, two paths")
+    if socket_path is None:
+        print("PASS source-bound fixture route lookups: IPv4 and IPv6, two paths")
+    else:
+        print("PASS candidate UDP socket route lookup")
 
 
 if __name__ == "__main__":
     try:
-        main()
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--socket", nargs=4, metavar=("SOURCE", "SPORT", "DESTINATION", "DPORT"))
+        args = parser.parse_args()
+        socket_path = None
+        if args.socket:
+            source, source_port, destination, destination_port = args.socket
+            socket_path = (source, int(source_port), destination, int(destination_port))
+        main(socket_path)
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         print(f"FAIL fixture route lookup: {error}", file=sys.stderr)
         sys.exit(1)

@@ -25,6 +25,7 @@ pub(super) enum Error {
     InvalidPacket,
     RetiredSocketLimit,
     NonIncreasingCounter,
+    PathVerification,
     SessionLimit,
     Unavailable,
 }
@@ -135,11 +136,35 @@ impl Owner {
         self.reconnect_with(remote, outer_mtu, |socket, address| socket.connect(address))
     }
 
+    pub(super) fn reconnect_verified(
+        &mut self,
+        remote: SocketAddr,
+        outer_mtu: usize,
+        verify: impl FnOnce(SocketAddr, SocketAddr) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.reconnect_using(
+            remote,
+            outer_mtu,
+            |socket, address| socket.connect(address),
+            verify,
+        )
+    }
+
     fn reconnect_with(
         &mut self,
         remote: SocketAddr,
         outer_mtu: usize,
         connect: impl FnOnce(&UdpSocket, SocketAddr) -> io::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.reconnect_using(remote, outer_mtu, connect, |_, _| Ok(()))
+    }
+
+    fn reconnect_using(
+        &mut self,
+        remote: SocketAddr,
+        outer_mtu: usize,
+        connect: impl FnOnce(&UdpSocket, SocketAddr) -> io::Result<()>,
+        verify: impl FnOnce(SocketAddr, SocketAddr) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         let mut local = self.socket.local_addr()?;
         Self::validate_peer(local, remote)?;
@@ -156,6 +181,7 @@ impl Owner {
         socket.set_nonblocking(true)?;
         connect(&socket, remote)?;
         let queue = Self::enable_queue(&socket, self.remote_probe)?;
+        verify(socket.local_addr()?, socket.peer_addr()?)?;
         self.retired_sockets
             .push(std::mem::replace(&mut self.socket, socket));
         self.sessions.clear();
@@ -370,6 +396,50 @@ mod tests {
             drop(UdpSocket::bind(first_address).unwrap());
             drop(UdpSocket::bind(second_address).unwrap());
             drop(UdpSocket::bind(replacement_address).unwrap());
+        }
+    }
+
+    #[test]
+    fn replacement_requires_candidate_verification_before_publication() {
+        for ipv6 in [false, true] {
+            let peer = UdpSocket::bind(crate::loopback_address(ipv6)).unwrap();
+            let remote = peer.local_addr().unwrap();
+            let reporter = remote.ip();
+            let mut owner = Owner::new(crate::loopback_address(ipv6), remote, 1600).unwrap();
+            let old = owner.local_addr().unwrap();
+            owner.invalidate_path();
+            let mut candidate = None;
+            let error = owner
+                .reconnect_verified(remote, 1600, |local, actual_remote| {
+                    assert_ne!(local, old);
+                    assert_eq!(actual_remote, remote);
+                    candidate = Some(local);
+                    Err(Error::PathVerification.into())
+                })
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<Error>(),
+                Some(&Error::PathVerification)
+            );
+            assert_eq!(owner.local_addr().unwrap(), old);
+            assert_eq!(
+                owner
+                    .send_reserved(&packet(1), reporter, Duration::ZERO)
+                    .unwrap_err()
+                    .downcast_ref::<Error>(),
+                Some(&Error::Unavailable)
+            );
+            drop(UdpSocket::bind(candidate.unwrap()).unwrap());
+            owner
+                .reconnect_verified(remote, 1600, |local, actual_remote| {
+                    assert_ne!(local, old);
+                    assert_eq!(actual_remote, remote);
+                    Ok(())
+                })
+                .unwrap();
+            owner
+                .send_reserved(&packet(2), reporter, Duration::ZERO)
+                .unwrap();
         }
     }
 

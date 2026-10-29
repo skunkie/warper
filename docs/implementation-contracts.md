@@ -1280,8 +1280,12 @@ before the lookups rejects queued changes or notification errors after the
 queries. It does not establish notification ordering or cover the interval after
 the check. The lookup verifies destination, source,
 gateway, interface, and an unambiguous unicast result, but does not include
-socket marks or ports, verify exemptions, or close the snapshot/notification
-race. Required further evidence includes
+socket marks, verify exemptions, or close the snapshot/notification race.
+During route, rule, and address recovery, the experimental owner also verifies
+the candidate socket's actual addresses and UDP ports before publication.
+Verification failure leaves the owner unavailable and releases the candidate.
+Initial sockets, link recovery, real socket routing and production integration
+remain unverified. Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.
