@@ -1261,12 +1261,14 @@ a nonblocking netlink socket, validates the kernel sender and message bounds,
 and invalidates on change or uncertainty, including overrun and truncation.
 It watches one interface index and is explicitly polled only in this fixture;
 it does not prove a verified physical path or provide a continuous production
-event loop. A second bounded subscription watches IPv4/IPv6 route notifications
-and conservatively invalidates both fixture owners on any route event or
-uncertainty. The harness removes one source-specific default route while both
+event loop. A second bounded subscription watches IPv4/IPv6 route and policy
+rule notifications and conservatively invalidates both fixture owners on any
+such event or uncertainty. The harness removes one source-specific default route while both
 reservations are pending, then restores it; both owners reject sends until
 socket replacement and each subsequently commits feedback for a distinct
-operation. This does not attribute a route event to one path or establish a
+operation. A separate exchange removes and restores the source-specific policy
+rule with the same invalidation and recovery in both outer IP families. This
+does not attribute a route or rule event to one path or establish a
 race-free production route snapshot and notification protocol.
 Required further evidence includes
 actual route/exemption verification and change detection, concurrent and

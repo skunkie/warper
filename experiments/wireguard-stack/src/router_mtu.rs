@@ -192,7 +192,8 @@ fn exchange(
     overlapping_paths(client, destination, ipv6, wall)?;
     if let Some(directory) = directory {
         interrupted_path(client, destination, ipv6, wall, directory)?;
-        route_change(client, destination, ipv6, wall, directory)?;
+        route_change(client, destination, ipv6, wall, directory, "route")?;
+        route_change(client, destination, ipv6, wall, directory, "rule")?;
     }
     ensure!(
         queue.read()?.is_none(),
@@ -714,6 +715,7 @@ fn route_change(
     ipv6: bool,
     wall: Instant,
     directory: &Path,
+    change: &str,
 ) -> Result<()> {
     let outer_ipv6 = client.transport.remote.is_ipv6();
     let (first_local, second_local, first_reporter, second_reporter): (
@@ -759,8 +761,8 @@ fn route_change(
         "route notification was already pending before the fixture change"
     );
     let suffix = format!("{}{}", u8::from(ipv6), u8::from(outer_ipv6));
-    crate::router_path::write_marker(directory, &format!("route.down.{suffix}.request"))?;
-    wait_marker(directory, &format!("route.down.{suffix}.ready"))?;
+    crate::router_path::write_marker(directory, &format!("{change}.down.{suffix}.request"))?;
+    wait_marker(directory, &format!("{change}.down.{suffix}.ready"))?;
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let notification = monitor.poll();
@@ -792,8 +794,8 @@ fn route_change(
                 == Some(&crate::outer_owner::Error::Unavailable)
         );
     }
-    crate::router_path::write_marker(directory, &format!("route.up.{suffix}.request"))?;
-    wait_marker(directory, &format!("route.up.{suffix}.ready"))?;
+    crate::router_path::write_marker(directory, &format!("{change}.up.{suffix}.request"))?;
+    wait_marker(directory, &format!("{change}.up.{suffix}.ready"))?;
     first.reconnect(client.transport.remote, 1600)?;
     second.reconnect(client.transport.remote, 1600)?;
     let restored = [first.local_addr()?, second.local_addr()?];
@@ -820,7 +822,7 @@ fn route_change(
     for address in initial.into_iter().chain(restored) {
         drop(UdpSocket::bind(address)?);
     }
-    println!("PASS routed path change: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
+    println!("PASS routed {change} change: inner_ipv6={ipv6}, outer_ipv6={outer_ipv6}");
     Ok(())
 }
 

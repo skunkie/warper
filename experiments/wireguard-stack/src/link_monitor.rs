@@ -54,8 +54,11 @@ impl Monitor {
     }
 
     pub(super) fn routes() -> Result<Self, Error> {
-        let groups = nix::libc::RTMGRP_IPV4_ROUTE | nix::libc::RTMGRP_IPV6_ROUTE;
-        let socket = Self::subscribe(groups as u32)?;
+        let groups = nix::libc::RTMGRP_IPV4_ROUTE as u32
+            | nix::libc::RTMGRP_IPV6_ROUTE as u32
+            | nix::libc::RTMGRP_IPV4_RULE as u32
+            | (1_u32 << (nix::libc::RTNLGRP_IPV6_RULE - 1));
+        let socket = Self::subscribe(groups)?;
         Ok(Self {
             socket,
             scope: Scope::Route,
@@ -160,8 +163,13 @@ fn parse(bytes: &[u8], scope: Scope) -> Result<bool, Error> {
                 changed |= index as u32 == interface;
             }
             Scope::Route => {
-                if (kind != nix::libc::RTM_NEWROUTE && kind != nix::libc::RTM_DELROUTE)
-                    || body.len() < 12
+                if !matches!(
+                    kind,
+                    nix::libc::RTM_NEWROUTE
+                        | nix::libc::RTM_DELROUTE
+                        | nix::libc::RTM_NEWRULE
+                        | nix::libc::RTM_DELRULE
+                ) || body.len() < 12
                     || (body[0] != nix::libc::AF_INET as u8 && body[0] != nix::libc::AF_INET6 as u8)
                 {
                     return Err(Error::InvalidMessage);
@@ -270,6 +278,13 @@ mod tests {
         route[4..6].copy_from_slice(&nix::libc::RTM_DELROUTE.to_ne_bytes());
         route[16] = nix::libc::AF_INET6 as u8;
         assert_eq!(parse(&route, Scope::Route), Ok(true));
+        for kind in [nix::libc::RTM_NEWRULE, nix::libc::RTM_DELRULE] {
+            route[4..6].copy_from_slice(&kind.to_ne_bytes());
+            for family in [nix::libc::AF_INET, nix::libc::AF_INET6] {
+                route[16] = family as u8;
+                assert_eq!(parse(&route, Scope::Route), Ok(true));
+            }
+        }
         route[16] = 255;
         assert_eq!(parse(&route, Scope::Route), Err(Error::InvalidMessage));
         route[..4].copy_from_slice(&20_u32.to_ne_bytes());

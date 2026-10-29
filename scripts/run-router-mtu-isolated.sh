@@ -187,6 +187,20 @@ supervise_interruptions() {
             nsenter --net="/proc/$client_anchor/ns/net" ip -6 route replace default via fd77:3::1 dev client1 table 100
         fi
         : > "$control_directory/route.up.$suffix.ready"
+        wait_marker "rule.down.$suffix.request"
+        if [[ "$suffix" == *0 ]]; then
+            nsenter --net="/proc/$client_anchor/ns/net" ip rule del from 198.20.0.2/32 table 100
+        else
+            nsenter --net="/proc/$client_anchor/ns/net" ip -6 rule del from fd77:3::2/128 table 100
+        fi
+        : > "$control_directory/rule.down.$suffix.ready"
+        wait_marker "rule.up.$suffix.request"
+        if [[ "$suffix" == *0 ]]; then
+            nsenter --net="/proc/$client_anchor/ns/net" ip rule add from 198.20.0.2/32 table 100
+        else
+            nsenter --net="/proc/$client_anchor/ns/net" ip -6 rule add from fd77:3::2/128 table 100
+        fi
+        : > "$control_directory/rule.up.$suffix.ready"
     done
 }
 supervise_interruptions > "$control_directory/control.log" 2>&1 &

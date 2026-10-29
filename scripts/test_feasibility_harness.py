@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -41,7 +41,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
             "mount": f'echo "$*" >> "{root}/mount-commands.log"\n',
             "umount": f'echo "$*" >> "{root}/umount-commands.log"\n',
             "nsenter": f'echo "$*" >> "{root}/nsenter-commands.log"\nshift\nif [[ "$1" == bash && "$2" == -eu ]]; then exit 0; fi\nexec "$@"\n',
-            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\nif [[ "$*" == "link set dev routerc1 down" ]]; then exit {interrupt_exit}; fi\nif [[ "$*" == "route del default via 198.20.0.1 dev client1 table 100" ]]; then exit {route_exit}; fi\n',
+            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\nif [[ "$*" == "link set dev routerc1 down" ]]; then exit {interrupt_exit}; fi\nif [[ "$*" == "route del default via 198.20.0.1 dev client1 table 100" ]]; then exit {route_exit}; fi\nif [[ "$*" == "rule del from 198.20.0.2/32 table 100" ]]; then exit {rule_exit}; fi\n',
             "cat": f'if [[ "$1" == /proc/self/uid_map ]]; then echo "{mapping}"; else exec /bin/cat "$@"; fi\n',
         }
         for name, source in commands.items():
@@ -85,6 +85,14 @@ if [[ "${{1:-}}" == --router-mtu-check && {probe_exit} == 0 ]]; then
             sleep 0.002
         done
         [[ -f "$2/route.up.$suffix.ready" ]] || exit 1
+        for direction in down up; do
+            touch "$2/rule.$direction.$suffix.request"
+            for _ in {{1..500}}; do
+                if [[ -f "$2/rule.$direction.$suffix.ready" ]]; then break; fi
+                sleep 0.002
+            done
+            [[ -f "$2/rule.$direction.$suffix.ready" ]] || exit 1
+        done
     done
 fi
 exit {probe_exit}
@@ -242,6 +250,8 @@ exit {probe_exit}
         self.assertEqual(commands.count("link set dev routerc1 up"), 4)
         self.assertEqual(commands.count("route del default via 198.20.0.1 dev client1 table 100"), 2)
         self.assertEqual(commands.count("-6 route del default via fd77:3::1 dev client1 table 100"), 2)
+        self.assertEqual(commands.count("rule del from 198.20.0.2/32 table 100"), 2)
+        self.assertEqual(commands.count("-6 rule del from fd77:3::2/128 table 100"), 2)
         self.assertIn("link set routers0 mtu 1400 up", commands)
         traffic_control = (evidence.parents[3] / "tc-commands.log").read_text()
         self.assertIn("netem delay 100ms", traffic_control)
@@ -287,6 +297,15 @@ exit {probe_exit}
         self.assertEqual(result.returncode, 1, result.stderr)
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link set dev routerc1 down", commands)
+        self.assertIn("link del dev routerc1", commands)
+        self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
+        self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_router_rule_change_failure_retires_links_and_control_mount(self):
+        result, evidence = self.run_harness(scope="--router-mtu-check", rule_exit=7)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        commands = (evidence.parents[3] / "ip-commands.log").read_text()
+        self.assertIn("rule del from 198.20.0.2/32 table 100", commands)
         self.assertIn("link del dev routerc1", commands)
         self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
         self.assertNotIn("PASS", (evidence / "result.txt").read_text())

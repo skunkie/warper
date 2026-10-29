@@ -235,7 +235,10 @@ removes and restores a source-specific route with two reservations pending; an
 experimental route listener conservatively invalidates both owners on any route
 event, then replacement sockets complete distinct operations
 (`target/evidence/phase-0/route-notification/README.md`). An intermittent
-routed TCP tuple failure in an earlier run remains unexplained. Route-event
+routed TCP tuple failure in an earlier run remains unexplained. The fixture
+also removes and restores the source-specific policy rule, observing conservative
+invalidation for IPv4 and IPv6
+(`target/evidence/phase-0/rule-notification/README.md`). Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter

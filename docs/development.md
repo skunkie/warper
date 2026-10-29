@@ -682,10 +682,11 @@ interface failure. Notification loss, truncation and malformed input fail
 closed in the experimental owner.
 
 The harness also removes and restores the second source-specific default route
-while both owners have pending reservations. The experimental Linux route
-listener invalidates both owners on any IPv4 or IPv6 route event, because it
+and, in a separate exchange, its policy rule while both owners have pending
+reservations. The experimental Linux route
+listener invalidates both owners on any IPv4 or IPv6 route or rule event, because it
 does not attribute events to individual paths. Both reject sends until the
-harness restores the route and the probe replaces their sockets; distinct sends
+harness restores the route or rule and the probe replaces their sockets; distinct sends
 then obtain their own reports. This conservative fixture behavior does not
 establish route verification, event attribution, continuous monitoring, or
 safety during the interval before event processing.
