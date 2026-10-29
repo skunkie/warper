@@ -1260,6 +1260,8 @@ idempotent and rejects sends, feedback, and reads until socket replacement;
 failed replacement remains unavailable. The bounded Linux link listener uses
 a nonblocking netlink socket, validates the kernel sender and message bounds,
 and invalidates on change or uncertainty, including overrun and truncation.
+Each poll drains unrelated notifications before reporting an empty queue, with a
+64-datagram work bound that fails closed on saturation.
 It watches one interface index and is explicitly polled only in this fixture;
 it does not prove a verified physical path or provide a continuous production
 event loop. A second bounded subscription watches IPv4/IPv6 route and policy

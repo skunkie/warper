@@ -88,6 +88,10 @@ impl Monitor {
     }
 
     pub(super) fn poll(&self) -> Result<bool, Error> {
+        drain(|| self.poll_one())
+    }
+
+    fn poll_one(&self) -> Result<Option<bool>, Error> {
         let mut buffer = [0; 8192];
         let mut slices = [IoSliceMut::new(&mut buffer)];
         let received = match socket::recvmsg::<NetlinkAddr>(
@@ -97,7 +101,7 @@ impl Monitor {
             MsgFlags::MSG_DONTWAIT,
         ) {
             Ok(received) => received,
-            Err(Errno::EAGAIN) => return Ok(false),
+            Err(Errno::EAGAIN) => return Ok(None),
             Err(Errno::ENOBUFS) => return Err(Error::Lost),
             Err(error) => return Err(Error::Socket(error)),
         };
@@ -105,8 +109,21 @@ impl Monitor {
         let sender = received.address.map(|address| address.pid());
         let flags = received.flags;
         let bytes = buffer.get(..length).ok_or(Error::Lost)?;
-        classify(bytes, sender, flags, self.scope)
+        classify(bytes, sender, flags, self.scope).map(Some)
     }
+}
+
+fn drain(mut receive: impl FnMut() -> Result<Option<bool>, Error>) -> Result<bool, Error> {
+    // Bound work under unrelated event traffic. Saturation is uncertain, so a
+    // caller must invalidate rather than treating the queue as drained.
+    for _ in 0..64 {
+        match receive()? {
+            Some(true) => return Ok(true),
+            Some(false) => {}
+            None => return Ok(false),
+        }
+    }
+    Err(Error::Lost)
 }
 
 fn classify(
@@ -213,6 +230,17 @@ mod tests {
         bytes[4..6].copy_from_slice(&nix::libc::RTM_NEWLINK.to_ne_bytes());
         bytes[20..24].copy_from_slice(&index.to_ne_bytes());
         bytes
+    }
+
+    #[test]
+    fn poll_drains_unrelated_events_before_reporting_no_change() {
+        let mut events = [Ok(Some(false)), Ok(Some(true))].into_iter();
+        assert_eq!(drain(|| events.next().unwrap()), Ok(true));
+        let mut events = [Ok(Some(false)), Ok(None)].into_iter();
+        assert_eq!(drain(|| events.next().unwrap()), Ok(false));
+        let mut events = [Ok(Some(false)), Err(Error::Lost)].into_iter();
+        assert_eq!(drain(|| events.next().unwrap()), Err(Error::Lost));
+        assert_eq!(drain(|| Ok(Some(false))), Err(Error::Lost));
     }
 
     #[test]

@@ -257,7 +257,10 @@ two-path scenarios now require the same candidate check
 (`target/evidence/phase-0/initial-candidate/README.md`). Other fixture sockets,
 socket marks, actual socket routing, and race-free verification remain open. Route-event
 attribution, continuous monitoring, route verification and the interval before
-notification processing remain unverified.
+notification processing remain unverified. The bounded notification poll now
+drains unrelated messages before reporting an empty queue and fails closed if
+its work limit is reached
+(`target/evidence/phase-0/notification-drain/README.md`).
 The routed kernel-peer fixture additionally verifies same-socket counter
 rejection and stale-report rejection before committing a distinct later
 report in all four family combinations
