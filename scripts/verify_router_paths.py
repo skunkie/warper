@@ -4,10 +4,16 @@
 
 """Check the controlled router fixture's point-in-time source-bound routes."""
 
+import errno
 import json
+import socket
 import subprocess
 import sys
 
+
+# Linux rtnetlink multicast groups for link, IPv4/IPv6 addresses, routes,
+# and rules. IPv6 rules use RTNLGRP_IPV6_RULE (group 19).
+CHANGE_GROUPS = 0x1 | 0x10 | 0x100 | 0x40 | 0x400 | 0x80 | (1 << 18)
 
 PATHS = (
     ("198.19.0.2", "198.18.0.2", "198.18.0.1", "client0"),
@@ -34,17 +40,27 @@ def matches_route(rows, destination, source, gateway, interface):
 
 
 def main():
-    for destination, source, gateway, interface in PATHS:
-        result = subprocess.run(
-            ["ip", "-j", "route", "get", destination, "from", source],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        rows = json.loads(result.stdout)
-        if not matches_route(rows, destination, source, gateway, interface):
-            raise ValueError(f"unexpected fixture route for {source} via {interface}")
+    with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE) as monitor:
+        monitor.bind((0, CHANGE_GROUPS))
+        monitor.setblocking(False)
+        for destination, source, gateway, interface in PATHS:
+            result = subprocess.run(
+                ["ip", "-j", "route", "get", destination, "from", source],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            rows = json.loads(result.stdout)
+            if not matches_route(rows, destination, source, gateway, interface):
+                raise ValueError(f"unexpected fixture route for {source} via {interface}")
+        try:
+            monitor.recvmsg(1)
+        except BlockingIOError as error:
+            if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+        else:
+            raise ValueError("network notification arrived during route lookup")
     print("PASS source-bound fixture route lookups: IPv4 and IPv6, two paths")
 
 

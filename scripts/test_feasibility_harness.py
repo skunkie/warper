@@ -101,7 +101,22 @@ fi
 exit {probe_exit}
 ''')
         executable.chmod(0o700)
-        environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
+        # The synthetic harness runs without a private network namespace.
+        # Substitute an idle notification socket only for the fixture checker.
+        (root / "sitecustomize.py").write_text('''
+import errno
+import socket
+import sys
+if sys.argv[0].endswith("verify_router_paths.py"):
+    class IdleMonitor:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def bind(self, address): pass
+        def setblocking(self, blocking): pass
+        def recvmsg(self, size): raise BlockingIOError(errno.EAGAIN, "idle")
+    socket.socket = lambda *args, **kwargs: IdleMonitor()
+''')
+        environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", PYTHONPATH=str(root))
         arguments = ["bash", str(harness), probe]
         if scope:
             arguments.append(scope)

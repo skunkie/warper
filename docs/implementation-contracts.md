@@ -1275,7 +1275,10 @@ not attribute an event to one path or establish a race-free production route
 snapshot and notification protocol.
 The isolated harness checks source-bound kernel route lookups for both fixture
 paths before traffic and before acknowledging each restoration. Failure prevents
-the experimental replacement socket from proceeding. It verifies destination, source,
+the experimental replacement socket from proceeding. A subscription established
+before the lookups rejects queued changes or notification errors after the
+queries. It does not establish notification ordering or cover the interval after
+the check. The lookup verifies destination, source,
 gateway, interface, and an unambiguous unicast result, but does not include
 socket marks or ports, verify exemptions, or close the snapshot/notification
 race. Required further evidence includes
