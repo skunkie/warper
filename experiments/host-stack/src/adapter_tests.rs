@@ -797,6 +797,23 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             default_host.inject(&packet),
             Err(AdmissionError::PacketTooLarge { mtu: MTU })
         );
+        assert_eq!(
+            default_host.too_big_for_owned_flow(&[0; 1501]),
+            Err(TooBigFeedbackError::InvalidPacket)
+        );
+        assert_eq!(
+            default_host.too_big_for_owned_flow(&[0; 1500]),
+            Err(TooBigFeedbackError::InvalidPacket)
+        );
+        assert_eq!(
+            default_host.too_big_for_owned_flow(&packet),
+            Err(TooBigFeedbackError::WrongFlow)
+        );
+        default_host.inject(&syn(address, destination)).unwrap();
+        assert_eq!(
+            default_host.too_big_for_owned_flow(&packet),
+            Err(TooBigFeedbackError::WrongFlow)
+        );
         default_host.cancel();
         assert_eq!(host.inject(&packet), Ok(flow.metadata.id));
         let mut actual = Vec::new();
@@ -821,7 +838,150 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         );
         assert_eq!(host.active_flows(), 1);
         assert!(flow.stream.read(&mut [0; 16]).now_or_never().is_none());
+        let first = &mut peers[0];
+        first.poll(100);
+        first.device.outgoing.clear();
+        assert_eq!(
+            first
+                .sockets
+                .get_mut::<tcp::Socket>(first.tcp)
+                .send_slice(&sample)
+                .unwrap(),
+            sample.len()
+        );
+        first.poll(101);
+        let oversized = first.device.outgoing.pop_front().unwrap();
+        assert_eq!(oversized.len(), 1500);
+        assert_eq!(
+            host.inject(&oversized),
+            Err(AdmissionError::PacketTooLarge { mtu: MTU })
+        );
+        let response = host.too_big_for_owned_flow(&oversized).unwrap();
+        assert!(response.len() <= MTU);
+        let mut tracker = crate::pmtu_feedback::Tracker::default();
+        tracker
+            .reserve(
+                &oversized,
+                destination.ip(),
+                Duration::ZERO,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(tracker.reduction(&response, Duration::ZERO), Ok(Some(MTU)));
+
+        let mut corrupted = oversized.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            host.too_big_for_owned_flow(&corrupted),
+            Err(TooBigFeedbackError::InvalidPacket)
+        );
+        let mut unowned = oversized.clone();
+        let offset = if ipv6 { 40 } else { 20 };
+        let mut tcp = TcpPacket::new_checked(&mut unowned[offset..]).unwrap();
+        tcp.set_src_port(address.port() + 1);
+        tcp.fill_checksum(&address.ip().into(), &destination.ip().into());
+        assert_eq!(
+            host.too_big_for_owned_flow(&unowned),
+            Err(TooBigFeedbackError::WrongFlow)
+        );
+        let mut trailing = oversized.clone();
+        if ipv6 {
+            let mut ip = Ipv6Packet::new_checked(trailing.as_mut_slice()).unwrap();
+            ip.set_payload_len(ip.payload_len() - 1);
+        } else {
+            let mut ip = Ipv4Packet::new_checked(trailing.as_mut_slice()).unwrap();
+            ip.set_total_len(ip.total_len() - 1);
+            ip.fill_checksum();
+        }
+        assert_eq!(
+            host.too_big_for_owned_flow(&trailing),
+            Err(TooBigFeedbackError::InvalidPacket)
+        );
+        let mut reset = oversized.clone();
+        let mut tcp = TcpPacket::new_checked(&mut reset[offset..]).unwrap();
+        tcp.set_rst(true);
+        tcp.fill_checksum(&address.ip().into(), &destination.ip().into());
+        assert_eq!(
+            host.too_big_for_owned_flow(&reset),
+            Err(TooBigFeedbackError::InvalidPacket)
+        );
+        let multicast: std::net::IpAddr =
+            if ipv6 { "ff02::1" } else { "224.0.0.1" }.parse().unwrap();
+        let mut non_unicast = oversized.clone();
+        if let std::net::IpAddr::V6(source) = multicast {
+            Ipv6Packet::new_checked(non_unicast.as_mut_slice())
+                .unwrap()
+                .set_src_addr(source);
+        } else if let std::net::IpAddr::V4(source) = multicast {
+            let mut ip = Ipv4Packet::new_checked(non_unicast.as_mut_slice()).unwrap();
+            ip.set_src_addr(source);
+            ip.fill_checksum();
+        }
+        TcpPacket::new_checked(&mut non_unicast[offset..])
+            .unwrap()
+            .fill_checksum(&multicast.into(), &destination.ip().into());
+        assert_eq!(
+            host.too_big_for_owned_flow(&non_unicast),
+            Err(TooBigFeedbackError::InvalidPacket)
+        );
+        assert_eq!(
+            host.too_big_for_owned_flow(&[0]),
+            Err(TooBigFeedbackError::NotOversized)
+        );
+        if !ipv6 {
+            let mut with_options = vec![0; oversized.len()];
+            with_options[..20].copy_from_slice(&oversized[..20]);
+            with_options[20..24].copy_from_slice(&[1; 4]);
+            with_options[24..].copy_from_slice(&oversized[20..oversized.len() - 4]);
+            let mut ip = Ipv4Packet::new_checked(with_options.as_mut_slice()).unwrap();
+            ip.set_header_len(24);
+            ip.fill_checksum();
+            TcpPacket::new_checked(&mut with_options[24..])
+                .unwrap()
+                .fill_checksum(&address.ip().into(), &destination.ip().into());
+            assert_eq!(
+                host.too_big_for_owned_flow(&with_options),
+                Err(TooBigFeedbackError::InvalidPacket)
+            );
+            let mut fragmented = oversized.clone();
+            let mut ip = Ipv4Packet::new_checked(fragmented.as_mut_slice()).unwrap();
+            ip.set_more_frags(true);
+            ip.fill_checksum();
+            assert_eq!(
+                host.too_big_for_owned_flow(&fragmented),
+                Err(TooBigFeedbackError::UnsupportedFragmentation)
+            );
+            let mut fragmentable = oversized.clone();
+            let mut ip = Ipv4Packet::new_checked(fragmentable.as_mut_slice()).unwrap();
+            ip.set_dont_frag(false);
+            ip.fill_checksum();
+            assert_eq!(
+                host.too_big_for_owned_flow(&fragmentable),
+                Err(TooBigFeedbackError::UnsupportedFragmentation)
+            );
+        }
+        assert_eq!(host.active_flows(), 1);
+        assert!(flow.stream.read(&mut [0; 16]).now_or_never().is_none());
+        let socket = host
+            .slots
+            .iter()
+            .find(|slot| {
+                slot.flow
+                    .as_ref()
+                    .is_some_and(|owned| owned.metadata.id == flow.metadata.id)
+            })
+            .unwrap()
+            .socket;
+        host.sockets.get_mut::<tcp::Socket>(socket).abort();
+        assert_eq!(
+            host.too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::WrongFlow)
+        );
         host.cancel();
+        assert_eq!(
+            host.too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::Cancelled)
+        );
         drop(flow);
         assert_eq!(host.lifetimes.available_permits(), 2);
     }

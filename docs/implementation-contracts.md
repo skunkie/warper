@@ -232,6 +232,13 @@ The default MTU remains 1280 bytes. The experimental `with_mtu` constructor
 accepts 1280–1500 and returns `InvalidMtu` outside that range; ingress is bounded
 by the current device MTU. Oversized ingress returns `PacketTooLarge { mtu }`,
 separate from resource exhaustion; it does not itself emit ICMP or retry data.
+A test-only response candidate may construct one bounded too-big response only
+for an exact-length, checksum-valid data packet owned by an already accepted
+flow. It rejects multicast, unspecified and limited-broadcast addresses,
+fragmented IPv4, IPv4 without DF, unsupported headers, and unmatched flows
+before construction. It does not verify that the TCP stack would accept the
+segment sequence. Directed-broadcast classification, runtime response admission,
+rate limiting, and sender adaptation remain unresolved.
 This is a TCP-only probe interface, not YAML or CLI configuration or a dynamic
 PMTU implementation. The UDP candidate and production
 runtime remain separately constrained. Library IP/TCP parsers validate lengths,

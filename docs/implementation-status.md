@@ -145,8 +145,14 @@ ingress limit follows the current device MTU. Controlled tests admit exact
 1280-byte MTU (`target/evidence/phase-0/accepted-ingress-mtu/README.md`). It now
 reports a typed `PacketTooLarge { mtu }` separately from resource exhaustion
 (`target/evidence/phase-0/typed-ingress-mtu/README.md`); the runtime still counts
-such rejection without emitting ICMP. UDP, production configuration and runtime
-integration remain separately constrained.
+such rejection without emitting ICMP. A test-only response candidate now
+validates exact packet length, checksum, supported headers, selected address
+categories, and accepted flow ownership before constructing bounded feedback in
+both families (`target/evidence/phase-0/owned-ingress-feedback/README.md`). It
+has no TCP sequence acceptance or directed-broadcast verification, runtime
+output admission, rate limit, verified reporter policy, or sender adaptation
+evidence. UDP, production configuration and runtime integration
+remain separately constrained.
 A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed

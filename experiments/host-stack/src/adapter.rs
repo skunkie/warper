@@ -70,6 +70,16 @@ pub enum AdmissionError {
     InvalidTime,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TooBigFeedbackError {
+    Cancelled,
+    InvalidPacket,
+    NotOversized,
+    UnsupportedFragmentation,
+    WrongFlow,
+}
+
 impl fmt::Display for AdmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "TCP experiment: {self:?}")
@@ -328,6 +338,82 @@ impl HostAdapter {
             self.statistics.rejected = self.statistics.rejected.saturating_add(1);
         }
         result
+    }
+
+    #[cfg(test)]
+    fn too_big_for_owned_flow(&self, bytes: &[u8]) -> Result<Vec<u8>, TooBigFeedbackError> {
+        if self.cancelled {
+            return Err(TooBigFeedbackError::Cancelled);
+        }
+        let mtu = self.device.capabilities().max_transmission_unit;
+        if bytes.len() <= mtu {
+            return Err(TooBigFeedbackError::NotOversized);
+        }
+        if bytes.len() > 1500 {
+            return Err(TooBigFeedbackError::InvalidPacket);
+        }
+        let (ipv6, tcp_offset) = match bytes.first().map(|byte| byte >> 4) {
+            Some(4) => {
+                let packet = Ipv4Packet::new_checked(bytes)
+                    .map_err(|_| TooBigFeedbackError::InvalidPacket)?;
+                if usize::from(packet.total_len()) != bytes.len() || packet.header_len() != 20 {
+                    return Err(TooBigFeedbackError::InvalidPacket);
+                }
+                if !packet.dont_frag() || packet.more_frags() || packet.frag_offset() != 0 {
+                    return Err(TooBigFeedbackError::UnsupportedFragmentation);
+                }
+                (false, usize::from(packet.header_len()))
+            }
+            Some(6) => {
+                let packet = Ipv6Packet::new_checked(bytes)
+                    .map_err(|_| TooBigFeedbackError::InvalidPacket)?;
+                if 40 + usize::from(packet.payload_len()) != bytes.len() {
+                    return Err(TooBigFeedbackError::InvalidPacket);
+                }
+                (true, 40)
+            }
+            _ => return Err(TooBigFeedbackError::InvalidPacket),
+        };
+        let (source, destination, syn) =
+            tcp_metadata(bytes).map_err(|_| TooBigFeedbackError::InvalidPacket)?;
+        let permitted_address = |address: std::net::IpAddr| match address {
+            std::net::IpAddr::V4(address) => {
+                !address.is_unspecified() && !address.is_multicast() && !address.is_broadcast()
+            }
+            std::net::IpAddr::V6(address) => !address.is_unspecified() && !address.is_multicast(),
+        };
+        let tcp = TcpPacket::new_checked(&bytes[tcp_offset..])
+            .map_err(|_| TooBigFeedbackError::InvalidPacket)?;
+        if !permitted_address(source.ip())
+            || !permitted_address(destination.ip())
+            || syn
+            || tcp.syn()
+            || tcp.rst()
+            || !tcp.ack()
+            || tcp.payload().is_empty()
+        {
+            return Err(TooBigFeedbackError::InvalidPacket);
+        }
+        if !self.slots.iter().any(|slot| {
+            slot.flow.as_ref().is_some_and(|flow| {
+                flow.pending.is_none()
+                    && flow.metadata.source == source
+                    && flow.metadata.destination == destination
+                    && matches!(
+                        self.sockets.get::<tcp::Socket>(slot.socket).state(),
+                        tcp::State::Established
+                            | tcp::State::FinWait1
+                            | tcp::State::FinWait2
+                            | tcp::State::CloseWait
+                            | tcp::State::Closing
+                            | tcp::State::LastAck
+                    )
+            })
+        }) {
+            return Err(TooBigFeedbackError::WrongFlow);
+        }
+        crate::pmtu_fixture::too_big(bytes, ipv6, mtu)
+            .map_err(|_| TooBigFeedbackError::InvalidPacket)
     }
 
     pub fn poll_io(&mut self, cx: &mut Context<'_>, now: Duration) -> Result<(), AdmissionError> {
