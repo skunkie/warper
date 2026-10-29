@@ -659,8 +659,12 @@ mod tests {
                 || Err(std::io::ErrorKind::WouldBlock.into()),
             )
             .unwrap_err();
+            let seed_error = error
+                .downcast_ref::<crate::mtu_reduction::SeedError>()
+                .unwrap();
+            let cause = std::error::Error::source(seed_error).unwrap();
             assert_eq!(
-                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                cause.downcast_ref::<std::io::Error>().unwrap().kind(),
                 std::io::ErrorKind::WouldBlock
             );
             assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
@@ -720,6 +724,11 @@ mod tests {
                 || Ok(0x5361),
             )
             .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<crate::mtu_reduction::SeedError>()
+                    .is_none()
+            );
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),
                 std::io::ErrorKind::WouldBlock

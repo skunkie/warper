@@ -12,7 +12,23 @@ use smoltcp::{
     time::Instant,
     wire::HardwareAddress,
 };
-use std::time::Duration;
+use std::{fmt, io, time::Duration};
+
+/// Seed acquisition failed before the interface or reservation was changed.
+#[derive(Debug)]
+pub struct SeedError(io::Error);
+
+impl fmt::Display for SeedError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "replacement seed preparation failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for SeedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 /// Request one replacement seed without waiting for Linux's entropy pool.
 /// Failure is returned to the owner; no fallback seed is substituted.
@@ -49,7 +65,7 @@ pub fn apply_feedback(
     if mtu >= peer.device.capabilities().max_transmission_unit {
         return Ok(false);
     }
-    let random_seed = seed()?;
+    let random_seed = seed().map_err(SeedError)?;
     rebuild_interface(peer, mtu, i64::try_from(now.as_millis())?, random_seed)?;
     tracker.commit();
     Ok(true)

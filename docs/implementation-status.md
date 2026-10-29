@@ -169,8 +169,10 @@ still use a fixed seed.
 A Linux-only controlled path now uses `GRND_NONBLOCK` to prepare a seed after
 matching feedback; unavailable entropy and short reads fail without consuming
 the reservation or changing the interface, and an injected failure can be
-retried (`target/evidence/phase-0/nonblocking-interface-seed/README.md`). The
-experiments surface errors to their owner; production retry, macOS entropy, and
+retried (`target/evidence/phase-0/nonblocking-interface-seed/README.md`). A
+typed seed error now distinguishes entropy failures from a busy device queue
+and retains the I/O cause (`target/evidence/phase-0/seed-error-category/README.md`).
+The experiments surface errors to their owner; production retry, macOS entropy, and
 other production interface state remain unresolved. A controlled
 shared-interface probe now retains two simultaneous TCP flows and one UDP datagram across a
 1500-to-1280 reduction in both families. Feedback quoting the other flow is

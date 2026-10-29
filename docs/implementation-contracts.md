@@ -895,6 +895,8 @@ the synchronous rebuild. Some fixture callers explicitly provide a fixed seed
 and cannot supply production entropy. A Linux-only experiment obtains one
 seed using `getrandom` with `GRND_NONBLOCK`: errors or a short read fail before
 interface mutation or reservation consumption, with no retry or fallback.
+Seed-source errors use a distinct typed `SeedError` that retains the underlying
+I/O cause; a busy device queue continues to return its own I/O error.
 Feedback validation may advance the tracker clock before the seed request.
 The controlled host and WireGuard feedback probes use this source on Linux.
 Other fixtures retain fixed seeds; macOS acquisition, integration and the
