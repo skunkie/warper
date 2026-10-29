@@ -84,7 +84,8 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
             &mut client,
             &mut tracker,
             &other_feedback,
-            Duration::from_millis(61)
+            Duration::from_millis(61),
+            0x5361
         )?,
         "another flow's feedback changed the shared interface"
     );
@@ -98,6 +99,7 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
         &mut tracker,
         &feedback,
         Duration::from_millis(61),
+        0x5361,
     ) {
         Ok(_) => anyhow::bail!("queued packets did not prevent interface replacement"),
         Err(error) => error,
@@ -126,7 +128,8 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
             &mut client,
             &mut tracker,
             &feedback,
-            Duration::from_millis(61)
+            Duration::from_millis(61),
+            0x5361
         )?,
         "matched feedback did not reduce the shared interface"
     );

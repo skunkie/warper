@@ -283,7 +283,7 @@ impl Transport {
             return Err(TransportFailure::InnerDestination.into());
         }
         if let Some(tracker) = self.pmtu_feedback.as_mut()
-            && mtu_reduction::apply_feedback(peer, tracker, packet, self.now)?
+            && mtu_reduction::apply_feedback(peer, tracker, packet, self.now, 0x5361)?
         {
             self.pmtu_reductions += 1;
             return Ok(());

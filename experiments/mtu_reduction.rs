@@ -19,6 +19,7 @@ pub fn apply_feedback(
     tracker: &mut crate::pmtu_feedback::Tracker,
     packet: &[u8],
     now: Duration,
+    random_seed: u64,
 ) -> Result<bool> {
     let Some(mtu) = tracker.reduction(packet, now)? else {
         return Ok(false);
@@ -26,27 +27,18 @@ pub fn apply_feedback(
     if mtu >= peer.device.capabilities().max_transmission_unit {
         return Ok(false);
     }
-    rebuild_interface(peer, mtu, i64::try_from(now.as_millis())?)?;
+    rebuild_interface(peer, mtu, i64::try_from(now.as_millis())?, random_seed)?;
     tracker.commit();
     Ok(true)
 }
 
-pub fn rebuild_interface(peer: &mut Peer, mtu: usize, now: i64) -> Result<()> {
-    rebuild_components(&mut peer.interface, &mut peer.device, mtu, now)
-}
-
-pub fn rebuild_components(
-    original: &mut Interface,
-    device: &mut PacketDevice,
-    mtu: usize,
-    now: i64,
-) -> Result<()> {
-    rebuild_components_with_seed(original, device, mtu, now, 0x5361)
+pub fn rebuild_interface(peer: &mut Peer, mtu: usize, now: i64, random_seed: u64) -> Result<()> {
+    rebuild_components(&mut peer.interface, &mut peer.device, mtu, now, random_seed)
 }
 
 /// The caller prepares the seed before entering the synchronous rebuild.
 /// This experimental boundary does not validate seed quality or uniqueness.
-pub fn rebuild_components_with_seed(
+pub fn rebuild_components(
     original: &mut Interface,
     device: &mut PacketDevice,
     mtu: usize,
@@ -97,10 +89,9 @@ mod tests {
             .unwrap();
         let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
         if let Some(seed) = seed {
-            rebuild_components_with_seed(&mut peer.interface, &mut peer.device, 1280, 0, seed)
-                .unwrap();
+            rebuild_components(&mut peer.interface, &mut peer.device, 1280, 0, seed).unwrap();
         } else {
-            rebuild_interface(&mut peer, 1280, 0).unwrap();
+            rebuild_interface(&mut peer, 1280, 0, 0x5361).unwrap();
         }
         peer.sockets
             .get_mut::<tcp::Socket>(peer.tcp)

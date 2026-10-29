@@ -626,6 +626,7 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
             &mut host.device,
             1280,
             100,
+            0x5361,
         )
         .unwrap_err();
         assert_eq!(
@@ -675,8 +676,14 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
         }
         assert!(!host.device.has_ingress());
         assert!(host.device.outgoing.is_empty());
-        crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, 1280, 150)
-            .unwrap();
+        crate::mtu_reduction::rebuild_components(
+            &mut host.interface,
+            &mut host.device,
+            1280,
+            150,
+            0x5361,
+        )
+        .unwrap();
         assert_eq!(host.active_flows(), 2);
         assert_eq!(
             smoltcp::phy::Device::capabilities(&host.device).max_transmission_unit,
@@ -850,8 +857,14 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         assert_eq!(actual, sample);
         assert!(!host.device.has_ingress());
         assert!(host.device.outgoing.is_empty());
-        crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, MTU, 100)
-            .unwrap();
+        crate::mtu_reduction::rebuild_components(
+            &mut host.interface,
+            &mut host.device,
+            MTU,
+            100,
+            0x5361,
+        )
+        .unwrap();
         assert_eq!(
             host.inject(&packet),
             Err(AdmissionError::PacketTooLarge { mtu: MTU })

@@ -161,7 +161,10 @@ initial TCP sequence for an identical new connection in both families
 show distinct controlled seeds change the first TCP sequence, and a busy
 interface retains its state before retry
 (`target/evidence/phase-0/caller-interface-seed/README.md`). Existing
-feedback probes still use a fixed seed. Nonblocking fresh entropy and other production interface state
+feedback probes explicitly provide a fixed seed. The matched-feedback API now
+requires the caller to provide that seed, and a controlled test verifies it
+reaches the new interface (`target/evidence/phase-0/feedback-interface-seed/README.md`).
+Nonblocking fresh entropy and other production interface state
 remain unresolved. A controlled
 shared-interface
 probe now retains two simultaneous TCP flows and one UDP datagram across a

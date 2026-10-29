@@ -246,7 +246,8 @@ fn interface_mtu_reduction(ipv6: bool, advertised_mtu: usize) -> Result<()> {
             &mut client,
             &mut tracker,
             &feedback,
-            Duration::from_millis(34)
+            Duration::from_millis(34),
+            0x5361
         )?,
         "valid too-big feedback did not resize the interface"
     );
@@ -492,7 +493,7 @@ fn port_unreachable(ipv6: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mtu_reduction::rebuild_components_with_seed;
+    use crate::mtu_reduction::rebuild_components;
 
     #[test]
     fn retained_tcp_transfer_completes_after_interface_mtu_reduction() {
@@ -547,14 +548,8 @@ mod tests {
                 .update(|entries| entries.push(route).unwrap());
             let addresses = peer.interface.ip_addrs().to_vec();
             peer.device.inject(vec![0x53; 1500]).unwrap();
-            let error = rebuild_components_with_seed(
-                &mut peer.interface,
-                &mut peer.device,
-                MTU,
-                10,
-                0x1234,
-            )
-            .unwrap_err();
+            let error = rebuild_components(&mut peer.interface, &mut peer.device, MTU, 10, 0x1234)
+                .unwrap_err();
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),
                 std::io::ErrorKind::WouldBlock
@@ -563,8 +558,7 @@ mod tests {
             assert_eq!(peer.interface.ip_addrs(), addresses);
             let (packet, _) = peer.device.receive(Instant::from_millis(10)).unwrap();
             packet.consume(|bytes| assert_eq!(bytes, &[0x53; 1500]));
-            rebuild_components_with_seed(&mut peer.interface, &mut peer.device, MTU, 11, 0x1234)
-                .unwrap();
+            rebuild_components(&mut peer.interface, &mut peer.device, MTU, 11, 0x1234).unwrap();
             assert_eq!(peer.device.capabilities().max_transmission_unit, MTU);
             assert_eq!(peer.interface.ip_addrs(), addresses);
             assert!(peer.interface.any_ip());
@@ -575,6 +569,53 @@ mod tests {
                 assert_eq!(entries[0].preferred_until, route.preferred_until);
                 assert_eq!(entries[0].expires_at, route.expires_at);
             });
+        }
+    }
+
+    #[test]
+    fn matched_feedback_uses_the_callers_replacement_seed() {
+        for ipv6 in [false, true] {
+            let mut sequences = Vec::new();
+            for seed in [1, 2] {
+                let packet = tcp_sample(ipv6, 1500).unwrap();
+                let feedback = too_big(&packet, ipv6).unwrap();
+                let (source, destination) = addresses(ipv6).unwrap();
+                let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
+                let mut tracker = crate::pmtu_feedback::Tracker::default();
+                tracker
+                    .reserve(&packet, destination, Duration::ZERO, Duration::from_secs(1))
+                    .unwrap();
+                assert!(
+                    apply_feedback(
+                        &mut peer,
+                        &mut tracker,
+                        &feedback,
+                        Duration::from_millis(1),
+                        seed
+                    )
+                    .unwrap()
+                );
+                peer.sockets
+                    .get_mut::<tcp::Socket>(peer.tcp)
+                    .connect(
+                        peer.interface.context(),
+                        (destination, 9000),
+                        (source, 40001),
+                    )
+                    .unwrap();
+                peer.poll(2);
+                let syn = peer.device.outgoing.pop_front().unwrap();
+                let tcp = if ipv6 {
+                    Ipv6Packet::new_checked(&syn).unwrap().payload()
+                } else {
+                    Ipv4Packet::new_checked(&syn).unwrap().payload()
+                };
+                sequences.push(TcpPacket::new_checked(tcp).unwrap().seq_number());
+            }
+            assert_ne!(
+                sequences[0], sequences[1],
+                "matched feedback must pass the chosen seed to the rebuilt interface"
+            );
         }
     }
 
@@ -598,14 +639,25 @@ mod tests {
             let mut corrupt = feedback.clone();
             corrupt[if ipv6 { 42 } else { 22 }] ^= 1;
             assert!(
-                !apply_feedback(&mut peer, &mut tracker, &corrupt, Duration::from_millis(1))
-                    .unwrap()
+                !apply_feedback(
+                    &mut peer,
+                    &mut tracker,
+                    &corrupt,
+                    Duration::from_millis(1),
+                    0x5361
+                )
+                .unwrap()
             );
             assert_eq!(peer.device.capabilities().max_transmission_unit, 1500);
             peer.device.inject(vec![0x53; 1500]).unwrap();
-            let error =
-                apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(2))
-                    .unwrap_err();
+            let error = apply_feedback(
+                &mut peer,
+                &mut tracker,
+                &feedback,
+                Duration::from_millis(2),
+                0x5361,
+            )
+            .unwrap_err();
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),
                 std::io::ErrorKind::WouldBlock
@@ -615,14 +667,26 @@ mod tests {
             let (pending, _) = peer.device.receive(Instant::from_millis(2)).unwrap();
             pending.consume(|bytes| assert_eq!(bytes, &[0x53; 1500]));
             assert!(
-                apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(3))
-                    .unwrap()
+                apply_feedback(
+                    &mut peer,
+                    &mut tracker,
+                    &feedback,
+                    Duration::from_millis(3),
+                    0x5361
+                )
+                .unwrap()
             );
             assert_eq!(peer.device.capabilities().max_transmission_unit, MTU);
             assert!(tracker.next_deadline().is_none());
             assert!(
-                !apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(4))
-                    .unwrap()
+                !apply_feedback(
+                    &mut peer,
+                    &mut tracker,
+                    &feedback,
+                    Duration::from_millis(4),
+                    0x5361
+                )
+                .unwrap()
             );
         }
     }
@@ -644,12 +708,24 @@ mod tests {
                 )
                 .unwrap();
             assert!(
-                !apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_millis(1))
-                    .unwrap()
+                !apply_feedback(
+                    &mut peer,
+                    &mut tracker,
+                    &feedback,
+                    Duration::from_millis(1),
+                    0x5361
+                )
+                .unwrap()
             );
             assert_eq!(tracker.next_deadline(), Some(Duration::from_secs(1)));
-            let error = apply_feedback(&mut peer, &mut tracker, &feedback, Duration::from_secs(1))
-                .unwrap_err();
+            let error = apply_feedback(
+                &mut peer,
+                &mut tracker,
+                &feedback,
+                Duration::from_secs(1),
+                0x5361,
+            )
+            .unwrap_err();
             assert_eq!(
                 error.downcast_ref::<crate::pmtu_feedback::Error>(),
                 Some(&crate::pmtu_feedback::Error::Expired)

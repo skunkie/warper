@@ -78,7 +78,7 @@ pub(super) fn apply_outer(
     // send buffer. Retiring them lets TCP resegment; no application resend occurs.
     let retired = peer.device.outgoing.len();
     peer.device.outgoing.clear();
-    crate::mtu_reduction::rebuild_interface(peer, limit, tick)?;
+    crate::mtu_reduction::rebuild_interface(peer, limit, tick, 0x5361)?;
     *budget = candidate;
     Ok(retired)
 }
