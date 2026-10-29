@@ -737,6 +737,8 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
 #[tokio::test]
 async fn ingress_respects_current_experimental_mtu_in_both_families() {
     use futures::FutureExt;
+    fn assert_send<T: Send>() {}
+    assert_send::<Feedback>();
 
     for invalid in [1279, 1501] {
         assert!(matches!(
@@ -1086,10 +1088,24 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             .unwrap()
             .socket;
         host.now += Duration::from_secs(1);
+        let (closed_output, closed_receiver) = mpsc::channel(1);
+        drop(closed_receiver);
         assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
-        let handed_off = host.take_feedback().unwrap();
-        assert_eq!(handed_off.bytes(), response);
+        assert_eq!(
+            host.try_publish_feedback(&closed_output),
+            Err(TooBigFeedbackError::OutputClosed)
+        );
+        assert_eq!(host.feedback.len(), 1);
+        let (output, mut output_receiver) = mpsc::channel(1);
+        assert_eq!(host.try_publish_feedback(&output), Ok(true));
         assert_eq!(host.queue_too_big_for_owned_flow(&second_oversized), Ok(()));
+        assert_eq!(
+            host.try_publish_feedback(&output),
+            Err(TooBigFeedbackError::OutputBusy)
+        );
+        assert_eq!(host.feedback.len(), 1);
+        let handed_off = output_receiver.try_recv().unwrap();
+        assert_eq!(handed_off.bytes(), response);
         let second_socket = host
             .slots
             .iter()
@@ -1101,9 +1117,20 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             .unwrap()
             .socket;
         host.sockets.get_mut::<tcp::Socket>(second_socket).abort();
-        assert!(
-            host.take_feedback().is_none(),
+        assert_eq!(
+            host.try_publish_feedback(&output),
+            Ok(false),
             "closed TCP flow feedback must not be emitted"
+        );
+        assert!(matches!(
+            output_receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(host.try_publish_feedback(&closed_output), Ok(false));
+        assert_eq!(
+            output.capacity(),
+            1,
+            "discarding stale feedback must release the output reservation"
         );
         let old_id = flow.metadata.id;
         drop((flow, second_flow));

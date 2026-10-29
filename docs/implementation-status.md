@@ -157,9 +157,12 @@ output queue and cooldown on refusal
 uses a separate bounded feedback queue and lease index. Handed-off responses
 retain flow ownership and block tuple reuse until release; stale queued
 responses are discarded (`target/evidence/phase-0/feedback-lifetime/README.md`).
-The real output handoff, kernel delivery acknowledgement, and cross-instance
-lifetime remain unverified. It is not wired to the runtime and does not establish
-a production rate policy. UDP, production configuration and runtime integration
+A test-only bounded channel now reserves capacity before removing feedback;
+full or closed output preserves the queued handle, and a received handle retains
+its lease (`target/evidence/phase-0/feedback-channel/README.md`). The real output
+handoff, kernel delivery acknowledgement, and cross-instance lifetime remain
+unverified. It is not wired to the runtime and does not establish a production
+rate policy. UDP, production configuration and runtime integration
 remain separately constrained.
 A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised

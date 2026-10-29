@@ -86,6 +86,8 @@ enum TooBigFeedbackError {
     InvalidPacket,
     InvalidTime,
     NotOversized,
+    OutputBusy,
+    OutputClosed,
     QueueFull,
     RateLimited,
     RetainedLimit,
@@ -528,6 +530,25 @@ impl HostAdapter {
             }
         }
         None
+    }
+
+    #[cfg(test)]
+    fn try_publish_feedback(
+        &mut self,
+        output: &Sender<Feedback>,
+    ) -> Result<bool, TooBigFeedbackError> {
+        if self.feedback.is_empty() {
+            return Ok(false);
+        }
+        let permit = output.try_reserve().map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => TooBigFeedbackError::OutputBusy,
+            mpsc::error::TrySendError::Closed(_) => TooBigFeedbackError::OutputClosed,
+        })?;
+        let Some(feedback) = self.take_feedback() else {
+            return Ok(false);
+        };
+        permit.send(feedback);
+        Ok(true)
     }
 
     pub fn poll_io(&mut self, cx: &mut Context<'_>, now: Duration) -> Result<(), AdmissionError> {
