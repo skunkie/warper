@@ -41,6 +41,18 @@ pub fn rebuild_components(
     mtu: usize,
     now: i64,
 ) -> Result<()> {
+    rebuild_components_with_seed(original, device, mtu, now, 0x5361)
+}
+
+/// The caller prepares the seed before entering the synchronous rebuild.
+/// This experimental boundary does not validate seed quality or uniqueness.
+pub fn rebuild_components_with_seed(
+    original: &mut Interface,
+    device: &mut PacketDevice,
+    mtu: usize,
+    now: i64,
+    random_seed: u64,
+) -> Result<()> {
     let addresses = original.ip_addrs().to_vec();
     let any_ip = original.any_ip();
     let mut routes = None;
@@ -51,7 +63,7 @@ pub fn rebuild_components(
     // Device validation occurs before mutation and refuses both queue kinds.
     device.configure_mtu(mtu)?;
     let mut config = Config::new(HardwareAddress::Ip);
-    config.random_seed = 0x5361;
+    config.random_seed = random_seed;
     let mut interface = Interface::new(config, device, Instant::from_millis(now));
     interface.update_ip_addrs(|entries| {
         for address in addresses {
@@ -76,7 +88,7 @@ mod tests {
     };
     use std::net::IpAddr;
 
-    fn first_sequence_after_replacement(ipv6: bool) -> i32 {
+    fn first_sequence_after_replacement(ipv6: bool, seed: Option<u64>) -> i32 {
         let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
             .parse()
             .unwrap();
@@ -84,7 +96,12 @@ mod tests {
             .parse()
             .unwrap();
         let mut peer = Peer::with_mtu(source, 40000, 1500).unwrap();
-        rebuild_interface(&mut peer, 1280, 0).unwrap();
+        if let Some(seed) = seed {
+            rebuild_components_with_seed(&mut peer.interface, &mut peer.device, 1280, 0, seed)
+                .unwrap();
+        } else {
+            rebuild_interface(&mut peer, 1280, 0).unwrap();
+        }
         peer.sockets
             .get_mut::<tcp::Socket>(peer.tcp)
             .connect(
@@ -104,11 +121,22 @@ mod tests {
     }
 
     #[test]
+    fn caller_seed_changes_new_tcp_sequence_after_replacement() {
+        for ipv6 in [false, true] {
+            assert_ne!(
+                first_sequence_after_replacement(ipv6, Some(1)),
+                first_sequence_after_replacement(ipv6, Some(2)),
+                "the caller's seed must reach the replacement interface"
+            );
+        }
+    }
+
+    #[test]
     fn fixed_replacement_seed_repeats_tcp_sequence_across_interfaces() {
         for ipv6 in [false, true] {
             assert_eq!(
-                first_sequence_after_replacement(ipv6),
-                first_sequence_after_replacement(ipv6),
+                first_sequence_after_replacement(ipv6, None),
+                first_sequence_after_replacement(ipv6, None),
                 "fixed replacement seeds repeat the first TCP sequence"
             );
         }

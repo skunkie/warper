@@ -492,7 +492,7 @@ fn port_unreachable(ipv6: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mtu_reduction::rebuild_interface;
+    use crate::mtu_reduction::rebuild_components_with_seed;
 
     #[test]
     fn retained_tcp_transfer_completes_after_interface_mtu_reduction() {
@@ -547,7 +547,14 @@ mod tests {
                 .update(|entries| entries.push(route).unwrap());
             let addresses = peer.interface.ip_addrs().to_vec();
             peer.device.inject(vec![0x53; 1500]).unwrap();
-            let error = rebuild_interface(&mut peer, MTU, 10).unwrap_err();
+            let error = rebuild_components_with_seed(
+                &mut peer.interface,
+                &mut peer.device,
+                MTU,
+                10,
+                0x1234,
+            )
+            .unwrap_err();
             assert_eq!(
                 error.downcast_ref::<std::io::Error>().unwrap().kind(),
                 std::io::ErrorKind::WouldBlock
@@ -556,7 +563,8 @@ mod tests {
             assert_eq!(peer.interface.ip_addrs(), addresses);
             let (packet, _) = peer.device.receive(Instant::from_millis(10)).unwrap();
             packet.consume(|bytes| assert_eq!(bytes, &[0x53; 1500]));
-            rebuild_interface(&mut peer, MTU, 11).unwrap();
+            rebuild_components_with_seed(&mut peer.interface, &mut peer.device, MTU, 11, 0x1234)
+                .unwrap();
             assert_eq!(peer.device.capabilities().max_transmission_unit, MTU);
             assert_eq!(peer.interface.ip_addrs(), addresses);
             assert!(peer.interface.any_ip());

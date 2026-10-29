@@ -889,8 +889,11 @@ to transfer. The fixture uses a fixed seed on each replacement. A negative
 control shows that two replacement interfaces emit the same initial TCP
 sequence for the same new connection in both families. The sequence is
 observable on the wire; no production uniqueness or security claim follows.
-A production design needs fresh entropy without blocking the async driver,
-and a policy for any other interface state. Reduction is interface-wide and also
+The experimental replacement accepts a caller-prepared `u64` seed, allowing
+the owner to obtain it before entering the synchronous rebuild. The existing
+fixture convenience path still uses a fixed seed and cannot supply production
+entropy. A production design needs fresh entropy without blocking the async
+driver, and a policy for any other interface state. Reduction is interface-wide and also
 lowers the device receive limit; multiple flows and asymmetric paths are not
 established. This is not a generic interface migration API.
 
