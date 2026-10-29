@@ -174,6 +174,7 @@ supervise_interruptions() {
         wait_marker "up.$suffix.request"
         ip link set dev routerc1 up
         ip -6 addr replace fd77:3::1/64 dev routerc1 nodad
+        nsenter --net="/proc/$client_anchor/ns/net" python3 "$route_checker"
         : > "$control_directory/up.$suffix.ready"
         wait_marker "route.down.$suffix.request"
         if [[ "$suffix" == *0 ]]; then
@@ -188,6 +189,7 @@ supervise_interruptions() {
         else
             nsenter --net="/proc/$client_anchor/ns/net" ip -6 route replace default via fd77:3::1 dev client1 table 100
         fi
+        nsenter --net="/proc/$client_anchor/ns/net" python3 "$route_checker"
         : > "$control_directory/route.up.$suffix.ready"
         wait_marker "rule.down.$suffix.request"
         if [[ "$suffix" == *0 ]]; then
@@ -202,6 +204,7 @@ supervise_interruptions() {
         else
             nsenter --net="/proc/$client_anchor/ns/net" ip -6 rule add from fd77:3::2/128 table 100
         fi
+        nsenter --net="/proc/$client_anchor/ns/net" python3 "$route_checker"
         : > "$control_directory/rule.up.$suffix.ready"
         wait_marker "address.down.$suffix.request"
         if [[ "$suffix" == *0 ]]; then

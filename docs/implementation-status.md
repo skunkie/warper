@@ -243,8 +243,9 @@ subscription also observes removal and restoration of a source address with
 both owners invalidated
 (`target/evidence/phase-0/address-notification/README.md`). The harness also
 checks source-bound route lookup results for both paths and families before
-traffic and after restoration
-(`target/evidence/phase-0/route-lookups/README.md`). These lookups omit socket
+traffic and before each link, route, rule, or address restoration is
+acknowledged (`target/evidence/phase-0/route-recovery/README.md`). A mismatch
+prevents replacement in the fixture. These lookups omit socket
 marks and ports and are not race-free path verification. Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.

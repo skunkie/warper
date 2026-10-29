@@ -681,10 +681,12 @@ before the notification is processed, or physical
 interface failure. Notification loss, truncation and malformed input fail
 closed in the experimental owner.
 
-Before traffic and after each restored source address, the harness checks the
+Before traffic and after each restored link, route, rule, or address, the harness checks the
 private client namespace kernel route lookup for both fixture sources and
 destinations. It verifies one unicast result with the expected source, gateway,
-and egress interface in each family. The lookup does not model socket marks,
+and egress interface in each family. A failed lookup prevents the harness from
+acknowledging restoration, so the probe does not replace its socket. The lookup
+does not model socket marks,
 ports, or a concurrent routing change, and is not production path verification.
 
 The harness also removes and restores the second source-specific default route

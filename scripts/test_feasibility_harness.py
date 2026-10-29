@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0, address_exit=0, route_mismatch=False):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0, address_exit=0, route_mismatch=False, mismatch_after=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -42,7 +42,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
             "mount": f'echo "$*" >> "{root}/mount-commands.log"\n',
             "umount": f'echo "$*" >> "{root}/umount-commands.log"\n',
             "nsenter": f'echo "$*" >> "{root}/nsenter-commands.log"\nshift\nif [[ "$1" == bash && "$2" == -eu ]]; then exit 0; fi\nexec "$@"\n',
-            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1 $2 $3" == "-j route get" ]]; then\ncase "$6" in\n198.18.0.2) gateway=198.18.0.1; dev=client0;;\n198.20.0.2) gateway=198.20.0.1; dev=client1;;\nfd77:1::2) gateway=fd77:1::1; dev=client0;;\nfd77:3::2) gateway=fd77:3::1; dev=client1;;\nesac\nif [[ "{route_mismatch}" == True ]]; then dev=wrong; fi\nprintf \'[{{"dst":"%s","from":"%s","gateway":"%s","dev":"%s"}}]\\n\' "$4" "$6" "$gateway" "$dev"\nexit 0\nfi\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\nif [[ "$*" == "link set dev routerc1 down" ]]; then exit {interrupt_exit}; fi\nif [[ "$*" == "route del default via 198.20.0.1 dev client1 table 100" ]]; then exit {route_exit}; fi\nif [[ "$*" == "rule del from 198.20.0.2/32 table 100" ]]; then exit {rule_exit}; fi\nif [[ "$*" == "addr del 198.20.0.2/24 dev client1" ]]; then exit {address_exit}; fi\n',
+            "ip": f'echo "$*" >> "{root}/ip-commands.log"\nif [[ "$1 $2 $3" == "-j route get" ]]; then\ncase "$6" in\n198.18.0.2) gateway=198.18.0.1; dev=client0;;\n198.20.0.2) gateway=198.20.0.1; dev=client1;;\nfd77:1::2) gateway=fd77:1::1; dev=client0;;\nfd77:3::2) gateway=fd77:3::1; dev=client1;;\nesac\ncount=$(grep -c -- "-j route get" "{root}/ip-commands.log" || :)\nif [[ "{route_mismatch}" == True || ( {mismatch_after} -gt 0 && "$count" -gt {mismatch_after} ) ]]; then dev=wrong; fi\nprintf \'[{{"dst":"%s","from":"%s","gateway":"%s","dev":"%s"}}]\\n\' "$4" "$6" "$gateway" "$dev"\nexit 0\nfi\nif [[ "$1" == -j ]]; then echo "[]"; fi\nif [[ "$1 $2" == "link del" ]]; then exit {cleanup_exit}; fi\nif [[ "$*" == "link set dev routerc1 down" ]]; then exit {interrupt_exit}; fi\nif [[ "$*" == "route del default via 198.20.0.1 dev client1 table 100" ]]; then exit {route_exit}; fi\nif [[ "$*" == "rule del from 198.20.0.2/32 table 100" ]]; then exit {rule_exit}; fi\nif [[ "$*" == "addr del 198.20.0.2/24 dev client1" ]]; then exit {address_exit}; fi\n',
             "cat": f'if [[ "$1" == /proc/self/uid_map ]]; then echo "{mapping}"; else exec /bin/cat "$@"; fi\n',
         }
         for name, source in commands.items():
@@ -249,7 +249,7 @@ exit {probe_exit}
         commands = (evidence.parents[3] / "ip-commands.log").read_text()
         self.assertIn("link set routerc0 mtu 1600 up", commands)
         self.assertIn("link set routerc1 mtu 1600 up", commands)
-        self.assertEqual(commands.count("-j route get"), 20)
+        self.assertEqual(commands.count("-j route get"), 68)
         self.assertEqual(commands.count("link set dev routerc1 down"), 4)
         self.assertEqual(commands.count("link set dev routerc1 up"), 4)
         self.assertEqual(commands.count("route del default via 198.20.0.1 dev client1 table 100"), 2)
@@ -314,6 +314,17 @@ exit {probe_exit}
         self.assertIn("link del dev routerc1", commands)
         self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
         self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_router_restoration_lookup_mismatch_does_not_acknowledge_recovery(self):
+        for completed in (4, 8, 12, 16):
+            with self.subTest(completed=completed):
+                result, evidence = self.run_harness(scope="--router-mtu-check", mismatch_after=completed)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                commands = (evidence.parents[3] / "ip-commands.log").read_text()
+                self.assertEqual(commands.count("-j route get"), completed + 1)
+                self.assertIn("link del dev routerc1", commands)
+                self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
+                self.assertNotIn("PASS", (evidence / "result.txt").read_text())
 
     def test_router_address_change_failure_retires_links_and_control_mount(self):
         result, evidence = self.run_harness(scope="--router-mtu-check", address_exit=7)
