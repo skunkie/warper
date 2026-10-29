@@ -372,6 +372,307 @@ pub(super) fn drain(peer: &mut Peer, output: &mut Vec<u8>, limit: usize) -> Resu
 mod tests {
     use super::*;
 
+    fn feedback_fixture(ipv6: bool) -> (Endpoint, Vec<u8>) {
+        let (mut endpoint, _) = create_pair_with_outer(ipv6, false).unwrap();
+        let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+            .parse()
+            .unwrap();
+        let destination: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+            .parse()
+            .unwrap();
+        let mut client = Peer::with_mtu(source, 40000, 1500).unwrap();
+        let mut server = Peer::with_mtu(destination, 9000, 1500).unwrap();
+        server
+            .sockets
+            .get_mut::<tcp::Socket>(server.tcp)
+            .listen((destination, 9000))
+            .unwrap();
+        client
+            .sockets
+            .get_mut::<tcp::Socket>(client.tcp)
+            .connect(
+                client.interface.context(),
+                (destination, 9000),
+                (source, 40001),
+            )
+            .unwrap();
+        for tick in 0..20 {
+            client.poll(tick);
+            server.poll(tick);
+            while let Some(packet) = client.device.outgoing.pop_front() {
+                server.device.inject(packet).unwrap();
+            }
+            while let Some(packet) = server.device.outgoing.pop_front() {
+                client.device.inject(packet).unwrap();
+            }
+            if client.sockets.get::<tcp::Socket>(client.tcp).state() == tcp::State::Established {
+                break;
+            }
+        }
+        assert_eq!(
+            client.sockets.get::<tcp::Socket>(client.tcp).state(),
+            tcp::State::Established
+        );
+        client.device.outgoing.clear();
+        client
+            .sockets
+            .get_mut::<tcp::Socket>(client.tcp)
+            .send_slice(&[0x61; 4096])
+            .unwrap();
+        client.poll(20);
+        let packet = client.device.outgoing.pop_front().unwrap();
+        client.device.outgoing.clear();
+        endpoint
+            .transport
+            .watch_pmtu(&packet, destination, Duration::ZERO)
+            .unwrap();
+        let feedback = crate::pmtu_fixture::too_big(&packet, ipv6, MTU).unwrap();
+        endpoint.peer = client;
+        (endpoint, feedback)
+    }
+
+    #[test]
+    fn transient_seed_failure_retains_feedback_until_bounded_retry() {
+        use smoltcp::phy::Device;
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            let retained_bytes = endpoint
+                .peer
+                .sockets
+                .get::<tcp::Socket>(endpoint.peer.tcp)
+                .send_queue();
+            assert!(retained_bytes > 0);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pending_pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .packet,
+                feedback
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline(),
+                Some(Duration::from_secs(1))
+            );
+            assert_eq!(
+                endpoint.peer.device.capabilities().max_transmission_unit,
+                1500
+            );
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::PermissionDenied.into()
+                    ),)
+                    .unwrap(),
+                "duplicate feedback must retain the first response without requesting a seed"
+            );
+            endpoint.transport.now = Duration::from_millis(9);
+            endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || {
+                    Err(std::io::ErrorKind::PermissionDenied.into())
+                })
+                .unwrap();
+            assert!(endpoint.transport.pending_pmtu_feedback.is_some());
+            endpoint.transport.now = Duration::from_millis(10);
+            endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap();
+            assert!(endpoint.transport.pending_pmtu_feedback.is_none());
+            assert_eq!(
+                endpoint.peer.device.capabilities().max_transmission_unit,
+                MTU
+            );
+            assert_eq!(endpoint.transport.pmtu_reductions, 1);
+            assert_eq!(
+                endpoint
+                    .peer
+                    .sockets
+                    .get::<tcp::Socket>(endpoint.peer.tcp)
+                    .send_queue(),
+                retained_bytes
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn busy_queue_is_retained_until_retry_and_permanent_seed_failure_is_surfaced() {
+        use smoltcp::phy::Device;
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            let error = endpoint
+                .transport
+                .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || {
+                    Err(std::io::ErrorKind::PermissionDenied.into())
+                })
+                .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<crate::mtu_reduction::SeedError>()
+                    .is_some()
+            );
+            assert!(endpoint.transport.pending_pmtu_feedback.is_none());
+            endpoint.peer.device.outgoing.push_back(vec![0x53; 100]);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Ok(1))
+                    .unwrap()
+            );
+            endpoint.transport.now = Duration::from_millis(10);
+            endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(2))
+                .unwrap();
+            assert!(endpoint.transport.pending_pmtu_feedback.is_some());
+            assert_eq!(
+                endpoint.peer.device.outgoing.pop_front().unwrap(),
+                vec![0x53; 100]
+            );
+            endpoint.transport.now = Duration::from_millis(20);
+            endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(3))
+                .unwrap();
+            assert!(endpoint.transport.pending_pmtu_feedback.is_none());
+            assert_eq!(
+                endpoint.peer.device.capabilities().max_transmission_unit,
+                MTU
+            );
+        }
+    }
+
+    #[test]
+    fn pending_feedback_blocks_replacement_after_reservation_retirement() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            endpoint.transport.pmtu_feedback.as_mut().unwrap().commit();
+            let reporter: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            let error = endpoint
+                .transport
+                .watch_pmtu(&[], reporter, Duration::ZERO)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::pmtu_feedback::Error>(),
+                Some(&crate::pmtu_feedback::Error::Busy)
+            );
+            endpoint.transport.now = Duration::from_millis(10);
+            endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap();
+            assert!(endpoint.transport.pending_pmtu_feedback.is_none());
+        }
+    }
+
+    #[test]
+    fn oversized_feedback_cannot_allocate_a_pending_response() {
+        use smoltcp::wire::{Icmpv4Packet, Icmpv6Packet, Ipv4Packet, Ipv6Packet};
+        for ipv6 in [false, true] {
+            let (mut endpoint, mut feedback) = feedback_fixture(ipv6);
+            feedback.resize(MTU + 1, 0);
+            if ipv6 {
+                let mut ip = Ipv6Packet::new_checked(feedback.as_mut_slice()).unwrap();
+                ip.set_payload_len((MTU + 1 - 40) as u16);
+                let (source, destination) = (ip.src_addr(), ip.dst_addr());
+                Icmpv6Packet::new_checked(&mut feedback[40..])
+                    .unwrap()
+                    .fill_checksum(&source, &destination);
+            } else {
+                let mut ip = Ipv4Packet::new_checked(feedback.as_mut_slice()).unwrap();
+                ip.set_total_len((MTU + 1) as u16);
+                ip.fill_checksum();
+                Icmpv4Packet::new_checked(&mut feedback[20..])
+                    .unwrap()
+                    .fill_checksum();
+            }
+            let error = endpoint
+                .transport
+                .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || {
+                    Err(std::io::ErrorKind::WouldBlock.into())
+                })
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFeedbackTooLarge)
+            );
+            assert!(endpoint.transport.pending_pmtu_feedback.is_none());
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline(),
+                Some(Duration::from_secs(1))
+            );
+        }
+    }
+
+    #[test]
+    fn retained_feedback_expiry_surfaces_without_reconfiguration() {
+        use smoltcp::phy::Device;
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback) = feedback_fixture(ipv6);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            let error = endpoint
+                .transport
+                .pump(&mut endpoint.peer, Duration::from_secs(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::pmtu_feedback::Error>(),
+                Some(&crate::pmtu_feedback::Error::Expired)
+            );
+            assert_eq!(
+                endpoint.peer.device.capabilities().max_transmission_unit,
+                1500
+            );
+            assert_eq!(endpoint.transport.pmtu_reductions, 0);
+        }
+    }
+
     #[test]
     fn encrypted_feedback_resizes_the_same_tcp_connection() {
         for ipv6 in [false, true] {

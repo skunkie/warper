@@ -67,6 +67,7 @@ use smoltcp::socket::{tcp, udp};
 const REQUEST: &[u8] = b"synthetic-tunnel-request";
 const RESPONSE: &[u8] = b"synthetic-tunnel-response-after-fin";
 const REKEY_DURATION: Duration = Duration::from_secs(135);
+const PMTU_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransportFailure {
@@ -74,6 +75,7 @@ enum TransportFailure {
     StagingAccounting,
     DrainLimit,
     InnerDestination,
+    PmtuFeedbackTooLarge,
 }
 
 impl fmt::Display for TransportFailure {
@@ -89,6 +91,11 @@ struct Endpoint {
     transport: Transport,
 }
 
+struct PendingPmtuFeedback {
+    packet: Vec<u8>,
+    retry_at: Duration,
+}
+
 struct Transport {
     tunnel: Tunn,
     socket: UdpSocket,
@@ -98,6 +105,7 @@ struct Transport {
     reassembly: reassembly::Reassembler,
     udp_feedback: Option<udp_feedback::Reservation>,
     pmtu_feedback: Option<pmtu_feedback::Tracker>,
+    pending_pmtu_feedback: Option<PendingPmtuFeedback>,
     pmtu_fixture: Option<pmtu_probe::PathFixture>,
     pmtu_reductions: usize,
     now: Duration,
@@ -168,6 +176,10 @@ impl Transport {
         if let Some(tracker) = self.pmtu_feedback.as_mut() {
             tracker.reduction(&[], now)?;
         }
+        #[cfg(target_os = "linux")]
+        self.retry_pmtu_feedback(peer, mtu_reduction::prepare_seed)?;
+        #[cfg(not(target_os = "linux"))]
+        self.retry_pmtu_feedback(peer, || Ok(0x5361))?;
         let mut output = [0; MTU + 256];
         while !peer.device.outgoing.is_empty() {
             if self.staged_packets >= PACKET_CAPACITY {
@@ -251,10 +263,11 @@ impl Transport {
         if now < self.now {
             return Err(pmtu_feedback::Error::InvalidTime.into());
         }
-        if self
-            .pmtu_feedback
-            .as_ref()
-            .is_some_and(|tracker| tracker.next_deadline().is_some())
+        if self.pending_pmtu_feedback.is_some()
+            || self
+                .pmtu_feedback
+                .as_ref()
+                .is_some_and(|tracker| tracker.next_deadline().is_some())
         {
             return Err(pmtu_feedback::Error::Busy.into());
         }
@@ -282,22 +295,12 @@ impl Transport {
         {
             return Err(TransportFailure::InnerDestination.into());
         }
-        if let Some(tracker) = self.pmtu_feedback.as_mut() {
-            #[cfg(target_os = "linux")]
-            let reduced = mtu_reduction::apply_feedback(
-                peer,
-                tracker,
-                packet,
-                self.now,
-                mtu_reduction::prepare_seed,
-            )?;
-            #[cfg(not(target_os = "linux"))]
-            let reduced =
-                mtu_reduction::apply_feedback(peer, tracker, packet, self.now, || Ok(0x5361))?;
-            if reduced {
-                self.pmtu_reductions += 1;
-                return Ok(());
-            }
+        #[cfg(target_os = "linux")]
+        let handled = self.handle_pmtu_feedback(peer, packet, mtu_reduction::prepare_seed)?;
+        #[cfg(not(target_os = "linux"))]
+        let handled = self.handle_pmtu_feedback(peer, packet, || Ok(0x5361))?;
+        if handled {
+            return Ok(());
         }
         if let Some(fixture) = self.pmtu_fixture.as_mut() {
             match fixture.inspect(packet)? {
@@ -337,6 +340,61 @@ impl Transport {
         Ok(())
     }
 
+    fn handle_pmtu_feedback(
+        &mut self,
+        peer: &mut Peer,
+        packet: &[u8],
+        seed: impl FnOnce() -> io::Result<u64>,
+    ) -> Result<bool> {
+        let Some(tracker) = self.pmtu_feedback.as_mut() else {
+            return Ok(false);
+        };
+        if self.pending_pmtu_feedback.is_some() {
+            return Ok(tracker.reduction(packet, self.now)?.is_some());
+        }
+        match mtu_reduction::apply_feedback(peer, tracker, packet, self.now, seed) {
+            Ok(true) => {
+                self.pmtu_reductions += 1;
+                Ok(true)
+            }
+            Ok(false) => Ok(false),
+            Err(error) if retryable_pmtu_failure(&error) => {
+                if packet.len() > MTU {
+                    return Err(TransportFailure::PmtuFeedbackTooLarge.into());
+                }
+                let retry_at = self
+                    .now
+                    .checked_add(PMTU_RETRY_INTERVAL)
+                    .ok_or(pmtu_feedback::Error::InvalidTime)?;
+                self.pending_pmtu_feedback = Some(PendingPmtuFeedback {
+                    packet: packet.to_vec(),
+                    retry_at,
+                });
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn retry_pmtu_feedback(
+        &mut self,
+        peer: &mut Peer,
+        seed: impl FnOnce() -> io::Result<u64>,
+    ) -> Result<()> {
+        if self
+            .pending_pmtu_feedback
+            .as_ref()
+            .is_none_or(|pending| self.now < pending.retry_at)
+        {
+            return Ok(());
+        }
+        let Some(pending) = self.pending_pmtu_feedback.take() else {
+            return Ok(());
+        };
+        self.handle_pmtu_feedback(peer, &pending.packet, seed)?;
+        Ok(())
+    }
+
     fn receive_result(&mut self, result: TunnResult<'_>, peer: &mut Peer) -> Result<bool> {
         if is_application_data(&result) {
             self.staged_packets = self
@@ -355,6 +413,17 @@ impl Drop for Transport {
             tracker.cancel();
         }
     }
+}
+
+fn retryable_pmtu_failure(error: &anyhow::Error) -> bool {
+    if let Some(seed_error) = error.downcast_ref::<mtu_reduction::SeedError>() {
+        return std::error::Error::source(seed_error)
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .is_some_and(|source| source.kind() == io::ErrorKind::WouldBlock);
+    }
+    error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|error| error.kind() == io::ErrorKind::WouldBlock)
 }
 
 fn is_application_data(result: &TunnResult<'_>) -> bool {
@@ -521,6 +590,7 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         udp_feedback: None,
         pmtu_feedback: None,
+        pending_pmtu_feedback: None,
         pmtu_fixture: None,
         pmtu_reductions: 0,
         now: Duration::ZERO,
@@ -574,6 +644,7 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         reassembly: reassembly::Reassembler::new(reassembly::Limits::default())?,
         udp_feedback: None,
         pmtu_feedback: None,
+        pending_pmtu_feedback: None,
         pmtu_fixture: None,
         pmtu_reductions: 0,
         now: Duration::ZERO,

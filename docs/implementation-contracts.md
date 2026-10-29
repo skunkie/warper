@@ -899,7 +899,17 @@ Seed-source errors use a distinct typed `SeedError` that retains the underlying
 I/O cause; a busy device queue continues to return its own I/O error.
 Feedback validation may advance the tracker clock before the seed request.
 The controlled host and WireGuard feedback probes use this source on Linux.
-Other fixtures retain fixed seeds; macOS acquisition, integration and the
+The experimental WireGuard owner retains at most one matched response, bounded
+to 1280 bytes, if seed acquisition or device queue readiness returns
+`WouldBlock`. It retries no more often than every 10 ms while the original
+reservation remains valid; duplicate matching feedback does not replace the
+retained response. A pending response blocks replacement of its reservation
+even if that reservation has already retired. Retry occurs only when the
+experimental pump is called;
+there is no independent timer wakeup. Expiry and other errors remain visible
+to the owner, and shutdown drops the retained response. The reservation does
+not bind a production flow lifetime. This is a controlled driver policy, not
+production supervision. Other fixtures retain fixed seeds; macOS acquisition, integration and the
 production failure and state-transfer policy remain unproven. Reduction is
 interface-wide and also lowers the device receive limit; multiple flows and asymmetric paths are not
 established. This is not a generic interface migration API.

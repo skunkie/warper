@@ -172,8 +172,13 @@ the reservation or changing the interface, and an injected failure can be
 retried (`target/evidence/phase-0/nonblocking-interface-seed/README.md`). A
 typed seed error now distinguishes entropy failures from a busy device queue
 and retains the I/O cause (`target/evidence/phase-0/seed-error-category/README.md`).
-The experiments surface errors to their owner; production retry, macOS entropy, and
-other production interface state remain unresolved. A controlled
+The experimental WireGuard owner now retains one matched response on transient
+seed or queue unavailability and retries it on later pump calls with a 10 ms
+minimum interval. Tests cover duplicate reports, pending TCP data, queue busy,
+permanent errors and expiry
+(`target/evidence/phase-0/pmtu-deferred-retry/README.md`). There is no
+independent timer wake or production retry policy; macOS entropy and other
+production interface state remain unresolved. A controlled
 shared-interface probe now retains two simultaneous TCP flows and one UDP datagram across a
 1500-to-1280 reduction in both families. Feedback quoting the other flow is
 rejected before matched feedback triggers the reduction; deliberately lost
