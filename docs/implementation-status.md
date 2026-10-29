@@ -24,6 +24,38 @@ gates remain open.
 | 4: macOS networking and helper | Not started | ADR 0005 and UX-05 auth subset require actual ad-hoc bundled registration/enrollment/two-way IPC without paid signing; native networking/recovery/approval evidence also required |
 | 5: Tauri desktop and release | Not started | Requires UX-01–UX-04 public packaging, full UX-05 local GUI/service/rebuild evidence, frontend checks, and production-mode exclusion tests |
 
+### Phase 0 exit audit
+
+The [Phase 0 exit](implementation-plan.md#phase-0-baseline-and-feasibility)
+requires the workspace checks, controlled-peer evidence for both stack roles,
+the required evidence package, and the initial contract gate. The current
+assessment is:
+
+| Requirement | Assessment and remaining work |
+| --- | --- |
+| Minimal workspace and checks | Present. `scripts/check.sh` exercises the workspace, infrastructure and dependency policy. |
+| Configuration and reference fixtures | Present as design and fixture cases; production parser/CLI tests belong to Phase 1. |
+| Host-facing role | Partial. The Linux TUN fixture exercises two destination selections, TCP/UDP and both families; its handlers are experimental, and the explicit dynamic MTU check fails for both families. The TUN run does not establish macOS behavior or real protocol backends. |
+| WireGuard-side role | Partial. Active TCP/UDP and rekey have been exercised against a Linux kernel peer; the packet and routed PMTU experiments have narrower ownership and transport limits than a finalized adapter. |
+| Stack decision and evidence package | Open. ADR 0002 is proposed, so it does not yet select a production stack and its limitations. The default feasibility commands intentionally return incomplete after their packet probes, and the evidence index must identify the final gate runs and revision. |
+| Initial implementation contracts | Open. Selected stack interfaces are not finalized or demonstrated by compile-checked production-facing contracts. The contract completion checklist also requires fault-injection evidence for driver acknowledgements, rollback, task termination, and DNS reference and retained-state boundaries. |
+
+The explicit `host-stack --mtu-check` returns `UnsupportedPmtu`: raw smoltcp
+continues oversized TCP retransmissions after too-big feedback. Interface
+rebuild experiments show a possible mitigation but do not establish a safe
+runtime feedback and ownership policy. Resolve or explicitly accommodate this
+limitation in the selected adapter and its executable role evidence before
+accepting the stack ADR; a successful UDP kernel-sender fixture does not resolve
+it.
+
+The [contract completion checklist](implementation-contracts.md#5-completion-gate)
+asks for fault-injection evidence involving NET-10, NET-11, and NET-12 before
+its gate passes. Those contract-level cases must be made executable without
+claiming that the Phase 2 DNS and routing implementation has passed its full
+acceptance. Production DNS/routing, physical-host recovery, and native macOS
+acceptance remain assigned to later phases; missing native evidence must be
+reported separately, not treated as a Linux test pass.
+
 The [stack ADR](adr/0002-network-stack.md) remains proposed. Packet probes
 establish limited transport behavior, not NET-01/NET-05/NET-06/NET-07 or
 the complete Phase 0 exit criteria. No native macOS evidence exists.
