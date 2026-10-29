@@ -194,6 +194,7 @@ fn exchange(
         interrupted_path(client, destination, ipv6, wall, directory)?;
         route_change(client, destination, ipv6, wall, directory, "route")?;
         route_change(client, destination, ipv6, wall, directory, "rule")?;
+        route_change(client, destination, ipv6, wall, directory, "address")?;
     }
     ensure!(
         queue.read()?.is_none(),
@@ -749,7 +750,10 @@ fn route_change(
         1600,
     )?;
     let initial = [first.local_addr()?, second.local_addr()?];
-    let monitor = crate::link_monitor::Monitor::routes()?;
+    let monitor = match change {
+        "address" => crate::link_monitor::Monitor::addresses()?,
+        _ => crate::link_monitor::Monitor::routes()?,
+    };
     for (owner, reporter, marker) in [
         (&mut first, first_reporter, 0x77),
         (&mut second, second_reporter, 0x79),

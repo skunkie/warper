@@ -1205,7 +1205,8 @@ selection evidence. A socket and its error reader belong to exactly one such
 generation; neither a socket tuple nor an ICMP reporter alone proves the path.
 The platform driver must establish and revalidate that evidence without routing
 the endpoint through the capture interface. Interface removal, route changes,
-notification loss, ambiguous lookup, and uncertain reconfiguration invalidate
+source-address changes, notification loss, ambiguous lookup, and uncertain
+reconfiguration invalidate
 the generation. Until verification succeeds, new sends and feedback mutations
 on that path fail closed; no direct or alternate-backend fallback is allowed.
 
@@ -1267,9 +1268,11 @@ such event or uncertainty. The harness removes one source-specific default route
 reservations are pending, then restores it; both owners reject sends until
 socket replacement and each subsequently commits feedback for a distinct
 operation. A separate exchange removes and restores the source-specific policy
-rule with the same invalidation and recovery in both outer IP families. This
-does not attribute a route or rule event to one path or establish a
-race-free production route snapshot and notification protocol.
+rule with the same invalidation and recovery in both outer IP families. Another
+exchange uses a separate address-only subscription to observe removal of the source
+address and conservatively invalidates both owners before recovery. This does
+not attribute an event to one path or establish a race-free production route
+snapshot and notification protocol.
 Required further evidence includes
 actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across

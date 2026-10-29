@@ -689,7 +689,10 @@ does not attribute events to individual paths. Both reject sends until the
 harness restores the route or rule and the probe replaces their sockets; distinct sends
 then obtain their own reports. This conservative fixture behavior does not
 establish route verification, event attribution, continuous monitoring, or
-safety during the interval before event processing.
+safety during the interval before event processing. A separate address-only
+subscription observes removal and restoration of the second source address in
+both outer IP families. Address events conservatively invalidate both owners;
+the harness restores the address and dependent private routes before recovery.
 
 `run-router-mtu-isolated.sh` owns the namespace anchor processes, veth links,
 interruption supervisor and kernel-peer subprocess. Ready/stop files use a

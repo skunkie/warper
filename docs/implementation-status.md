@@ -238,7 +238,10 @@ event, then replacement sockets complete distinct operations
 routed TCP tuple failure in an earlier run remains unexplained. The fixture
 also removes and restores the source-specific policy rule, observing conservative
 invalidation for IPv4 and IPv6
-(`target/evidence/phase-0/rule-notification/README.md`). Route-event
+(`target/evidence/phase-0/rule-notification/README.md`). An address-only
+subscription also observes removal and restoration of a source address with
+both owners invalidated
+(`target/evidence/phase-0/address-notification/README.md`). Route-event
 attribution, continuous monitoring, route verification and the interval before
 notification processing remain unverified.
 The routed kernel-peer fixture additionally verifies same-socket counter

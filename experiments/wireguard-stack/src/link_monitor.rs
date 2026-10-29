@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Bounded Linux link and route notification experiments.
+//! Bounded Linux link, route, and address notification experiments.
 
 use std::{
     fmt,
@@ -41,6 +41,7 @@ pub(super) struct Monitor {
 enum Scope {
     Link(u32),
     Route,
+    Address,
 }
 
 impl Monitor {
@@ -62,6 +63,15 @@ impl Monitor {
         Ok(Self {
             socket,
             scope: Scope::Route,
+        })
+    }
+
+    pub(super) fn addresses() -> Result<Self, Error> {
+        let groups = nix::libc::RTMGRP_IPV4_IFADDR | nix::libc::RTMGRP_IPV6_IFADDR;
+        let socket = Self::subscribe(groups as u32)?;
+        Ok(Self {
+            socket,
+            scope: Scope::Address,
         })
     }
 
@@ -161,6 +171,16 @@ fn parse(bytes: &[u8], scope: Scope) -> Result<bool, Error> {
                     return Err(Error::InvalidMessage);
                 }
                 changed |= index as u32 == interface;
+            }
+            Scope::Address => {
+                if !matches!(kind, nix::libc::RTM_NEWADDR | nix::libc::RTM_DELADDR)
+                    || body.len() < 8
+                    || (body[0] != nix::libc::AF_INET as u8 && body[0] != nix::libc::AF_INET6 as u8)
+                    || body[4..8] == [0; 4]
+                {
+                    return Err(Error::InvalidMessage);
+                }
+                changed = true;
             }
             Scope::Route => {
                 if !matches!(
@@ -266,6 +286,31 @@ mod tests {
             classify(&messages, Some(0), MsgFlags::empty(), Scope::Link(3)),
             Ok(true)
         );
+    }
+
+    #[test]
+    fn address_notifications_invalidate_and_reject_malformed_records() {
+        let mut address = vec![0; 24];
+        address[..4].copy_from_slice(&24_u32.to_ne_bytes());
+        address[20..24].copy_from_slice(&2_u32.to_ne_bytes());
+        for kind in [nix::libc::RTM_NEWADDR, nix::libc::RTM_DELADDR] {
+            address[4..6].copy_from_slice(&kind.to_ne_bytes());
+            for family in [nix::libc::AF_INET, nix::libc::AF_INET6] {
+                address[16] = family as u8;
+                assert_eq!(parse(&address, Scope::Address), Ok(true));
+            }
+        }
+        address[20..24].fill(0);
+        assert_eq!(parse(&address, Scope::Address), Err(Error::InvalidMessage));
+        address[20..24].copy_from_slice(&2_u32.to_ne_bytes());
+        address[16] = 255;
+        assert_eq!(parse(&address, Scope::Address), Err(Error::InvalidMessage));
+        address[..4].copy_from_slice(&20_u32.to_ne_bytes());
+        assert_eq!(
+            parse(&address[..20], Scope::Address),
+            Err(Error::InvalidMessage)
+        );
+        assert_eq!(parse(&link(2), Scope::Address), Err(Error::InvalidMessage));
     }
 
     #[test]
