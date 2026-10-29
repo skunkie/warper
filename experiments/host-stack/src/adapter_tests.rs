@@ -896,7 +896,7 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         );
         let second_response = host.too_big_for_owned_flow(&second_oversized).unwrap();
         let response = host.too_big_for_owned_flow(&oversized).unwrap();
-        assert!(response.len() <= MTU);
+        assert_eq!(response.len(), if ipv6 { 1280 } else { 56 });
         let mut tracker = crate::pmtu_feedback::Tracker::default();
         tracker
             .reserve(
@@ -1105,7 +1105,30 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         );
         assert_eq!(host.feedback.len(), 1);
         let handed_off = output_receiver.try_recv().unwrap();
-        assert_eq!(handed_off.bytes(), response);
+        assert!(
+            handed_off.bytes() == response,
+            "feedback changed at channel handoff"
+        );
+        let (sender, receiver) = tokio::net::UnixDatagram::pair().unwrap();
+        let sent = tokio::time::timeout(Duration::from_secs(1), sender.send(handed_off.bytes()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent, response.len());
+        let mut received_feedback = [0; MTU + 1];
+        let received_len = tokio::time::timeout(
+            Duration::from_secs(1),
+            receiver.recv(&mut received_feedback),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(received_len, response.len());
+        assert!(
+            received_feedback[..received_len] == response,
+            "feedback datagram boundary or content changed"
+        );
+        drop((sender, receiver));
         let second_socket = host
             .slots
             .iter()

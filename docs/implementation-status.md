@@ -159,8 +159,9 @@ retain flow ownership and block tuple reuse until release; stale queued
 responses are discarded (`target/evidence/phase-0/feedback-lifetime/README.md`).
 A test-only bounded channel now reserves capacity before removing feedback;
 full or closed output preserves the queued handle, and a received handle retains
-its lease (`target/evidence/phase-0/feedback-channel/README.md`). The real output
-handoff, kernel delivery acknowledgement, and cross-instance lifetime remain
+its lease (`target/evidence/phase-0/feedback-channel/README.md`). A controlled
+Unix datagram pair now delivers the exact feedback while the handle remains live (`target/evidence/phase-0/feedback-datagram/README.md`).
+TUN handoff, kernel acknowledgement, and cross-instance lifetime remain
 unverified. It is not wired to the runtime and does not establish a production
 rate policy. UDP, production configuration and runtime integration
 remain separately constrained.

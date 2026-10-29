@@ -246,8 +246,9 @@ handed-off responses, suppresses queued responses
 after retirement, and blocks tuple reuse until handed-off handles are released.
 A test-only bounded channel candidate reserves output capacity before removing
 feedback from the queue. Busy or closed output leaves the queued handle intact;
-a received handle retains its flow lease until released. This does not yet
-establish actual kernel handoff. Directed-broadcast classification, kernel
+a received handle retains its flow lease until released. A controlled local
+Unix datagram handoff verifies exact packet boundaries while the handle remains
+live. This does not establish a TUN write or network-stack acknowledgement. Directed-broadcast classification, kernel
 delivery acknowledgement, cross-instance lifetime, runtime integration,
 production rate policy, and sender adaptation remain unresolved.
 This is a TCP-only probe interface, not YAML or CLI configuration or a dynamic
