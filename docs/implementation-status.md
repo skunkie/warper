@@ -153,10 +153,13 @@ has no TCP sequence acceptance, directed-broadcast verification, verified
 reporter policy, or sender adaptation evidence. A test-only candidate now
 queues bounded feedback with a one-second per-flow cooldown, preserving the
 output queue and cooldown on refusal
-(`target/evidence/phase-0/ingress-feedback-queue/README.md`). Queued responses
-have no flow-lifetime ownership, so delayed delivery across retirement or tuple
-reuse is unverified. It is not wired to the runtime and does not establish a
-production rate policy. UDP, production configuration and runtime integration
+(`target/evidence/phase-0/ingress-feedback-queue/README.md`). The candidate now
+uses a separate bounded feedback queue and lease index. Handed-off responses
+retain flow ownership and block tuple reuse until release; stale queued
+responses are discarded (`target/evidence/phase-0/feedback-lifetime/README.md`).
+The real output handoff, kernel delivery acknowledgement, and cross-instance
+lifetime remain unverified. It is not wired to the runtime and does not establish
+a production rate policy. UDP, production configuration and runtime integration
 remain separately constrained.
 A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised

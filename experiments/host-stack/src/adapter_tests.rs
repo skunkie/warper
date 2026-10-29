@@ -906,21 +906,40 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             .unwrap();
         assert_eq!(tracker.reduction(&response, Duration::ZERO), Ok(Some(MTU)));
 
-        for _ in 0..crate::packet_peer::PACKET_CAPACITY {
-            host.device.outgoing.push_back(vec![0]);
+        let start = host.now;
+        host.device.outgoing.push_back(response.clone());
+        for index in 0..crate::packet_peer::PACKET_CAPACITY {
+            host.now = start + Duration::from_secs(index as u64);
+            assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
         }
-        let full_queue = host.device.outgoing.clone();
+        assert_eq!(host.take_packet(), Some(response.clone()));
+        assert!(
+            !host.has_packet(),
+            "feedback must not alter the data packet queue"
+        );
+        let full_queue: Vec<_> = host
+            .feedback
+            .iter()
+            .map(|packet| packet.bytes().to_vec())
+            .collect();
+        host.now = start + Duration::from_secs(crate::packet_peer::PACKET_CAPACITY as u64);
         assert_eq!(
             host.queue_too_big_for_owned_flow(&oversized),
             Err(TooBigFeedbackError::QueueFull)
         );
-        assert_eq!(host.device.outgoing, full_queue);
-        host.device.outgoing.clear();
+        assert_eq!(
+            host.feedback
+                .iter()
+                .map(|packet| packet.bytes().to_vec())
+                .collect::<Vec<_>>(),
+            full_queue
+        );
+        host.feedback.clear();
         let admitted_at = host.now;
         assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
-        assert_eq!(host.take_packet().unwrap(), response);
+        assert_eq!(host.take_feedback().unwrap().bytes(), response);
         assert_eq!(host.queue_too_big_for_owned_flow(&second_oversized), Ok(()));
-        assert_eq!(host.take_packet().unwrap(), second_response);
+        assert_eq!(host.take_feedback().unwrap().bytes(), second_response);
         assert_eq!(
             host.queue_too_big_for_owned_flow(&oversized),
             Err(TooBigFeedbackError::RateLimited)
@@ -929,7 +948,7 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             host.queue_too_big_for_owned_flow(&second_oversized),
             Err(TooBigFeedbackError::RateLimited)
         );
-        assert!(!host.has_packet());
+        assert!(host.take_feedback().is_none());
         host.now = Duration::ZERO;
         assert_eq!(
             host.queue_too_big_for_owned_flow(&oversized),
@@ -942,8 +961,26 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
         );
         host.now = admitted_at + Duration::from_secs(1);
         assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
-        assert_eq!(host.take_packet().unwrap(), response);
-        assert!(!host.has_packet());
+        assert_eq!(host.take_feedback().unwrap().bytes(), response);
+        assert!(host.take_feedback().is_none());
+
+        let mut retained = Vec::new();
+        for index in 1..=crate::packet_peer::PACKET_CAPACITY {
+            host.now = admitted_at + Duration::from_secs(1 + index as u64);
+            assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
+            retained.push(host.take_feedback().unwrap());
+        }
+        host.now =
+            admitted_at + Duration::from_secs(2 + crate::packet_peer::PACKET_CAPACITY as u64);
+        assert_eq!(
+            host.queue_too_big_for_owned_flow(&oversized),
+            Err(TooBigFeedbackError::RetainedLimit)
+        );
+        assert!(host.take_feedback().is_none());
+        drop(retained.remove(0));
+        assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
+        drop(host.take_feedback().unwrap());
+        drop(retained);
 
         let mut corrupted = oversized.clone();
         *corrupted.last_mut().unwrap() ^= 1;
@@ -1048,11 +1085,44 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             })
             .unwrap()
             .socket;
-        host.sockets.get_mut::<tcp::Socket>(socket).abort();
+        host.now += Duration::from_secs(1);
+        assert_eq!(host.queue_too_big_for_owned_flow(&oversized), Ok(()));
+        let handed_off = host.take_feedback().unwrap();
+        assert_eq!(handed_off.bytes(), response);
+        assert_eq!(host.queue_too_big_for_owned_flow(&second_oversized), Ok(()));
+        let second_socket = host
+            .slots
+            .iter()
+            .find(|slot| {
+                slot.flow
+                    .as_ref()
+                    .is_some_and(|owned| owned.metadata.id == second_flow.metadata.id)
+            })
+            .unwrap()
+            .socket;
+        host.sockets.get_mut::<tcp::Socket>(second_socket).abort();
+        assert!(
+            host.take_feedback().is_none(),
+            "closed TCP flow feedback must not be emitted"
+        );
+        let old_id = flow.metadata.id;
+        drop((flow, second_flow));
         assert_eq!(
             host.too_big_for_owned_flow(&oversized),
             Err(TooBigFeedbackError::WrongFlow)
         );
+        host.sockets.get_mut::<tcp::Socket>(socket).abort();
+        let retirement_time = host.now;
+        poll(&mut host, retirement_time);
+        assert_eq!(host.active_flows(), 0);
+        assert_eq!(host.lifetimes.available_permits(), 1);
+        assert_eq!(
+            host.inject(&syn(address, destination)),
+            Err(AdmissionError::FeedbackRetained)
+        );
+        drop(handed_off);
+        assert_eq!(host.lifetimes.available_permits(), 2);
+        assert_ne!(host.inject(&syn(address, destination)).unwrap(), old_id);
         host.cancel();
         assert_eq!(
             host.too_big_for_owned_flow(&oversized),
@@ -1062,7 +1132,6 @@ async fn ingress_respects_current_experimental_mtu_in_both_families() {
             host.queue_too_big_for_owned_flow(&oversized),
             Err(TooBigFeedbackError::Cancelled)
         );
-        drop((flow, second_flow));
         assert_eq!(host.lifetimes.available_permits(), 2);
     }
 }

@@ -236,13 +236,18 @@ A test-only response candidate may construct one bounded too-big response only
 for an exact-length, checksum-valid data packet owned by an already accepted
 flow. It rejects multicast, unspecified and limited-broadcast addresses,
 fragmented IPv4, IPv4 without DF, unsupported headers, and unmatched flows
-before construction. A test-only queue candidate admits feedback to the bounded
-packet output queue with a one-second per-flow cooldown; a full queue or cooldown
-rejection does not change the queue or cooldown. It does not verify that the TCP
-stack would accept the segment sequence. The test queue stores raw packets and
-does not protect against delayed delivery after flow retirement or tuple reuse.
-Directed-broadcast classification, output lifetime ownership, runtime integration,
-production rate policy, and sender adaptation remain unresolved.
+before construction. A test-only candidate uses a separate 64-entry feedback
+queue and a 64-entry lease index with a one-second per-flow cooldown; a full
+queue, retained-handle limit, or cooldown rejection does not change the queue or
+cooldown. Each response is at most 1280 bytes; allocation and index bookkeeping
+are additional. The candidate does not verify that the TCP stack would accept
+the segment sequence. The lease index retains flow ownership for queued or
+handed-off responses, suppresses queued responses
+after retirement, and blocks tuple reuse until handed-off handles are released.
+The handle must remain owned through the actual output handoff. Directed-broadcast
+classification, kernel delivery acknowledgement, cross-instance lifetime,
+runtime integration, production rate policy, and sender adaptation remain
+unresolved.
 This is a TCP-only probe interface, not YAML or CLI configuration or a dynamic
 PMTU implementation. The UDP candidate and production
 runtime remain separately constrained. Library IP/TCP parsers validate lengths,

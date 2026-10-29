@@ -16,6 +16,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use std::{collections::VecDeque, sync::Weak};
+
 use futures::task::AtomicWaker;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage},
@@ -60,7 +63,11 @@ pub struct FlowMetadata {
 pub enum AdmissionError {
     InvalidLimits,
     InvalidMtu,
-    PacketTooLarge { mtu: usize },
+    PacketTooLarge {
+        mtu: usize,
+    },
+    #[cfg(test)]
+    FeedbackRetained,
     MalformedPacket,
     UnsupportedProtocol,
     UnselectedDestination,
@@ -81,6 +88,7 @@ enum TooBigFeedbackError {
     NotOversized,
     QueueFull,
     RateLimited,
+    RetainedLimit,
     UnsupportedFragmentation,
     WrongFlow,
 }
@@ -236,6 +244,25 @@ struct FlowState {
     last_feedback: Option<Duration>,
 }
 
+#[cfg(test)]
+struct FeedbackLease {
+    metadata: FlowMetadata,
+    _flow: Arc<FlowLifetime>,
+}
+
+#[cfg(test)]
+struct Feedback {
+    bytes: Vec<u8>,
+    lease: Arc<FeedbackLease>,
+}
+
+#[cfg(test)]
+impl Feedback {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 struct Slot {
     socket: SocketHandle,
     flow: Option<FlowState>,
@@ -255,6 +282,10 @@ pub struct HostAdapter {
     now: Duration,
     cancelled: bool,
     statistics: Statistics,
+    #[cfg(test)]
+    feedback: VecDeque<Feedback>,
+    #[cfg(test)]
+    feedback_leases: Vec<Weak<FeedbackLease>>,
 }
 
 impl HostAdapter {
@@ -334,6 +365,10 @@ impl HostAdapter {
                 now: Duration::ZERO,
                 cancelled: false,
                 statistics: Statistics::default(),
+                #[cfg(test)]
+                feedback: VecDeque::with_capacity(crate::packet_peer::PACKET_CAPACITY),
+                #[cfg(test)]
+                feedback_leases: Vec::with_capacity(crate::packet_peer::PACKET_CAPACITY),
             },
             receiver,
         ))
@@ -404,6 +439,8 @@ impl HostAdapter {
         if !self.slots.iter().any(|slot| {
             slot.flow.as_ref().is_some_and(|flow| {
                 flow.pending.is_none()
+                    && flow.lifetime.termination.load(Ordering::Acquire)
+                        == Termination::Running as u8
                     && flow.metadata.source == source
                     && flow.metadata.destination == destination
                     && matches!(
@@ -426,7 +463,7 @@ impl HostAdapter {
     #[cfg(test)]
     fn queue_too_big_for_owned_flow(&mut self, bytes: &[u8]) -> Result<(), TooBigFeedbackError> {
         let response = self.too_big_for_owned_flow(bytes)?;
-        if self.device.outgoing.len() >= crate::packet_peer::PACKET_CAPACITY {
+        if self.feedback.len() >= crate::packet_peer::PACKET_CAPACITY {
             return Err(TooBigFeedbackError::QueueFull);
         }
         let (source, destination, _) =
@@ -446,11 +483,51 @@ impl HostAdapter {
                 return Err(TooBigFeedbackError::RateLimited);
             }
         }
-        // The adapter is exclusively borrowed, so this bounded capacity check
-        // and publication form one synchronous admission without an await.
-        self.device.outgoing.push_back(response);
+        self.feedback_leases
+            .retain(|lease| lease.strong_count() > 0);
+        if self.feedback_leases.len() >= crate::packet_peer::PACKET_CAPACITY {
+            return Err(TooBigFeedbackError::RetainedLimit);
+        }
+        let lease = Arc::new(FeedbackLease {
+            metadata: flow.metadata,
+            _flow: Arc::clone(&flow.lifetime),
+        });
+        // Exclusive access keeps the bounded queue and lease admission atomic.
+        self.feedback_leases.push(Arc::downgrade(&lease));
+        self.feedback.push_back(Feedback {
+            bytes: response,
+            lease,
+        });
         flow.last_feedback = Some(self.now);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn take_feedback(&mut self) -> Option<Feedback> {
+        while let Some(feedback) = self.feedback.pop_front() {
+            let metadata = feedback.lease.metadata;
+            let active = self.slots.iter().any(|slot| {
+                slot.flow.as_ref().is_some_and(|flow| {
+                    flow.metadata == metadata
+                        && flow.pending.is_none()
+                        && flow.lifetime.termination.load(Ordering::Acquire)
+                            == Termination::Running as u8
+                        && matches!(
+                            self.sockets.get::<tcp::Socket>(slot.socket).state(),
+                            tcp::State::Established
+                                | tcp::State::FinWait1
+                                | tcp::State::FinWait2
+                                | tcp::State::CloseWait
+                                | tcp::State::Closing
+                                | tcp::State::LastAck
+                        )
+                })
+            });
+            if active {
+                return Some(feedback);
+            }
+        }
+        None
     }
 
     pub fn poll_io(&mut self, cx: &mut Context<'_>, now: Duration) -> Result<(), AdmissionError> {
@@ -592,6 +669,11 @@ impl HostAdapter {
             self.sockets.get_mut::<tcp::Socket>(slot.socket).abort();
         }
         self.device = PacketDevice::default();
+        #[cfg(test)]
+        {
+            self.feedback.clear();
+            self.feedback_leases.clear();
+        }
     }
 
     fn admit(&mut self, packet: &[u8]) -> Result<FlowId, AdmissionError> {
@@ -617,6 +699,21 @@ impl HostAdapter {
         }
         if !syn {
             return Err(AdmissionError::UnknownFlow);
+        }
+        #[cfg(test)]
+        {
+            self.feedback_leases
+                .retain(|lease| lease.strong_count() > 0);
+            if self
+                .feedback_leases
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|lease| {
+                    lease.metadata.source == source && lease.metadata.destination == destination
+                })
+            {
+                return Err(AdmissionError::FeedbackRetained);
+            }
         }
         if self
             .now
