@@ -27,6 +27,7 @@ mod reassembly;
 mod reassembly_tests;
 mod runtime;
 mod runtime_probe;
+mod shared_mtu;
 #[cfg(target_os = "linux")]
 mod tun_probe;
 mod udp_adapter;

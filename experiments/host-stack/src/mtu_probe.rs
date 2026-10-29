@@ -54,6 +54,7 @@ pub fn run_probe() -> Result<()> {
             interface_mtu_reduction(ipv6, advertised_mtu)?;
         }
         println!("PASS matched too-big feedback resizes retained TCP sockets, IPv6={ipv6}");
+        crate::shared_mtu::run(ipv6)?;
         fragments_not_reassembled(ipv6)?;
         crate::fragment_probe::run_probe(ipv6)?;
         println!("PASS fixed 1280-byte TCP segmentation and ICMP port-unreachable, IPv6={ipv6}");
@@ -71,7 +72,7 @@ fn addresses(ipv6: bool) -> Result<(IpAddr, IpAddr)> {
     })
 }
 
-fn peers(ipv6: bool, mtu: usize) -> Result<(Peer, Peer)> {
+pub(super) fn peers(ipv6: bool, mtu: usize) -> Result<(Peer, Peer)> {
     let (source, destination) = addresses(ipv6)?;
     let mut client = Peer::with_mtu(source, 40000, mtu)?;
     let mut server = Peer::with_mtu(destination, 9000, mtu)?;
@@ -93,7 +94,7 @@ fn peers(ipv6: bool, mtu: usize) -> Result<(Peer, Peer)> {
     anyhow::bail!("MTU fixture handshake exceeded controlled budget")
 }
 
-fn exchange(client: &mut Peer, server: &mut Peer, now: i64) -> Result<()> {
+pub(super) fn exchange(client: &mut Peer, server: &mut Peer, now: i64) -> Result<()> {
     client.poll(now);
     server.poll(now);
     while let Some(packet) = client.device.outgoing.pop_front() {

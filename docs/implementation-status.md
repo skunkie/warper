@@ -122,7 +122,12 @@ now replaces the interface while retaining established TCP sockets: partially
 acknowledged bytes complete after reduction from 1500 to 1280, including FIN
 and a response, with no application resubmission. Queued packets block device
 reconfiguration; addresses, routes and any-IP policy survive
-(`target/evidence/phase-0/interface-mtu/README.md`). A single reserved outstanding
+(`target/evidence/phase-0/interface-mtu/README.md`). A controlled shared-interface
+probe now retains two simultaneous TCP flows and one UDP datagram across a direct
+1500-to-1280 reduction in both families; deliberately lost oversized TCP packets
+retransmit without application resubmission
+(`target/evidence/phase-0/shared-interface-mtu/README.md`). It does not apply
+feedback or exercise the production runtime. A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
 quotes and queue-busy retry are covered
