@@ -76,6 +76,7 @@ enum TransportFailure {
     DrainLimit,
     InnerDestination,
     PmtuFeedbackTooLarge,
+    SeedSourceMissing,
 }
 
 impl fmt::Display for TransportFailure {
@@ -89,6 +90,18 @@ impl std::error::Error for TransportFailure {}
 struct Endpoint {
     peer: Peer,
     transport: Transport,
+}
+
+type SeedSource = Box<dyn FnMut() -> io::Result<u64> + Send>;
+
+#[cfg(target_os = "linux")]
+fn platform_seed() -> io::Result<u64> {
+    mtu_reduction::prepare_seed()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_seed() -> io::Result<u64> {
+    Ok(0x5361)
 }
 
 struct PendingPmtuFeedback {
@@ -106,8 +119,10 @@ struct Transport {
     udp_feedback: Option<udp_feedback::Reservation>,
     pmtu_feedback: Option<pmtu_feedback::Tracker>,
     pending_pmtu_feedback: Option<PendingPmtuFeedback>,
+    seed_source: Option<SeedSource>,
     pmtu_fixture: Option<pmtu_probe::PathFixture>,
     pmtu_reductions: usize,
+    pmtu_deferrals: usize,
     now: Duration,
     initiations: usize,
     encrypted_packets: usize,
@@ -176,10 +191,7 @@ impl Transport {
         if let Some(tracker) = self.pmtu_feedback.as_mut() {
             tracker.reduction(&[], now)?;
         }
-        #[cfg(target_os = "linux")]
-        self.retry_pmtu_feedback(peer, mtu_reduction::prepare_seed)?;
-        #[cfg(not(target_os = "linux"))]
-        self.retry_pmtu_feedback(peer, || Ok(0x5361))?;
+        self.with_seed_source(|owner, seed| owner.retry_pmtu_feedback(peer, seed))?;
         let mut output = [0; MTU + 256];
         while !peer.device.outgoing.is_empty() {
             if self.staged_packets >= PACKET_CAPACITY {
@@ -295,10 +307,8 @@ impl Transport {
         {
             return Err(TransportFailure::InnerDestination.into());
         }
-        #[cfg(target_os = "linux")]
-        let handled = self.handle_pmtu_feedback(peer, packet, mtu_reduction::prepare_seed)?;
-        #[cfg(not(target_os = "linux"))]
-        let handled = self.handle_pmtu_feedback(peer, packet, || Ok(0x5361))?;
+        let handled =
+            self.with_seed_source(|owner, seed| owner.handle_pmtu_feedback(peer, packet, seed))?;
         if handled {
             return Ok(());
         }
@@ -340,6 +350,19 @@ impl Transport {
         Ok(())
     }
 
+    fn with_seed_source<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self, &mut dyn FnMut() -> io::Result<u64>) -> Result<T>,
+    ) -> Result<T> {
+        let mut source = self
+            .seed_source
+            .take()
+            .ok_or(TransportFailure::SeedSourceMissing)?;
+        let result = operation(self, source.as_mut());
+        self.seed_source = Some(source);
+        result
+    }
+
     fn handle_pmtu_feedback(
         &mut self,
         peer: &mut Peer,
@@ -370,6 +393,7 @@ impl Transport {
                     packet: packet.to_vec(),
                     retry_at,
                 });
+                self.pmtu_deferrals = self.pmtu_deferrals.saturating_add(1);
                 Ok(true)
             }
             Err(error) => Err(error),
@@ -591,8 +615,10 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         udp_feedback: None,
         pmtu_feedback: None,
         pending_pmtu_feedback: None,
+        seed_source: Some(Box::new(platform_seed)),
         pmtu_fixture: None,
         pmtu_reductions: 0,
+        pmtu_deferrals: 0,
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,
@@ -645,8 +671,10 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         udp_feedback: None,
         pmtu_feedback: None,
         pending_pmtu_feedback: None,
+        seed_source: Some(Box::new(platform_seed)),
         pmtu_fixture: None,
         pmtu_reductions: 0,
+        pmtu_deferrals: 0,
         now: Duration::ZERO,
         initiations: 0,
         encrypted_packets: 0,

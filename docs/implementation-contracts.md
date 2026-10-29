@@ -909,7 +909,10 @@ experimental pump is called;
 there is no independent timer wakeup. Expiry and other errors remain visible
 to the owner, and shutdown drops the retained response. The reservation does
 not bind a production flow lifetime. This is a controlled driver policy, not
-production supervision. Other fixtures retain fixed seeds; macOS acquisition, integration and the
+production supervision. The experimental transport owns an injectable,
+nonblocking seed source; a controlled encrypted-peer test forces one transient
+source failure and verifies that the same TCP transfer completes after retry.
+Other fixtures retain fixed seeds; macOS acquisition, integration and the
 production failure and state-transfer policy remain unproven. Reduction is
 interface-wide and also lowers the device receive limit; multiple flows and asymmetric paths are not
 established. This is not a generic interface migration API.

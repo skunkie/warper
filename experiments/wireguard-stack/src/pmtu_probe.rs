@@ -148,7 +148,20 @@ pub fn run_probe(ipv6: bool) -> Result<()> {
 }
 
 fn run_case(ipv6: bool, outer_ipv6: bool, limit: usize) -> Result<()> {
+    run_case_with_seed(ipv6, outer_ipv6, limit, None)
+}
+
+fn run_case_with_seed(
+    ipv6: bool,
+    outer_ipv6: bool,
+    limit: usize,
+    seed: Option<crate::SeedSource>,
+) -> Result<()> {
     let (mut client, mut server) = create_pair_with_outer(ipv6, outer_ipv6)?;
+    let expect_deferral = seed.is_some();
+    if let Some(seed) = seed {
+        client.transport.seed_source = Some(seed);
+    }
     let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }.parse()?;
     let destination: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }.parse()?;
     client.peer = Peer::with_mtu(source, 40000, 1500)?;
@@ -178,7 +191,13 @@ fn run_case(ipv6: bool, outer_ipv6: bool, limit: usize) -> Result<()> {
         )?;
     let client_address = client.transport.socket.local_addr()?;
     let server_address = server.transport.socket.local_addr()?;
-    let result = transfer(&mut client, &mut server, limit);
+    let result = transfer(&mut client, &mut server, limit).and_then(|()| {
+        ensure!(
+            !expect_deferral || client.transport.pmtu_deferrals > 0,
+            "injected failure did not defer encrypted feedback"
+        );
+        Ok(())
+    });
     drop(client);
     drop(server);
     let cleanup = (|| -> Result<()> {
@@ -670,6 +689,62 @@ mod tests {
                 1500
             );
             assert_eq!(endpoint.transport.pmtu_reductions, 0);
+        }
+    }
+
+    #[test]
+    fn transport_restores_seed_source_after_failure_and_reports_missing_source() {
+        let (mut endpoint, feedback) = feedback_fixture(false);
+        endpoint.transport.seed_source =
+            Some(Box::new(
+                || Err(std::io::ErrorKind::PermissionDenied.into()),
+            ));
+        let error = endpoint
+            .transport
+            .with_seed_source(|owner, seed| {
+                owner.handle_pmtu_feedback(&mut endpoint.peer, &feedback, seed)
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::mtu_reduction::SeedError>()
+                .is_some()
+        );
+        assert!(endpoint.transport.seed_source.is_some());
+        endpoint.transport.seed_source = None;
+        let error = endpoint
+            .transport
+            .with_seed_source(|_, _| Ok(()))
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<crate::TransportFailure>(),
+            Some(&crate::TransportFailure::SeedSourceMissing)
+        );
+    }
+
+    #[test]
+    fn encrypted_feedback_retries_after_transient_seed_failure() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for ipv6 in [false, true] {
+            for outer_ipv6 in [false, true] {
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let observed = attempts.clone();
+                let seed = Box::new(move || {
+                    if observed.fetch_add(1, Ordering::Relaxed) == 0 {
+                        Err(std::io::ErrorKind::WouldBlock.into())
+                    } else {
+                        Ok(0x7312)
+                    }
+                });
+                run_case_with_seed(ipv6, outer_ipv6, MTU, Some(seed)).unwrap();
+                assert!(
+                    attempts.load(Ordering::Relaxed) >= 2,
+                    "a deferred response must request a later seed"
+                );
+            }
         }
     }
 
