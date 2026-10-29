@@ -619,11 +619,12 @@ Fragment probes split a valid UDP datagram into two actual IPv4/IPv6
 fragments and inject both orders. No UDP payload is reassembled with the
 selected features, while the unfragmented control reaches its UDP socket.
 Section 12 supplies a bounded fragment-input adapter without changing those
-raw-stack features. A controlled shared-interface probe directly reduces its
-interface from 1500 to 1280 while two TCP flows have oversized unacknowledged
-packets; both retransmit and complete FIN, while a distinct UDP datagram is
-delivered once in each IP family. It does not exercise feedback correlation or
-the production runtime. PMTU and the remaining fragmentation strategy must be
+raw-stack features. A controlled shared-interface probe reserves feedback for
+one of two TCP flows with oversized unacknowledged packets. It rejects feedback
+quoting the other flow, then applies matched feedback to reduce the shared
+interface from 1500 to 1280. Both flows retransmit and complete FIN while a
+distinct UDP datagram is delivered once in each IP family. This does not
+establish general path attribution or exercise the production runtime. PMTU and the remaining fragmentation strategy must be
 resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
 generation by a raw peer does not prove error propagation through the host
 runtime or active backend API. Kernel TUN, route/path changes, and native

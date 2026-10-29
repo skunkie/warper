@@ -4,9 +4,12 @@
 
 //! Controlled shared-interface TCP and UDP behavior during an MTU reduction.
 
-use anyhow::{Result, ensure};
+use std::time::Duration;
+
+use anyhow::{Context, Result, ensure};
 use smoltcp::{
     iface::SocketHandle,
+    phy::Device,
     socket::{tcp, udp},
     wire::TcpPacket,
 };
@@ -49,7 +52,7 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
         socket.close();
     }
     client.poll(60);
-    let mut lost = [false; 2];
+    let mut quotes = [None, None];
     let mut dropped_packets = 0;
     let header_len = if ipv6 { 40 } else { 20 };
     while let Some(packet) = client.device.outgoing.pop_front() {
@@ -57,17 +60,47 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
         let tcp = TcpPacket::new_checked(&packet[header_len..])?;
         if !tcp.payload().is_empty() && packet.len() > MTU {
             match tcp.dst_port() {
-                9000 => lost[0] = true,
-                9001 => lost[1] = true,
+                9000 if quotes[0].is_none() => quotes[0] = Some(packet),
+                9001 if quotes[1].is_none() => quotes[1] = Some(packet),
                 _ => {}
             }
         }
     }
+    let [first_quote, second_quote] = quotes;
+    let first_quote = first_quote.context("first flow did not emit oversized traffic")?;
+    let second_quote = second_quote.context("second flow did not emit oversized traffic")?;
+    let mut tracker = crate::pmtu_feedback::Tracker::default();
+    tracker.reserve(
+        &first_quote,
+        destination.into(),
+        Duration::from_millis(60),
+        Duration::from_secs(1),
+    )?;
+    let other_feedback = crate::pmtu_fixture::too_big(&second_quote, ipv6, MTU)?;
     ensure!(
-        lost == [true, true],
-        "both flows must have oversized traffic in flight"
+        !crate::mtu_reduction::apply_feedback(
+            &mut client,
+            &mut tracker,
+            &other_feedback,
+            Duration::from_millis(61)
+        )?,
+        "another flow's feedback changed the shared interface"
     );
-    crate::mtu_reduction::rebuild_interface(&mut client, MTU, 61)?;
+    ensure!(
+        client.device.capabilities().max_transmission_unit == 1500
+            && tracker.next_deadline().is_some()
+    );
+    let feedback = crate::pmtu_fixture::too_big(&first_quote, ipv6, MTU)?;
+    ensure!(
+        crate::mtu_reduction::apply_feedback(
+            &mut client,
+            &mut tracker,
+            &feedback,
+            Duration::from_millis(61)
+        )?,
+        "matched feedback did not reduce the shared interface"
+    );
+    ensure!(tracker.next_deadline().is_none());
     client
         .sockets
         .get_mut::<udp::Socket>(client.udp)
@@ -126,7 +159,7 @@ pub(super) fn run(ipv6: bool) -> Result<()> {
             let completed = *completed_at.get_or_insert(now);
             if now - completed >= 100 {
                 println!(
-                    "PASS shared interface MTU reduction: IPv6={ipv6}, tcp_flows=2, udp_datagrams=1, tcp_bytes=8192, dropped_packets={dropped_packets}, controlled_ms={}",
+                    "PASS matched shared interface MTU reduction: IPv6={ipv6}, tcp_flows=2, udp_datagrams=1, tcp_bytes=8192, dropped_packets={dropped_packets}, controlled_ms={}",
                     now - 61
                 );
                 return Ok(());
