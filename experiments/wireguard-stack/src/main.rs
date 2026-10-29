@@ -83,6 +83,7 @@ enum TransportFailure {
     PmtuOwnerMismatch,
     PmtuPacketNotOwned,
     PmtuFlowRetired,
+    PmtuFlowMismatch,
 }
 
 impl fmt::Display for TransportFailure {
@@ -125,6 +126,8 @@ struct Transport {
     udp_feedback: Option<udp_feedback::Reservation>,
     pmtu_feedback: Option<pmtu_feedback::Tracker>,
     pmtu_owner: Option<Weak<()>>,
+    pmtu_tcp_identity: Option<Weak<()>>,
+    pmtu_flow: Option<(SocketAddr, SocketAddr)>,
     pending_pmtu_feedback: Option<PendingPmtuFeedback>,
     seed_source: Option<SeedSource>,
     pmtu_fixture: Option<pmtu_probe::PathFixture>,
@@ -300,13 +303,22 @@ impl Transport {
         {
             return Err(TransportFailure::PmtuPacketNotOwned.into());
         }
-        if !peer_has_live_tcp(peer) {
-            return Err(TransportFailure::PmtuFlowRetired.into());
+        let live_flow = peer_tcp_endpoints(peer).ok_or(TransportFailure::PmtuFlowRetired)?;
+        let frame = pmtu_probe::plain_tcp(packet)?.ok_or(TransportFailure::PmtuFlowMismatch)?;
+        let tcp = smoltcp::wire::TcpPacket::new_checked(frame.payload)?;
+        let packet_flow = (
+            SocketAddr::new(frame.source, tcp.src_port()),
+            SocketAddr::new(frame.destination, tcp.dst_port()),
+        );
+        if packet_flow != live_flow {
+            return Err(TransportFailure::PmtuFlowMismatch.into());
         }
         let mut tracker = pmtu_feedback::Tracker::default();
         tracker.reserve(packet, reporter, now, Duration::from_secs(1))?;
         self.pmtu_feedback = Some(tracker);
         self.pmtu_owner = Some(peer.identity());
+        self.pmtu_tcp_identity = Some(peer.tcp_identity());
+        self.pmtu_flow = Some(live_flow);
         Ok(())
     }
 
@@ -385,8 +397,16 @@ impl Transport {
         {
             return Err(TransportFailure::PmtuOwnerMismatch.into());
         }
-        if active && !peer_has_live_tcp(peer) {
-            return Err(TransportFailure::PmtuFlowRetired.into());
+        if active {
+            let live_flow = peer_tcp_endpoints(peer).ok_or(TransportFailure::PmtuFlowRetired)?;
+            if self.pmtu_flow != Some(live_flow)
+                || self
+                    .pmtu_tcp_identity
+                    .as_ref()
+                    .is_none_or(|identity| !identity.ptr_eq(&peer.tcp_identity()))
+            {
+                return Err(TransportFailure::PmtuFlowMismatch.into());
+            }
         }
         Ok(())
     }
@@ -482,11 +502,26 @@ impl Drop for Transport {
     }
 }
 
-fn peer_has_live_tcp(peer: &Peer) -> bool {
-    peer.sockets.iter().any(|(handle, socket)| {
-        handle == peer.tcp
-            && matches!(socket, smoltcp::socket::Socket::Tcp(socket) if socket.state() != tcp::State::Closed)
-    })
+fn peer_tcp_endpoints(peer: &Peer) -> Option<(SocketAddr, SocketAddr)> {
+    let socket = peer
+        .sockets
+        .iter()
+        .find_map(|(handle, socket)| match socket {
+            smoltcp::socket::Socket::Tcp(socket) if handle == peer.tcp => Some(socket),
+            _ => None,
+        })?;
+    if matches!(
+        socket.state(),
+        tcp::State::Closed | tcp::State::Listen | tcp::State::SynSent | tcp::State::SynReceived
+    ) {
+        return None;
+    }
+    let local = socket.local_endpoint()?;
+    let remote = socket.remote_endpoint()?;
+    Some((
+        SocketAddr::new(local.addr.into(), local.port),
+        SocketAddr::new(remote.addr.into(), remote.port),
+    ))
 }
 
 fn retryable_pmtu_failure(error: &anyhow::Error) -> bool {
@@ -665,6 +700,8 @@ fn create_pair_with_outer(ipv6: bool, outer_ipv6: bool) -> Result<(Endpoint, End
         udp_feedback: None,
         pmtu_feedback: None,
         pmtu_owner: None,
+        pmtu_tcp_identity: None,
+        pmtu_flow: None,
         pending_pmtu_feedback: None,
         seed_source: Some(Box::new(platform_seed)),
         pmtu_fixture: None,
@@ -722,6 +759,8 @@ fn create_client(ipv6: bool, remote: SocketAddr) -> Result<(Peer, Transport)> {
         udp_feedback: None,
         pmtu_feedback: None,
         pmtu_owner: None,
+        pmtu_tcp_identity: None,
+        pmtu_flow: None,
         pending_pmtu_feedback: None,
         seed_source: Some(Box::new(platform_seed)),
         pmtu_fixture: None,

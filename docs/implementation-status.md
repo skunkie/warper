@@ -186,9 +186,12 @@ reservation now accepts only a packet in its peer's output queue and holds a
 weak peer identity; a different or replacement peer cannot apply retained
 feedback (`target/evidence/phase-0/pmtu-peer-ownership/README.md`). This does
 now rejects a closed or removed experimental TCP socket before accepting or
-retrying feedback (`target/evidence/phase-0/pmtu-retired-socket/README.md`). It
-does not distinguish reuse of the same socket slot or tuple, validate a
-physical path, or establish production ownership. A controlled
+retrying feedback (`target/evidence/phase-0/pmtu-retired-socket/README.md`). A tracked TCP connection identity now changes when the experimental peer poller
+observes a new established lifecycle. Reservations check the current TCP
+endpoints and this identity; controlled same-tuple reconnects cannot consume
+old feedback (`target/evidence/phase-0/pmtu-connection-identity/README.md`).
+Direct socket-set replacement outside the peer poller, physical-path
+attribution and production ownership remain unresolved. A controlled
 shared-interface probe now retains two simultaneous TCP flows and one UDP datagram across a
 1500-to-1280 reduction in both families. Feedback quoting the other flow is
 rejected before matched feedback triggers the reduction; deliberately lost

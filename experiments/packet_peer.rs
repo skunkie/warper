@@ -122,12 +122,9 @@ pub struct Peer {
     pub sockets: SocketSet<'static>,
     pub tcp: SocketHandle,
     pub udp: SocketHandle,
-    // The WireGuard owner uses this token to distinguish peer instances.
-    #[allow(
-        dead_code,
-        reason = "the shared host probe does not consume peer identity"
-    )]
-    pub identity: Arc<()>,
+    identity: Arc<()>,
+    tcp_identity: Arc<()>,
+    tcp_was_live: bool,
 }
 
 impl Peer {
@@ -165,6 +162,8 @@ impl Peer {
             tcp,
             udp,
             identity: Arc::new(()),
+            tcp_identity: Arc::new(()),
+            tcp_was_live: false,
         })
     }
 
@@ -177,12 +176,34 @@ impl Peer {
         Arc::downgrade(&self.identity)
     }
 
+    /// Identity changes when this peer observes a new TCP connection.
+    #[allow(
+        dead_code,
+        reason = "the shared host probe does not consume TCP identity"
+    )]
+    pub fn tcp_identity(&self) -> Weak<()> {
+        Arc::downgrade(&self.tcp_identity)
+    }
+
     pub fn poll(&mut self, elapsed_ms: i64) {
+        self.refresh_tcp_identity();
         self.interface.poll(
             Instant::from_millis(elapsed_ms),
             &mut self.device,
             &mut self.sockets,
         );
+        self.refresh_tcp_identity();
+    }
+
+    fn refresh_tcp_identity(&mut self) {
+        let live = self.sockets.iter().any(|(handle, socket)| {
+            handle == self.tcp && matches!(socket, smoltcp::socket::Socket::Tcp(socket)
+                if !matches!(socket.state(), tcp::State::Closed | tcp::State::Listen | tcp::State::SynSent | tcp::State::SynReceived))
+        });
+        if live && !self.tcp_was_live {
+            self.tcp_identity = Arc::new(());
+        }
+        self.tcp_was_live = live;
     }
 }
 

@@ -815,6 +815,237 @@ mod tests {
     }
 
     #[test]
+    fn reservation_rejects_queued_tcp_packet_for_another_endpoint() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, _, mut packet) = feedback_fixture(ipv6);
+            endpoint.transport.pmtu_feedback.as_mut().unwrap().commit();
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            let destination: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            let header = if ipv6 { 40 } else { 20 };
+            let mut tcp = TcpPacket::new_checked(&mut packet[header..]).unwrap();
+            tcp.set_dst_port(9100);
+            tcp.fill_checksum(&source.into(), &destination.into());
+            endpoint.peer.device.outgoing.push_back(packet.clone());
+            let error = endpoint
+                .transport
+                .watch_pmtu(&endpoint.peer, &packet, destination, Duration::ZERO)
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFlowMismatch)
+            );
+            assert!(
+                endpoint
+                    .transport
+                    .pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .next_deadline()
+                    .is_none()
+            );
+            assert_eq!(endpoint.peer.device.outgoing.pop_front().unwrap(), packet);
+        }
+    }
+
+    #[test]
+    fn deferred_feedback_rejects_a_new_connection_in_the_same_peer() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            let destination: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            endpoint
+                .peer
+                .sockets
+                .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                .abort();
+            endpoint.peer.device.outgoing.clear();
+            endpoint
+                .peer
+                .sockets
+                .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                .connect(
+                    endpoint.peer.interface.context(),
+                    (destination, 9100),
+                    (source, 40002),
+                )
+                .unwrap();
+            endpoint.transport.now = Duration::from_millis(10);
+            let error = endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFlowRetired)
+            );
+            let mut server = Peer::with_mtu(destination, 9100, 1500).unwrap();
+            server
+                .sockets
+                .get_mut::<tcp::Socket>(server.tcp)
+                .listen((destination, 9100))
+                .unwrap();
+            for tick in 30..50 {
+                endpoint.peer.poll(tick);
+                server.poll(tick);
+                while let Some(packet) = endpoint.peer.device.outgoing.pop_front() {
+                    server.device.inject(packet).unwrap();
+                }
+                while let Some(packet) = server.device.outgoing.pop_front() {
+                    endpoint.peer.device.inject(packet).unwrap();
+                }
+                if endpoint
+                    .peer
+                    .sockets
+                    .get::<tcp::Socket>(endpoint.peer.tcp)
+                    .state()
+                    == tcp::State::Established
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                endpoint
+                    .peer
+                    .sockets
+                    .get::<tcp::Socket>(endpoint.peer.tcp)
+                    .state(),
+                tcp::State::Established
+            );
+            let error = endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFlowMismatch)
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pending_pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .packet,
+                feedback
+            );
+            assert_eq!(endpoint.transport.pmtu_reductions, 0);
+        }
+    }
+
+    #[test]
+    fn deferred_feedback_rejects_reestablished_connection_with_the_same_tuple() {
+        for ipv6 in [false, true] {
+            let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
+            assert!(
+                endpoint
+                    .transport
+                    .handle_pmtu_feedback(&mut endpoint.peer, &feedback, || Err(
+                        std::io::ErrorKind::WouldBlock.into()
+                    ),)
+                    .unwrap()
+            );
+            let source: IpAddr = if ipv6 { "fd66:66::2" } else { "10.66.66.2" }
+                .parse()
+                .unwrap();
+            let destination: IpAddr = if ipv6 { "fd66:66::10" } else { "10.66.66.10" }
+                .parse()
+                .unwrap();
+            endpoint
+                .peer
+                .sockets
+                .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                .abort();
+            endpoint.peer.device.outgoing.clear();
+            endpoint
+                .peer
+                .sockets
+                .get_mut::<tcp::Socket>(endpoint.peer.tcp)
+                .connect(
+                    endpoint.peer.interface.context(),
+                    (destination, 9000),
+                    (source, 40001),
+                )
+                .unwrap();
+            endpoint.transport.now = Duration::from_millis(10);
+            let error = endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFlowRetired)
+            );
+            let mut server = Peer::with_mtu(destination, 9000, 1500).unwrap();
+            server
+                .sockets
+                .get_mut::<tcp::Socket>(server.tcp)
+                .listen((destination, 9000))
+                .unwrap();
+            for tick in 30..50 {
+                endpoint.peer.poll(tick);
+                server.poll(tick);
+                while let Some(packet) = endpoint.peer.device.outgoing.pop_front() {
+                    server.device.inject(packet).unwrap();
+                }
+                while let Some(packet) = server.device.outgoing.pop_front() {
+                    endpoint.peer.device.inject(packet).unwrap();
+                }
+                if endpoint
+                    .peer
+                    .sockets
+                    .get::<tcp::Socket>(endpoint.peer.tcp)
+                    .state()
+                    == tcp::State::Established
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                endpoint
+                    .peer
+                    .sockets
+                    .get::<tcp::Socket>(endpoint.peer.tcp)
+                    .state(),
+                tcp::State::Established
+            );
+            let error = endpoint
+                .transport
+                .retry_pmtu_feedback(&mut endpoint.peer, || Ok(1))
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::TransportFailure>(),
+                Some(&crate::TransportFailure::PmtuFlowMismatch)
+            );
+            assert_eq!(
+                endpoint
+                    .transport
+                    .pending_pmtu_feedback
+                    .as_ref()
+                    .unwrap()
+                    .packet,
+                feedback
+            );
+            assert_eq!(endpoint.transport.pmtu_reductions, 0);
+        }
+    }
+
+    #[test]
     fn pending_feedback_blocks_replacement_after_reservation_retirement() {
         for ipv6 in [false, true] {
             let (mut endpoint, feedback, _) = feedback_fixture(ipv6);
