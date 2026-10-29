@@ -591,14 +591,91 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
             assert_eq!(received[index], vec![0x31 + index as u8; 512]);
             flows[index]
                 .stream
-                .write_all(&[0x61 + index as u8; 512])
+                .write_all(&[0x51 + index as u8; 256])
+                .await
+                .unwrap();
+        }
+        poll(&mut host, Duration::from_millis(100));
+        assert!(!host.device.has_ingress());
+        let queued = host.device.outgoing.clone();
+        let mut queued_destinations = [false; 2];
+        for packet in &queued {
+            let destination: std::net::IpAddr = if ipv6 {
+                Ipv6Packet::new_checked(packet.as_slice())
+                    .unwrap()
+                    .dst_addr()
+                    .into()
+            } else {
+                Ipv4Packet::new_checked(packet.as_slice())
+                    .unwrap()
+                    .dst_addr()
+                    .into()
+            };
+            for index in 0..2 {
+                queued_destinations[index] |= destination == metadata[index].source.ip();
+            }
+        }
+        assert_eq!(queued_destinations, [true, true]);
+        let send_queues: Vec<_> = host
+            .slots
+            .iter()
+            .map(|slot| host.sockets.get::<tcp::Socket>(slot.socket).send_queue())
+            .collect();
+        let error = crate::mtu_reduction::rebuild_components(
+            &mut host.interface,
+            &mut host.device,
+            1280,
+            100,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(host.device.outgoing, queued);
+        assert_eq!(
+            smoltcp::phy::Device::capabilities(&host.device).max_transmission_unit,
+            1500
+        );
+        assert_eq!(
+            host.slots
+                .iter()
+                .map(|slot| host.sockets.get::<tcp::Socket>(slot.socket).send_queue())
+                .collect::<Vec<_>>(),
+            send_queues
+        );
+        assert_eq!(host.active_flows(), 2);
+        for step in 101..150 {
+            exchange(&mut host, &mut peers, Duration::from_millis(step))
+                .await
+                .unwrap();
+            for index in 0..2 {
+                let peer = &mut peers[index];
+                let socket = peer.sockets.get_mut::<tcp::Socket>(peer.tcp);
+                while socket.can_recv() {
+                    socket
+                        .recv(|bytes| {
+                            received[index].extend_from_slice(bytes);
+                            (bytes.len(), ())
+                        })
+                        .unwrap();
+                }
+            }
+        }
+        for index in 0..2 {
+            let mut expected = vec![0x31 + index as u8; 512];
+            expected.extend([0x51 + index as u8; 256]);
+            assert_eq!(received[index], expected);
+            flows[index]
+                .stream
+                .write_all(&[0x61 + index as u8; 256])
                 .await
                 .unwrap();
             flows[index].stream.shutdown().await.unwrap();
         }
         assert!(!host.device.has_ingress());
         assert!(host.device.outgoing.is_empty());
-        crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, 1280, 100)
+        crate::mtu_reduction::rebuild_components(&mut host.interface, &mut host.device, 1280, 150)
             .unwrap();
         assert_eq!(host.active_flows(), 2);
         assert_eq!(
@@ -617,7 +694,7 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
         assert_eq!([flows[0].metadata, flows[1].metadata], metadata);
         let mut finished = [false; 2];
         // The pinned TCP stack retains TIME-WAIT for ten controlled seconds.
-        for step in 100..30000 {
+        for step in 150..30000 {
             exchange(&mut host, &mut peers, Duration::from_millis(step))
                 .await
                 .unwrap();
@@ -646,7 +723,8 @@ async fn interface_rebuild_preserves_active_backend_streams_and_pending_bytes() 
         assert_eq!(host.active_flows(), 0);
         for (index, actual) in received.iter().enumerate() {
             let mut expected = vec![0x31 + index as u8; 512];
-            expected.extend([0x61 + index as u8; 512]);
+            expected.extend([0x51 + index as u8; 256]);
+            expected.extend([0x61 + index as u8; 256]);
             assert_eq!(actual, &expected);
         }
         assert_eq!(host.statistics().finished, 2);

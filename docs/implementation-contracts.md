@@ -630,7 +630,11 @@ does not establish general path attribution or exercise the production runtime.
 A separate controlled accepted-stream adapter test directly rebuilds the
 interface while two flows on distinct backends retain pending application data.
 It checks their identities, exact delivery, FIN and permit release in both IP
-families; feedback correlation and UDP are outside that test. PMTU and the
+families. With output queued for both flows, a busy rebuild preserves the queue,
+TCP send state, MTU and flow ownership before delivery and retry. Feedback
+correlation and UDP are outside that test. The test sets the device MTU
+directly; adapter ingress still has a fixed 1280-byte admission limit, so this
+does not establish a supported 1500-byte adapter configuration. PMTU and the
 remaining fragmentation strategy must be resolved before the MTU/ICMP gate or stack ADR can be accepted. ICMP
 generation by a raw peer does not prove error propagation through the host
 runtime or active backend API. Kernel TUN, route/path changes, and native

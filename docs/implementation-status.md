@@ -134,8 +134,13 @@ queues, MTU, and reservation until a controlled retry
 stream adapter test now retains two distinct backend flow records and pending
 application bytes across a direct interface rebuild, completing FIN and releasing
 flow permits in both families
-(`target/evidence/phase-0/accepted-interface-mtu/README.md`). It does not apply
-feedback or exercise the production runtime or physical path attribution. A single reserved outstanding
+(`target/evidence/phase-0/accepted-interface-mtu/README.md`). With packets for
+both accepted flows queued, a busy rebuild also preserves the output queue,
+TCP send queues, MTU and flow ownership before delivery and retry
+(`target/evidence/phase-0/accepted-busy-mtu/README.md`). This does not apply
+feedback or exercise the production runtime or physical path attribution. The
+adapter still rejects ingress above its fixed 1280-byte limit; the test sets the
+device MTU directly and does not establish a supported 1500-byte configuration. A single reserved outstanding
 TCP segment now matches validated too-big feedback and applies its advertised
 1280/1400-byte reduction. ACK retirement (including wrap/FIN), expiry, malformed
 quotes and queue-busy retry are covered
