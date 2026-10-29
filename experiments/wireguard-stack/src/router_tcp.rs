@@ -173,7 +173,9 @@ fn transfer(client: &mut Endpoint, queue: &ErrorQueue) -> Result<()> {
             );
             ensure!(
                 Some((socket.local_endpoint(), socket.remote_endpoint())) == tuple,
-                "routed TCP tuple changed"
+                "routed TCP tuple changed: state={:?}, expected={tuple:?}, actual={:?}",
+                socket.state(),
+                (socket.local_endpoint(), socket.remote_endpoint())
             );
             ensure!(
                 client.peer.device.capabilities().max_transmission_unit == limit
