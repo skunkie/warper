@@ -11,10 +11,10 @@ SOCKS5, and WireGuard, with DNS-based route discovery and a Tauri desktop
 client. The macOS app will bundle the client and networking service.
 
 The repository contains the design, configuration examples, development
-infrastructure, Phase 0 Rust stack experiments, and a core static-routing
-policy beginning Phase 1. A production networking
-service has not been implemented. Phase 0 selects direct smoltcp adapters
-and BoringTun for Linux; native macOS networking remains unverified.
+infrastructure, Phase 0 Rust stack experiments, core static routing, and offline
+configuration validation with a thin CLI beginning Phase 1. A production
+networking service has not been implemented. Phase 0 selects direct smoltcp
+adapters and BoringTun for Linux; native macOS networking remains unverified.
 
 - [Implementation plan](docs/implementation-plan.md)
 - [Configuration and CLI contract](docs/configuration.md)
@@ -28,6 +28,15 @@ and BoringTun for Linux; native macOS networking remains unverified.
 Run `scripts/check.sh` to validate the repository, including its Rust
 experiments. See the development guide for isolated packet probes and the
 real-traffic role gates and their limits.
+
+Validate an example without opening credentials or connecting to a backend:
+
+```sh
+cargo run --locked -p warper-cli --bin warper -- check-config --config examples/socks5.yaml
+```
+
+Help and version are available. Service control commands remain explicitly
+unsupported until the authenticated local-control service is implemented.
 
 ## Acknowledgments and license
 

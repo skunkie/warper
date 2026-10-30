@@ -109,6 +109,15 @@ impl Paths {
         original_cwd: &Path,
         config: Option<&str>,
     ) -> Result<Self, Error> {
+        Self::with_config_path(account, original_cwd, config.map(Path::new))
+    }
+
+    /// Preserve native filename bytes in the CLI source path and its directory.
+    pub fn with_config_path(
+        account: &Account,
+        original_cwd: &Path,
+        config: Option<&Path>,
+    ) -> Result<Self, Error> {
         if !account.home.is_absolute() || account.home.as_os_str().as_encoded_bytes().contains(&0) {
             return Err(Error::InvalidAccount);
         }
@@ -119,7 +128,7 @@ impl Paths {
             return Err(Error::InvalidPath);
         }
         let config_file = resolve(
-            config.unwrap_or("~/.warp.yaml"),
+            config.unwrap_or(Path::new("~/.warp.yaml")),
             &account.home,
             original_cwd,
         )?;
@@ -137,25 +146,21 @@ impl Paths {
     pub fn resolve_value(&self, value: &str) -> Result<PathBuf, Error> {
         // An absolute path always has a parent except for the filesystem root.
         let directory = self.config_file.parent().unwrap_or(&self.config_file);
-        resolve(value, &self.home, directory)
+        resolve(Path::new(value), &self.home, directory)
     }
 }
 
-fn resolve(value: &str, home: &Path, directory: &Path) -> Result<PathBuf, Error> {
-    if value.is_empty() {
+fn resolve(value: &Path, home: &Path, directory: &Path) -> Result<PathBuf, Error> {
+    if value.as_os_str().is_empty() {
         return Err(Error::EmptyPath);
     }
-    if value.contains('\0') {
+    if value.as_os_str().as_encoded_bytes().contains(&0) {
         return Err(Error::InvalidPath);
     }
-    if value == "~" {
-        return Ok(home.to_path_buf());
+    if let Ok(relative) = value.strip_prefix("~") {
+        return Ok(home.join(relative));
     }
-    if let Some(relative) = value.strip_prefix("~/") {
-        // Repeated separators must not let Path::join replace the home root.
-        return Ok(home.join(relative.trim_start_matches('/')));
-    }
-    if value.starts_with('~') {
+    if value.as_os_str().as_encoded_bytes().starts_with(b"~") {
         return Err(Error::UnsupportedHomeExpansion);
     }
     Ok(directory.join(value))
@@ -388,5 +393,36 @@ mod tests {
             Paths::new(&invalid, Path::new("/work"), None),
             Err(Error::InvalidAccount)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_source_and_home_paths_preserve_non_utf8_filename_bytes() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let path = PathBuf::from(OsString::from_vec(b"directory-\xff/source.yaml".to_vec()));
+        let paths = Paths::with_config_path(&account(), Path::new("/work"), Some(&path)).unwrap();
+        assert_eq!(paths.config_file(), Path::new("/work").join(&path));
+        assert_eq!(
+            paths.resolve_value("key").unwrap(),
+            Path::new("/work").join(path.parent().unwrap()).join("key")
+        );
+        let path = PathBuf::from(OsString::from_vec(b"~/\xff.yaml".to_vec()));
+        assert_eq!(
+            Paths::with_config_path(&account(), Path::new("/work"), Some(&path))
+                .unwrap()
+                .config_file(),
+            Path::new("/home/sample").join(OsString::from_vec(b"\xff.yaml".to_vec()))
+        );
+        let account = Account {
+            home: PathBuf::from(OsString::from_vec(b"/home/\xff".to_vec())),
+            ..account()
+        };
+        assert_eq!(
+            Paths::new(&account, Path::new("/work"), None)
+                .unwrap()
+                .config_file(),
+            account.home.join(".warp.yaml")
+        );
     }
 }

@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Offline expectations are exercised by warper-config/tests/schema.rs.
-# CLI and runtime preflight expectations remain pending.
+# Offline expectations are exercised by warper-config/tests/schema.rs and
+# warper-cli/tests/commands.rs. Runtime preflight expectations remain pending.
 # Paths are relative to this catalog. Source anchors refer to ~/projects/warp.
 version = 1
 

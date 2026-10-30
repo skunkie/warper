@@ -13,8 +13,9 @@ desktop, independent `warperd` service, local control, and managed bundle.
 The current repository contains contracts, development infrastructure,
 experimental Rust stack probes, and the first production core static-routing
 policy, offline configuration paths, and native Unix account lookup/bounded
-YAML decoding/schema validation in `warper-config`. The installed CLI and
-runtime preflight remain unimplemented. There is no production networking
+YAML decoding/schema validation in `warper-config`. The thin `warper-cli`
+package implements offline check-config and help/version. Runtime preflight
+and service control remain unimplemented. There is no production networking
 service yet.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
@@ -95,8 +96,22 @@ cargo test --locked -p warper-config --test schema
 They consume the configuration catalog, verify defaults/errors/normalization,
 and build a real core static policy from parsed settings. Platform-name checks
 for macOS are pure schema checks, not native macOS evidence. No credential or
-trust file is opened; the catalog's missing-host-trust preflight gate and CLI
-exit-code checks remain pending.
+trust file is opened; the catalog's missing-host-trust preflight gate remains
+pending. CLI exit-code checks run in `warper-cli/tests/commands.rs` with explicit
+source/identity providers. Binary tests exercise help/version, unsupported
+control and argument errors without reading account records. Source loading has
+separate controlled-file/FIFO tests; real account lookup is a manual probe.
+
+Run the offline command with:
+
+```sh
+cargo run --locked -p warper-cli --bin warper -- check-config --config examples/socks5.yaml
+```
+
+It reads only the selected source and OS account metadata; credential/trust
+paths are resolved without being opened. Success establishes offline validity,
+not connectivity. Bare `warper` and service operations return an explicit
+unsupported-capability error until local control is implemented.
 
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
@@ -131,7 +146,7 @@ in an ADR; no unrelated advisory or fork exceptions are inherited.
 
 The native composite action tests default/all features and builds release
 artifacts for Linux x86-64, Linux ARM64, and macOS ARM64 on matching runners.
-It exercises `warper --help` and `--version` once the CLI package exists.
+It exercises the current `warper --help` and `--version` entry points.
 Other architectures must gain runnable target checks before being claimed.
 Define relevant feature combinations when features are introduced rather
 than assuming all-features testing proves every combination.

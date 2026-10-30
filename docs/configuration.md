@@ -6,15 +6,16 @@ SPDX-License-Identifier: MIT
 
 # Canonical Configuration and CLI Contract
 
-Status: offline YAML/schema/semantic validation is implemented; the CLI and
-runtime preflight remain unimplemented.
+Status: offline YAML/schema/semantic validation and the `warper check-config`
+CLI are implemented; runtime preflight and service control remain unimplemented.
 Core implements offline path resolution and injectable invoking-account
 validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
 account lookup in `crates/warper-config/src/identity.rs`. Bounded YAML decoding
 is implemented in `warper-config::yaml`, following
 [ADR 0006](adr/0006-bounded-yaml-decoding.md). `warper-config::schema::Config::parse`
-applies the offline contract with injected paths and an explicit platform. CLI
-integration remains unimplemented. This document defines the initial schema.
+applies the offline contract with injected paths and an explicit platform.
+`warper-cli` supplies the thin offline command. This document defines the initial
+schema.
 Update it, its examples, and fixtures together when a justified decision changes
 the contract.
 
@@ -257,7 +258,7 @@ reason; never print secrets or raw configuration excerpts. The
 [service/client contract](service-and-client.md) defines the primary Tauri
 GUI and managed bundle. Closing the GUI leaves the service running.
 
-Required command forms, when the CLI/service are introduced:
+Required command forms across the CLI/service roadmap:
 
 ```text
 warper status [--json]
@@ -290,6 +291,32 @@ without claiming Connected/Disconnected. Retries reuse operation identity
 and configuration generation instead of creating another TUN.
 
 `check-config` validates without IPC, file-secret reads, or network changes.
+Its current command accepts exactly `warper check-config [--config PATH]`;
+`--config` may occur once. A missing value or extra argument exits 2. Use a
+relative prefix such as `./` for a filename beginning with `-`; `-` is not stdin.
+Native source paths may contain non-UTF-8 filename bytes, while YAML contents
+must be UTF-8. Help (`--help`/`-h`, also after `check-config`) and version
+(`--version`/`-V`) work without source reads or account lookup.
+
+The source reader opens nonblocking, then checks the opened descriptor is a
+regular file; source symlinks are allowed and credential paths remain relative
+to the lexical source directory. Read at most the fixed YAML source limit plus
+one byte, regardless of metadata or concurrent growth. Source size/admission,
+unreadable/nonregular input, schema errors, and invocation errors exit 2 with
+redacted diagnostics on stderr and empty stdout. Account/current-directory or
+output failures exit 1. Invalid elevated sudo identity fields exit 2. Account
+lookup and regular-file I/O are synchronous OS operations without a hard wall
+deadline; the source reader performs no backend/DNS network operation.
+
+Successful inspection exits 0 and prints exactly
+`Configuration is valid (offline).` on stdout; it makes no availability,
+trust, cryptographic, or connectivity claim. Bare `warper` and the documented
+service commands currently exit 1 with `UnsupportedCapability`, without IPC,
+source reads, or network mutation. Malformed command forms exit 2. A failed
+stdout write becomes an output error; a failed diagnostic write retains the
+primary failure and its exit code. Only the offline command is implemented;
+service command execution and client debug logging remain unavailable.
+
 Import/configuration installation is a separate authorized operation. The
 native client reads selected files with user access and submits normalized
 data/material for protected atomic storage. The service does not read arbitrary
@@ -339,7 +366,10 @@ these inputs and reject the duplicate-key fixture. `tests/schema.rs` in the
 same package reads the catalog and verifies offline validity/errors, generated
 backend IDs, routing modes, domain normalization, and required protocol metadata.
 Those requirements describe the support contract, not runtime availability.
-CLI and preflight expectations remain unverified. Unknown-field diagnostics
+`warper-cli/tests/commands.rs` exercises the same catalog through argument
+parsing, command execution and output/error handling with injected identities
+and a source reader. CLI exit codes and stdout/stderr behavior are verified;
+runtime preflight expectations remain unverified. Unknown-field diagnostics
 use `$[key]` rather than echoing an arbitrary key, matching decoder redaction.
 Missing SSH trust is represented as a preflight failure with a nonexistent
 trust store, rather than an offline read of the developer's trust files.
