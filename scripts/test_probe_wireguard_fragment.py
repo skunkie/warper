@@ -19,20 +19,23 @@ from scripts import probe_wireguard_fragment as probe
 
 
 class EncryptedFragmentTests(unittest.TestCase):
-    def test_observes_only_wireguard_data_fragment_sets(self):
+    def test_observes_bidirectional_wireguard_fragment_sets(self):
         for ipv6 in (False, True):
             with self.subTest(ipv6=ipv6):
                 header = 48 if ipv6 else 20
                 frame = bytearray(14 + header + 12)
                 frame[14 + header + 8:14 + header + 12] = b"\x04\x00\x00\x00"
                 observations, completed = {}, set()
-                items = [(42, 0, True, (41001, 9000), 100), None,
-                         (42, 8, False, None, 100), None]
-                if ipv6:
-                    items = [None, items[0], None, items[2]]
+                records = [(42, 0, True, (41001, 9000), 100),
+                           (42, 8, False, None, 100),
+                           (43, 0, True, (9000, 41001), 100),
+                           (43, 8, False, None, 100)]
+                items = []
+                for record in records:
+                    items.extend([None, record] if ipv6 else [record, None])
                 with patch.object(probe, "fragment", side_effect=items):
-                    probe.observe(frame, observations, completed)
-                    probe.observe(frame, observations, completed)
+                    for _ in records:
+                        probe.observe(frame, observations, completed)
                 self.assertEqual(completed, {ipv6})
 
     def test_final_fragment_can_precede_wireguard_first_fragment(self):
@@ -43,7 +46,8 @@ class EncryptedFragmentTests(unittest.TestCase):
                                                           (1, 0, True, (1, 2), 100), None]):
             probe.observe(frame, observations, completed)
             probe.observe(frame, observations, completed)
-        self.assertEqual(completed, {False})
+        self.assertFalse(completed)
+        self.assertEqual(next(iter(observations.values())), ((1, 2), True))
 
     def test_unrelated_fragment_does_not_count_as_wireguard(self):
         frame = bytearray(14 + 20 + 12)
@@ -138,6 +142,23 @@ class EncryptedFragmentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "absolute path"):
                 probe.run("relative-binary")
             state.assert_not_called()
+
+    def test_kernel_peer_mode_is_passed_to_the_supervised_child(self):
+        capture = MagicMock()
+        socket_context = MagicMock()
+        socket_context.__enter__.return_value = capture
+        with (patch.object(probe.sys, "platform", "linux"),
+              patch.object(probe.socket, "AF_PACKET", 17, create=True),
+              patch.object(probe, "isolated_namespace", return_value=True),
+              patch.object(probe.Path, "is_file", return_value=True),
+              patch.object(probe.os, "access", return_value=True),
+              patch.object(probe, "link_state", side_effect=[(1500, False), (1500, False)]),
+              patch.object(probe, "configure_loopback"),
+              patch.object(probe.socket, "socket", return_value=socket_context),
+              patch.object(probe, "run_child") as child,
+              contextlib.redirect_stdout(io.StringIO())):
+            probe.run("/synthetic-binary", True)
+            child.assert_called_once_with("/synthetic-binary", capture, True)
 
     def test_cleanup_error_does_not_replace_child_error(self):
         with (patch.object(probe.sys, "platform", "linux"),

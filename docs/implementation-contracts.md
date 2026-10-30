@@ -897,11 +897,16 @@ capture observes fragmented WireGuard data for both outer families. With
 fragmentation disabled, the corresponding negative controls require a kernel
 size error. Fixture sockets are released and loopback state is restored.
 
-This deliberately mismatches the fixture envelope and path MTU to test kernel
-fragmentation; it does not relax the existing path-budget guard. Loopback,
-same-library peers do not establish routed or physical behavior, independent
-kernel-peer interoperability, fragment-loss recovery, resource limits under
-hostile traffic, native macOS behavior, or a production fragmentation policy.
+The same capture now observes fragmented WireGuard data in both directions
+for each outer family while an independent Linux kernel peer completes all
+inner/outer family combinations. Its workers are joined, fixture sockets are
+released, and the parent independently removes the kernel interface.
+
+Both fixtures deliberately mismatch the declared envelope and path MTU to test
+kernel fragmentation; they do not relax the existing path-budget guard. Private
+loopback does not establish routed or physical behavior, fragment-loss recovery,
+resource limits under hostile traffic, native macOS behavior, or a production
+fragmentation policy.
 
 ## 17. Experimental Interface MTU Reduction
 

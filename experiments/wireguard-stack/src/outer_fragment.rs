@@ -91,7 +91,7 @@ fn run_case(inner_ipv6: bool, outer_ipv6: bool, fragment: bool) -> Result<()> {
     }
 }
 
-fn configure_fragmentation(socket: &UdpSocket, ipv6: bool, enabled: bool) -> Result<()> {
+pub(super) fn configure_fragmentation(socket: &UdpSocket, ipv6: bool, enabled: bool) -> Result<()> {
     if ipv6 {
         let mode = if enabled {
             Ipv6PathMtuDiscovery::DONT

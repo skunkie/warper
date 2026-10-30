@@ -547,7 +547,7 @@ fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
         valid_arguments(&arguments),
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --outer-fragment-check | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --outer-fragment-check | --kernel-outer-fragment-check | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
     );
     if arguments.first().is_some_and(|argument| {
         argument == "--physical-path-client" || argument == "--physical-path-peer"
@@ -600,6 +600,12 @@ fn main() -> Result<()> {
         return kernel_mtu::run();
         #[cfg(not(target_os = "linux"))]
         bail!("kernel MTU probe requires Linux disposable namespaces");
+    }
+    if arguments == ["--kernel-outer-fragment-check"] {
+        #[cfg(target_os = "linux")]
+        return kernel_peer::run_outer_fragment();
+        #[cfg(not(target_os = "linux"))]
+        bail!("kernel outer fragmentation probe requires Linux disposable namespaces");
     }
     if arguments == ["--outer-fragment-check"] {
         #[cfg(target_os = "linux")]
@@ -658,6 +664,7 @@ fn valid_arguments(arguments: &[String]) -> bool {
         || arguments == ["--rekey"]
         || arguments == ["--outer-mtu-check"]
         || arguments == ["--outer-fragment-check"]
+        || arguments == ["--kernel-outer-fragment-check"]
         || arguments == ["--kernel-mtu-check"]
         || arguments == ["--router-mtu-check"]
         || (arguments.len() == 2 && arguments[0] == "--router-mtu-check")
@@ -1157,11 +1164,13 @@ mod tests {
 
     #[test]
     fn outer_fragment_flag_rejects_extra_arguments() {
-        let valid = vec!["--outer-fragment-check".to_owned()];
-        assert!(valid_arguments(&valid));
-        for extra in ["--rekey", "unexpected"] {
-            let invalid = vec!["--outer-fragment-check".to_owned(), extra.to_owned()];
-            assert!(!valid_arguments(&invalid));
+        for flag in ["--outer-fragment-check", "--kernel-outer-fragment-check"] {
+            let valid = vec![flag.to_owned()];
+            assert!(valid_arguments(&valid));
+            for extra in ["--rekey", "unexpected"] {
+                let invalid = vec![flag.to_owned(), extra.to_owned()];
+                assert!(!valid_arguments(&invalid));
+            }
         }
     }
 

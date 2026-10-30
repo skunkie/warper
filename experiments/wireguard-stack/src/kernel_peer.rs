@@ -21,7 +21,8 @@ use boringtun::x25519::{PublicKey, StaticSecret};
 use wireguard_uapi::{DeviceInterface, WgSocket, set};
 
 use super::{
-    REKEY_DURATION, REQUEST, RESPONSE, create_client, loopback_address, run_client_with_outage,
+    REKEY_DURATION, REQUEST, RESPONSE, create_client, loopback_address, run_client,
+    run_client_with_outage,
 };
 
 const INTERFACE: &str = "wg-feasibility";
@@ -295,6 +296,96 @@ pub fn run(rekey: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+pub fn run_outer_fragment() -> Result<()> {
+    let (mut netlink, port) = configure()?;
+    for inner_ipv6 in [false, true] {
+        for outer_ipv6 in [false, true] {
+            let mut endpoint = loopback_address(outer_ipv6);
+            endpoint.set_port(port);
+            fragment_exchange(inner_ipv6, outer_ipv6, endpoint)?;
+            verify_handshake(&mut netlink, false)?;
+            println!(
+                "PASS independent kernel outer fragmentation: inner_ipv6={inner_ipv6}, outer_ipv6={outer_ipv6}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn fragment_exchange(inner_ipv6: bool, outer_ipv6: bool, endpoint: SocketAddr) -> Result<()> {
+    let address: IpAddr = if inner_ipv6 {
+        "fd66:66::10"
+    } else {
+        "10.66.66.10"
+    }
+    .parse()?;
+    let (mut client, mut transport) = create_client(inner_ipv6, endpoint)?;
+    let socket_address = transport.socket.local_addr()?;
+    transport.socket.connect(endpoint)?;
+    let mtu = if outer_ipv6 {
+        rustix::net::sockopt::ipv6_mtu(&transport.socket)?
+    } else {
+        rustix::net::sockopt::ip_mtu(&transport.socket)?
+    };
+    ensure!(
+        mtu == 1280,
+        "kernel fragment fixture requires a 1280-byte loopback path"
+    );
+    crate::outer_fragment::configure_fragmentation(&transport.socket, outer_ipv6, true)?;
+    let mut workers = Workers::start(address, Duration::ZERO, Arc::new(AtomicBool::new(false)))?;
+    let result = run_client(
+        inner_ipv6,
+        Duration::ZERO,
+        &mut client,
+        &mut transport,
+        None,
+    );
+    let cleanup = workers.finish();
+    drop(transport);
+    drop(client);
+    let socket_cleanup = UdpSocket::bind(socket_address).map(drop);
+    finish_fragment(result, cleanup, socket_cleanup, inner_ipv6)
+}
+
+fn finish_fragment(
+    result: Result<()>,
+    cleanup: Result<Report>,
+    socket_cleanup: io::Result<()>,
+    ipv6: bool,
+) -> Result<()> {
+    match (result, cleanup, socket_cleanup) {
+        (Err(primary), workers, socket) => {
+            let worker_status = match workers {
+                Ok(_) => "workers joined".into(),
+                Err(error) => format!("worker cleanup also failed: {error:#}"),
+            };
+            let socket_status = match socket {
+                Ok(()) => "outer socket rebound".into(),
+                Err(error) => format!("outer socket cleanup also failed: {error}"),
+            };
+            Err(primary.context(format!("{worker_status}; {socket_status}")))
+        }
+        (Ok(()), Err(error), socket) => {
+            let context = match socket {
+                Ok(()) => "outer socket rebound".into(),
+                Err(error) => format!("outer socket cleanup also failed: {error}"),
+            };
+            Err(error.context(context))
+        }
+        (Ok(()), Ok(report), socket) => {
+            socket.context("outer socket cleanup failed")?;
+            let maximum = if ipv6 { 1232 } else { 1252 };
+            ensure!(
+                report.tcp == 1
+                    && report.udp == 4
+                    && report.bytes == REQUEST.len() + RESPONSE.len() + 2 * (1 + 257 + maximum),
+                "kernel fragment peer observed an unexpected workload"
+            );
+            Ok(())
+        }
+    }
 }
 
 pub fn run_link_check() -> Result<()> {
@@ -831,6 +922,60 @@ fn udp_server(socket: UdpSocket, stop: &AtomicBool, deadline: Instant) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fragment_cleanup_preserves_primary_and_validates_workload() {
+        let primary = io::Error::from(io::ErrorKind::PermissionDenied);
+        let worker = io::Error::from(io::ErrorKind::AddrInUse);
+        let socket = io::Error::from(io::ErrorKind::BrokenPipe);
+        let error = finish_fragment(Err(primary.into()), Err(worker.into()), Err(socket), false)
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("worker cleanup also failed"));
+        assert!(diagnostic.contains("outer socket cleanup also failed"));
+        let error = finish_fragment(
+            Ok(()),
+            Err(io::Error::from(io::ErrorKind::AddrInUse).into()),
+            Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::AddrInUse
+        );
+        assert!(format!("{error:#}").contains("outer socket cleanup also failed"));
+        let error = finish_fragment(
+            Ok(()),
+            Ok(Report::default()),
+            Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        for ipv6 in [false, true] {
+            let maximum = if ipv6 { 1232 } else { 1252 };
+            let report = Report {
+                tcp: 1,
+                udp: 4,
+                bytes: REQUEST.len() + RESPONSE.len() + 2 * (1 + 257 + maximum),
+            };
+            assert!(finish_fragment(Ok(()), Ok(report), Ok(()), ipv6).is_ok());
+            let incomplete = Report {
+                tcp: 1,
+                udp: 3,
+                bytes: 0,
+            };
+            assert!(finish_fragment(Ok(()), Ok(incomplete), Ok(()), ipv6).is_err());
+        }
+    }
 
     #[test]
     fn link_cleanup_preserves_primary_and_reports_secondary_failures() {

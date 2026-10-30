@@ -297,6 +297,12 @@ a no-fragment negative control must fail with the kernel's size error. It
 refuses the wrong namespace or route MTU. This is not a service option and
 does not change the production transport's path budget or YAML configuration.
 
+Adding `--kernel-peer` after the binary selects the separate experimental
+`--kernel-outer-fragment-check` child and requires the disposable harness to
+create and later remove its own `wg-feasibility` interface. This mode uses the
+Linux kernel WireGuard peer; it is not a service configuration and does not
+change the production path budget.
+
 ## Development-Only Outer MTU Probes
 
 The experimental `wireguard-stack --outer-mtu-check`,

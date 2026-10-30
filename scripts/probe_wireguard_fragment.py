@@ -36,24 +36,29 @@ def observe(frame, observations, completed):
         key = (ipv6, addresses, identity)
         if key not in observations and len(observations) >= MAX_OBSERVATIONS:
             raise RuntimeError("encrypted fragment observation capacity exceeded")
-        first, final = observations.get(key, (False, False))
+        first_ports, final = observations.get(key, (None, False))
         header = 48 if ipv6 else 20
         if offset == 0 and more and ports is not None:
             # WireGuard data messages have a four-byte little-endian type 4.
-            first |= packet[header + 8:header + 12] == b"\x04\x00\x00\x00"
+            if packet[header + 8:header + 12] == b"\x04\x00\x00\x00":
+                first_ports = ports
         if offset > 0 and not more:
             final = True
-        observations[key] = first, final
-        if first and final:
+        observations[key] = first_ports, final
+        directions = {first for (family, _, _), (first, last) in observations.items()
+                      if family == ipv6 and first is not None and last}
+        if any(source != destination and (destination, source) in directions
+               for source, destination in directions):
             completed.add(ipv6)
 
 
-def run_child(binary, capture):
-    child = subprocess.Popen([binary, "--outer-fragment-check"], stdout=subprocess.PIPE,
+def run_child(binary, capture, kernel_peer=False):
+    flag = "--kernel-outer-fragment-check" if kernel_peer else "--outer-fragment-check"
+    child = subprocess.Popen([binary, flag], stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, bufsize=0)
     output = bytearray()
     observations, completed = {}, set()
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + (90 if kernel_peer else 30)
     pipe_open = True
     try:
         os.set_blocking(child.stdout.fileno(), False)
@@ -91,14 +96,19 @@ def run_child(binary, capture):
         if child.returncode != 0:
             raise RuntimeError(f"encrypted fixture failed with exit {child.returncode}")
         lines = output.decode(errors="replace").splitlines()
-        expected = {f"PASS encrypted outer fragmentation: inner_ipv6={inner}, outer_ipv6={outer}"
+        prefix = "independent kernel outer fragmentation" if kernel_peer else "encrypted outer fragmentation"
+        expected = {f"PASS {prefix}: inner_ipv6={inner}, outer_ipv6={outer}"
                     for inner in ("false", "true") for outer in ("false", "true")}
-        expected.update({f"PASS outer no-fragment negative control: outer_ipv6={outer}"
-                         for outer in ("false", "true")})
+        if not kernel_peer:
+            expected.update({f"PASS outer no-fragment negative control: outer_ipv6={outer}"
+                             for outer in ("false", "true")})
         if not expected.issubset(lines):
             raise RuntimeError("encrypted fixture did not report all family combinations and controls")
-        print("PASS captured fragmented WireGuard data: outer IPv4 and IPv6", flush=True)
-        print("PASS kernel no-fragment size-error controls: outer IPv4 and IPv6", flush=True)
+        print("PASS captured bidirectional fragmented WireGuard data: outer IPv4 and IPv6", flush=True)
+        if kernel_peer:
+            print("PASS independent kernel WireGuard peer: all family combinations", flush=True)
+        else:
+            print("PASS kernel no-fragment size-error controls: outer IPv4 and IPv6", flush=True)
     finally:
         primary = sys.exception()
         cleanup = []
@@ -118,7 +128,7 @@ def run_child(binary, capture):
             print(f"encrypted fixture cleanup failures: {cleanup}", file=sys.stderr, flush=True)
 
 
-def run(binary):
+def run(binary, kernel_peer=False):
     if sys.platform != "linux":
         raise RuntimeError("encrypted fragment fixture requires Linux")
     if not isolated_namespace():
@@ -133,7 +143,7 @@ def run(binary):
         with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as capture:
             capture.bind(("lo", 0))
             capture.setblocking(False)
-            run_child(str(path), capture)
+            run_child(str(path), capture, kernel_peer)
     except BaseException as error:
         primary = error
     finally:
@@ -152,6 +162,6 @@ def run(binary):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: python3 -m scripts.probe_wireguard_fragment ABSOLUTE_BINARY")
-    run(sys.argv[1])
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--kernel-peer"):
+        raise SystemExit("usage: python3 -m scripts.probe_wireguard_fragment ABSOLUTE_BINARY [--kernel-peer]")
+    run(sys.argv[1], len(sys.argv) == 3)

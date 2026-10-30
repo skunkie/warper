@@ -453,10 +453,14 @@ A separate encrypted fixture now observes fragmented WireGuard data on
 private loopback in both outer families while local BoringTun peers complete
 TCP and UDP in all inner/outer family combinations. No-fragment controls fail
 with the kernel size error (`target/evidence/phase-0/wireguard-outer-fragment/README.md`).
-The declared 1500-byte fixture envelope intentionally exceeds the 1280-byte
-path; the existing production candidate's guard is unchanged. Routed and
-physical paths, independent WireGuard peers, fragment loss, macOS and a
-production fragmentation policy remain unverified.
+A separate private-loopback run with an independent Linux kernel WireGuard
+peer now completes all four family combinations and observes fragmented data
+in both directions for each outer family
+(`target/evidence/phase-0/kernel-wireguard-outer-fragment/README.md`). The
+declared 1500-byte fixture envelope intentionally exceeds the 1280-byte path;
+the existing production candidate's guard is unchanged. Routed and physical
+paths, fragment loss, macOS and a production fragmentation policy remain
+unverified.
 
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
