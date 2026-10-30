@@ -15,8 +15,10 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "=1.0.104"
+base64 = "=0.22.1"
 boringtun = { version = "=0.7.1", default-features = false }
 futures = { version = "=0.3.32", default-features = false, features = ["std", "async-await"] }
+idna = "=1.1.0"
 netstack-smoltcp = "=0.2.4"
 nix = { version = "=0.31.3", default-features = false, features = ["net", "uio"] }
 # Pinned Linux networking socket options reference the time module.

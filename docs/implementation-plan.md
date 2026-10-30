@@ -94,7 +94,7 @@ Dependency direction: protocol implementations depend on core contracts; the ser
 - Use idiomatic Rust naming and explicit ownership, rather than treating a list of RFC numbers as an API design specification.
 - Use Tokio for asynchronous I/O, timers, cancellation, and supervised tasks; avoid blocking the runtime with platform commands or stack polling.
 - Use typed library errors (`thiserror`) and contextual application errors (`anyhow` or equivalent).
-- Use `serde` with a maintained YAML parser selected and pinned during setup. Validate before privileged mutations; reject unknown fields with useful diagnostics.
+- Use a maintained, pinned YAML parser behind adapter-owned typed configuration (ADR 0006). Decode bounded events before schema validation so duplicate/alias/scalar checks and redacted field errors remain explicit. Validate before privileged mutations; reject unknown fields with useful diagnostics.
 - Use `tracing` with bounded, nonblocking UI log delivery and secret redaction. Diagnostic and panic output must not print credentials or private keys.
 - Candidate dependencies include `hickory-proto`, `rtnetlink`, `russh`, `boringtun`, and a SOCKS5 client; finalize versions/features after the prototypes and compatibility review.
 - Configure service and CLI targets explicitly as `warperd` and `warper`; the separate Tauri target is the primary desktop client. Commit lockfiles and document supported Rust/OS versions, native GUI dependencies, and managed service packaging.

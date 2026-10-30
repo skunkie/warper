@@ -6,13 +6,15 @@ SPDX-License-Identifier: MIT
 
 # Canonical Configuration and CLI Contract
 
-Status: implementation specification; the schema validator/CLI do not exist yet.
+Status: offline YAML/schema/semantic validation is implemented; the CLI and
+runtime preflight remain unimplemented.
 Core implements offline path resolution and injectable invoking-account
 validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
 account lookup in `crates/warper-config/src/identity.rs`. Bounded YAML decoding
 is implemented in `warper-config::yaml`, following
-[ADR 0006](adr/0006-bounded-yaml-decoding.md); schema/semantic validation and CLI
-integration remain unimplemented. This document defines the initial schema.
+[ADR 0006](adr/0006-bounded-yaml-decoding.md). `warper-config::schema::Config::parse`
+applies the offline contract with injected paths and an explicit platform. CLI
+integration remains unimplemented. This document defines the initial schema.
 Update it, its examples, and fixtures together when a justified decision changes
 the contract.
 
@@ -52,6 +54,30 @@ through decoded-value `Debug` output. Schema validation will additionally
 reject unknown keys, missing fields, and type/semantic violations. Its fixture
 expectations remain distinct from decoder-only fixture checks.
 
+### Offline schema validation
+
+The validator receives an explicit Linux/macOS target and prepared source paths;
+it does not infer privileges, read files, resolve hosts, or inspect interfaces.
+Successful offline validation does not establish runtime capability, trust,
+cryptographic validity, endpoint reachability, or readiness to mutate host state.
+Unknown key names use the decoder's redacted `[key]` path convention, including
+migration diagnostics. Required fields and known invalid fields retain their
+exact schema paths.
+
+Normalize configured domains and endpoint hostnames with idna 1.1.0 UTS 46,
+nontransitional processing, STD3 ASCII rules, first/last hyphen checks, and DNS
+length verification. Normalize case and Unicode dot equivalents before removing
+one terminal dot; reject empty/root names, empty labels, wildcards, underscores,
+and IP literals as domain rules. This configuration profile is not used to
+validate wire-format DNS names such as `_service._tcp.example.test`.
+
+Reject unspecified, multicast, and IPv4 broadcast DNS addresses. TUN and
+WireGuard local addresses additionally exclude loopback and IPv6 link-local.
+These are offline safety checks; discovered collisions and routing loops remain
+preflight work. Unsigned numeric schema fields accept decimal, hexadecimal, and
+octal YAML integers within their target range, including a leading plus on
+decimal values; strings, floats, negative values, and overflow are invalid.
+
 ## 2. Root and Tunnel Fields
 
 | Key | Type | Required/default | Rules |
@@ -66,7 +92,7 @@ expectations remain distinct from decoder-only fixture checks.
 
 | `tunnel` key | Type | Required/default | Rules |
 | --- | --- | --- | --- |
-| `name` | string | Omitted: OS-selected name | Linux: nonempty ASCII interface name, at most 15 bytes, no whitespace or `/`; macOS: `utun` followed by digits. Validate availability at runtime; use the actual returned identity |
+| `name` | string | Omitted: OS-selected name | Linux: nonempty ASCII interface name, at most 15 bytes, no whitespace, NUL, `/`, or `:`, and not `.` or `..`; macOS: `utun` followed by digits. Validate availability at runtime; use the actual returned identity |
 | `ip` | string | Required | Bare unicast IPv4 address for local TUN DNS; reject CIDR syntax, unspecified, loopback, broadcast, and multicast addresses |
 | `ipv6_address` | string | Omitted | Required when `ipv6: true`, forbidden when false; bare unicast IPv6 address, not unspecified, loopback, multicast, or link-local |
 | `serve_dns` | boolean | `false` | False: split DNS for configured domains; true: forward unmatched queries through direct upstreams |
@@ -309,8 +335,12 @@ The Phase 0 catalog is `tests/fixtures/configuration/cases.toml`. It records
 canonical examples, original-shaped synthetic inputs, normalization,
 migration/error expectations, and the required backend capability matrix.
 Decoder-only tests in `crates/warper-config/tests/yaml_fixtures.rs` register
-these inputs and reject the duplicate-key fixture. The remaining catalog
-expectations are still declarative: no schema validator/CLI has validated them.
+these inputs and reject the duplicate-key fixture. `tests/schema.rs` in the
+same package reads the catalog and verifies offline validity/errors, generated
+backend IDs, routing modes, domain normalization, and required protocol metadata.
+Those requirements describe the support contract, not runtime availability.
+CLI and preflight expectations remain unverified. Unknown-field diagnostics
+use `$[key]` rather than echoing an arbitrary key, matching decoder redaction.
 Missing SSH trust is represented as a preflight failure with a nonexistent
 trust store, rather than an offline read of the developer's trust files.
 

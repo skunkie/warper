@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0006. Bounded YAML decoding
 
-- Status: accepted for the decoder boundary; schema validation pending.
+- Status: accepted for the decoder boundary; offline schema integration implemented.
 - Date: 2026-10-30
 - Related: [configuration contract](../configuration.md#decoder-boundary),
   [Phase 1](../implementation-plan.md#phase-1-workspace-contracts-and-headless-linux-slice).
@@ -71,9 +71,12 @@ state. Source/node/depth bounds constrain construction but are not an RSS cap
 or hard deadline. Future asynchronous clients must schedule decoding away from
 networking executors.
 
-A decoded tree is not a validated configuration. Required/unknown fields,
-schema types, semantic ranges, IDNA, capabilities, paths, and CLI integration
-remain subsequent work. No networking code may treat decoding as authorization.
+A decoded tree is not a validated configuration. The separate typed schema
+layer now handles required/unknown fields, types, ranges, IDNA, required protocol
+metadata and paths. It uses explicit field access over the decoded tree rather
+than generic deserialization to keep field/type errors independent of source
+excerpts and coercion. CLI integration and runtime preflight remain subsequent
+work. No networking code may treat decoding as authorization.
 
 ## Validation and reconsideration
 
@@ -85,7 +88,8 @@ cargo llvm-cov --locked -p warper-config --all-features --html
 
 Decoder tests register canonical/original inputs and the migration fixtures.
 Most migration fixtures are valid YAML; only duplicate-key is a decoder-level
-rejection. Schema/migration/capability expectations remain unverified. Unit
+rejection. Separate schema catalog tests now verify the offline expectations;
+CLI/preflight and actual backend capabilities remain unverified. Unit
 cases cover tags, malformed input, scalar types/spelling, redaction, duplicate
 paths, and admission boundaries. Raw evidence belongs under
 `target/evidence/phase-1/yaml-decoder/`.

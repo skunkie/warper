@@ -43,6 +43,33 @@ the tested requirement. Platform fixture dependencies (`wireguard-uapi`
 3.0.1, rustix 1.1.5, nix 0.31.3) are not selected production route drivers.
 Kernel WireGuard is an independent test peer, never the service's backend.
 
+### Configuration name normalization
+
+Offline configuration uses **idna 1.1.0** with its compiled data, locked
+idna_adapter 1.2.2 and ICU 2.4.0 dependencies. In
+[`schema/fields.rs`](../../crates/warper-config/src/schema/fields.rs), UTS 46
+processing is nontransitional, with `AsciiDenyList::STD3`,
+`Hyphens::CheckFirstLast`, and `DnsLength::VerifyAllowRootDot`. Case/Unicode dots
+normalize before removal of one terminal dot. Domain rules reject root/empty
+names, IP literals, wildcards and underscores. Unlike full CheckHyphens mode,
+internal `--` in ordinary labels remains allowed. Hosts accept bare IPs before
+hostname normalization; physical and inner families remain independent.
+
+`crates/warper-config/tests/schema.rs` locks case, Unicode/Punycode, sharp-s,
+Unicode dots, label/name lengths and duplicate-assignment fixtures. The parser
+catalog also preserves original-shaped routing defaults and redacts unknown key
+names in diagnostics. Base64 key decoding reuses locked **base64 0.22.1**;
+length/padding checks do not replace runtime cryptographic/host-trust checks.
+No normalization library types cross the configuration boundary. This profile
+applies to configured suffixes/hostnames, not DNS wire record names; service
+labels such as `_service._tcp.example.test` must remain queryable later.
+
+Revisit this profile and its compatibility fixtures when IDNA/ICU data changes
+or required names cannot be represented. Reproduction:
+`cargo test --locked -p warper-config --test schema`. Evidence belongs under
+`target/evidence/phase-1/schema-validation/`; no backend networking gate is
+closed by these parser tests.
+
 ### Host-facing role
 
 [The adapter](../../experiments/host-stack/src/adapter.rs) validates selected

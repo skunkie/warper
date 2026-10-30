@@ -13,8 +13,9 @@ desktop, independent `warperd` service, local control, and managed bundle.
 The current repository contains contracts, development infrastructure,
 experimental Rust stack probes, and the first production core static-routing
 policy, offline configuration paths, and native Unix account lookup/bounded
-YAML decoding in `warper-config`. Schema validation and the installed CLI remain
-unimplemented. There is no production networking service yet.
+YAML decoding/schema validation in `warper-config`. The installed CLI and
+runtime preflight remain unimplemented. There is no production networking
+service yet.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
@@ -84,6 +85,18 @@ and injected lookup outcomes. Linux evidence does not establish native macOS
 account lookup. This example is not an installed CLI command.
 
 ## Repository stages and CI
+
+Configuration parser tests run as part of workspace tests, or separately with:
+
+```sh
+cargo test --locked -p warper-config --test schema
+```
+
+They consume the configuration catalog, verify defaults/errors/normalization,
+and build a real core static policy from parsed settings. Platform-name checks
+for macOS are pure schema checks, not native macOS evidence. No credential or
+trust file is opened; the catalog's missing-host-trust preflight gate and CLI
+exit-code checks remain pending.
 
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored

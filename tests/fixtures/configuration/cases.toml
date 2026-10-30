@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Declarative expectations for Phase 1 parser/CLI tests. Not parser evidence.
+# Offline expectations are exercised by warper-config/tests/schema.rs.
+# CLI and runtime preflight expectations remain pending.
 # Paths are relative to this catalog. Source anchors refer to ~/projects/warp.
 version = 1
 
@@ -63,7 +64,7 @@ expected_domains = ["apps.example.test"]
 id = "unknown-field"
 path = "unknown-field.yaml"
 expected = "InvalidConfig"
-expected_field = "unexpected"
+expected_field = "$[key]"
 
 [[cases]]
 id = "missing-dns"

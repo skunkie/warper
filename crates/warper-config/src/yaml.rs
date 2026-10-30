@@ -345,7 +345,7 @@ fn is_float(text: &str) -> bool {
         && text.parse::<f64>().is_ok()
 }
 
-fn child_field(parent: &str, key: &str) -> String {
+pub(crate) fn child_field(parent: &str, key: &str) -> String {
     // Only schema vocabulary enters diagnostics. Arbitrary mapping keys can
     // themselves contain secrets, terminal escapes, or a forged field path.
     let known = matches!(
