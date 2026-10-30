@@ -137,6 +137,8 @@ cargo test --locked --workspace
 ./scripts/verify-feasibility.sh host-stack --tun
 # Independent Linux UDP sender feedback fixture (disposable namespaces):
 PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 15s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_tun_pmtu
+# Independent Linux outer UDP fragmentation fixture (disposable namespaces):
+PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 15s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_outer_fragment
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --tun-fragment-check
 ./scripts/verify-feasibility.sh host-stack --mtu-check
@@ -152,7 +154,9 @@ Tests require permission to bind loopback UDP sockets. On Linux, the harness
 also requires Bash, Git, coreutils (`timeout`), util-linux (`unshare`),
 iproute2, Python 3, and enabled unprivileged user/network/mount namespaces.
 It builds before isolation and creates disposable namespaces. Packet-only
-mode enables only loopback. The TUN scope requires an accessible
+mode enables only loopback. The independent outer-fragment fixture also needs
+permission for a raw packet socket inside its disposable network namespace.
+The TUN scope requires an accessible
 `/dev/net/tun` and permission to create an interface in the disposable user
 and network namespaces. Its nonpersistent interface is closed and its removal
 verified independently of the Rust runtime. The TUN TCP flows relay to two

@@ -277,6 +277,15 @@ It is declarative test input; no production parser/CLI has validated it yet.
 Missing SSH trust is represented as a preflight failure with a nonexistent
 trust store, rather than an offline read of the developer's trust files.
 
+## Development-Only Outer Fragment Fixture
+
+`python3 -m scripts.probe_outer_fragment` takes no arguments and is separate
+from the installed service/CLI contract. Run it only inside disposable Linux
+user, network, and mount namespaces, as shown in the development guide. It
+uses private loopback, captures kernel UDP fragments, and restores the original
+loopback MTU and link state before exit. It does not enable fragmentation for
+the experimental WireGuard transport or change YAML configuration.
+
 ## Development-Only Outer MTU Probes
 
 The experimental `wireguard-stack --outer-mtu-check`,

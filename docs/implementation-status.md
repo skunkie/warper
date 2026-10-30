@@ -445,6 +445,13 @@ damaged copy, rejects its replay, and accepts a fresh packet in both outer IP
 families. It also rejects that packet after advancing beyond the receive window
 and accepts subsequent fresh data. Other error categories and sustained hostile
 traffic remain open.
+A separate Linux loopback fixture observes a 1312-byte UDP datagram split into
+outer IP fragments at a 1280-byte MTU and received intact, followed by an empty
+datagram, in both families. It verifies fragment sizes and independent
+loopback-state restoration (`target/evidence/phase-0/outer-fragment/README.md`).
+This does not exercise WireGuard, a routed or physical path, or production
+fragmentation policy.
+
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
 strategy remain unresolved; the MTU gate returns nonzero and ADR 0002 stays proposed.
