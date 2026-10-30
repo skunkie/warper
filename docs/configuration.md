@@ -35,7 +35,7 @@ Status: implementation specification; the Rust parser/CLI do not exist yet. This
 | `ip` | string | Required | Bare unicast IPv4 address for local TUN DNS; reject CIDR syntax, unspecified, loopback, broadcast, and multicast addresses |
 | `ipv6_address` | string | Omitted | Required when `ipv6: true`, forbidden when false; bare unicast IPv6 address, not unspecified, loopback, multicast, or link-local |
 | `serve_dns` | boolean | `false` | False: split DNS for configured domains; true: forward unmatched queries through direct upstreams |
-| `mtu` | integer | `1280` | Schema range 1280–9000; the selected initial host adapter supports exactly 1280 and must reject other values before mutation |
+| `mtu` | integer | `1280` | Schema range 1280–9000; the initial host default is 1280; the experimental TCP link supports up to 1500 with downward PMTU to 1280, while UDP/reassembly remain capped at 1280; reject unsupported adapter/platform combinations before mutation |
 
 Assign tunnel addresses as local host addresses (`/32` and `/128` or the platform's equivalent), without automatically capturing an entire surrounding subnet. Explicit DNS reachability is the driver's responsibility. Reject address collisions with discovered host state during preflight.
 
@@ -350,8 +350,12 @@ The standalone no-directory form remains available for the existing routed
 checks and does not request an interruption. Both forms require a mapped user
 namespace and controlled router topology; they are not production commands.
 
-The host experiment also supports `--adapter-mtu-check`, separately from the
-installed CLI. It verifies ADR 0002's adapter sizing/reassembly policy and
-returns success only if those assertions pass. The existing `--mtu-check`
-continues to return typed unsupported-PMTU failure for the raw stack; it is a
-negative control, not the selected fixed-MTU host adapter's gate.
+The host experiment supports `--adapter-mtu-check` for the narrow fixed-sizing
+and reassembly experiments. `--mtu-check` instead exercises the actual owned
+runner's dynamic TCP PMTU path, including concurrent flows and transient seed
+retry. `--tun-pmtu-check` uses genuine private kernel-router ICMP transitions;
+its internal `--tun-pmtu-bridge` mode belongs only to that fixture. The raw stack
+negative control has the separate `--raw-mtu-check` flag and intentionally
+fails. These commands do not add installed CLI or YAML fields. The link ingress
+MTU and TCP egress path budget are separate; the supported downward PMTU floor
+is 1280, with below-range feedback failing the selected stream explicitly.

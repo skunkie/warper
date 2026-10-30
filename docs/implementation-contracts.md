@@ -556,8 +556,9 @@ Egress::recv(&mut self) -> impl Future<Output = Option<Vec<u8>>>
 
 `Channels` owns cloneable ingress, guarded packet egress, separate accepted
 TCP/UDP receivers, and the internal explicit-shutdown oneshot sender. Packet
-channel capacity is 1–64 per direction; the probe uses 64. Each queued packet
-is at most 1280 bytes. Constructor errors preserve TCP/UDP validation variants.
+channel capacity is 1–64 per direction; the probe uses 64. The default queued packet
+limit is 1280 bytes; `with_pmtu` can declare a TCP link limit through 1500,
+independently of reduced egress sizing and UDP/reassembly limits. Constructor errors preserve TCP/UDP validation variants.
 The adapters retain their independent flow/message quotas: this is not a
 combined production resource reservation manager. IDs remain scoped to their
 protocol driver, so consumers must distinguish TCP and UDP identity.
@@ -585,7 +586,8 @@ Packet admission failures increment a rejection counter; malformed input,
 unknown flows, unsupported protocols, policy misses, and quota errors do not
 terminate the runner or switch transport. Channel closure is different:
 `IngressClosed`, `EgressClosed`, or `ShutdownOwnerLost` terminates the runtime
-with `Failure { cause, report }`. The internal shutdown owner is the experiment
+with `Failure { cause, report: Box<Report>, pmtu }`. PMTU seed/rebuild failures
+retain their typed underlying I/O source in `pmtu`. The internal shutdown owner is the experiment
 supervisor, not a GUI/control client. Its loss cannot masquerade as successful
 Disconnect. Explicit shutdown is checked every bounded turn. Adapter/clock
 failures retain their typed cause. Counters saturate and retain no per-run
@@ -712,8 +714,10 @@ protocol errors, and it does not test sustained hostile traffic.
 
 ## 11. Experimental MTU and ICMP Boundary
 
-Status: fixed-envelope checks and bounded pre-admission fragment input exist;
-dynamic PMTU is unsupported and `host-stack --mtu-check` still fails.
+Status: raw fixed-envelope checks and bounded pre-admission fragment input.
+`host-stack --raw-mtu-check` still fails for the unadapted stack. Section 27
+adds actual runtime downward PMTU handling and genuine routed TUN evidence;
+`--mtu-check` and `--tun-pmtu-check` are required passing adapter gates.
 `mtu_probe.rs` drives actual smoltcp TCP sockets with a controlled clock.
 The shared `Peer::with_mtu` constructor accepts only 1280–1500 bytes for
 these experiments, preserving the default 1280 and bounded packet counts.
@@ -1070,8 +1074,9 @@ all subsequent packets within 1280. Existing raw ICMP behavior remains a
 negative control. Production feedback validation/attribution, per-path state and expiry,
 UDP errors for queued output, smaller physical paths, and production WireGuard
 integration remain separate work. The raw-stack MTU negative control still
-returns unsupported; ADR 0002 accepts a fixed host MTU and the demonstrated
-stack roles, not general production PMTU integration.
+returns unsupported. ADR 0002 accepts the demonstrated stack roles, with the
+host runtime's bounded downward PMTU path in section 27; general production
+physical-egress integration remains separate.
 
 ## 18. Experimental Matched TCP PMTU Feedback
 
@@ -1108,7 +1113,8 @@ Both 1280 and 1400 advertisements are exercised in each family; an advertisement
 cannot increase a device already configured at a smaller MTU.
 Per-path caches/expiry, changing routes, concurrent flows, asymmetric/outer
 paths, below-minimum handling, production entropy/state transfer and feedback from WireGuard's outer path
-are still open. The full MTU gate remains unsupported.
+remain production requirements. These one-operation experiments cannot alone
+close PMTU acceptance; section 27 supplies the required host-runtime gate.
 
 Sources: shared `experiments/pmtu_feedback.rs`, with validation tests under
 `experiments/host-stack/src/pmtu_feedback_tests.rs`. Shared
@@ -1563,3 +1569,54 @@ This covers all inner/outer IPv4 and IPv6 family combinations on private virtual
 links. It does not establish behavior for a physical NIC,
 production route repair, host TUN interception, macOS, or concurrent network
 changes. An actual OS network error was not observed in the passing runs.
+
+## 27. Host Runtime PMTU Feedback
+
+The host runtime must consume validated IPv4 fragmentation-needed and IPv6
+Packet Too Big feedback, rather than relying on a fixed link MTU. The initial
+executable scope supports downward TCP egress adjustments from 1500 to 1280.
+The link ingress MTU remains unchanged; UDP and fragment admission retain their
+separate documented limits. Lower MTUs must fail the selected flow explicitly.
+No ICMP report can increase a budget or select a different backend.
+
+`runtime::Runtime::with_pmtu` takes an explicit link MTU, a reporter-selection
+function over admitted `FlowMetadata`, and a fallible nonblocking seed source.
+The owner selects the reporter before tracking output; it is not learned from
+an untrusted report. The local TUN fixture selects the original kernel client's
+address. This is scoped reporter policy, not general Internet router trust.
+
+Each live flow retains at most sixteen emitted-segment identities, for three
+seconds each, without retaining application payload. A full history refuses
+new sizing hints until an accepted ACK or expiry frees capacity; it never
+releases flow/routing ownership. ACK retirement observes each input separately
+and requires the matching socket's send queue to advance. Admission
+records a unique flow ID and fixed tuple/backend; retirement destroys its
+feedback history and pending reduction. Reports must match the pinned reporter,
+IP identity/length, TCP ports/sequence and checksums. Unsupported sizes terminate
+only the selected flow with an unsupported-operation error. Malformed, stale,
+wrong-reporter and unrelated reports cannot mutate sizing or renew ownership.
+
+Validated reductions retain the original reservation expiry. The runner retries
+transient entropy unavailability and busy output at a minimum 10 ms interval,
+including without new input. Expired/cancelled/retired work is discarded. A
+permanent seed/rebuild failure remains typed and retains its underlying cause.
+Fresh entropy is prepared before synchronous replacement. A separate temporary
+device supplies the new egress capabilities; addresses, routes and any-IP policy
+are copied while socket sets, input queues and flow permits remain owned.
+Replacement waits for the adapter output queue to drain and never discards
+queued application bytes or asks an application to replay a write.
+
+The initial shared TCP interface conservatively uses the minimum validated
+budget across its live paths. This may reduce unrelated TCP throughput but
+cannot increase another path's packet size. UDP has its own adapter/budget.
+Per-path optimization, upward probing and sub-1280 support remain explicit
+capability extensions; they are not inferred from this downward discovery.
+The kernel fixture places Unix sockets in a private tmpfs state directory under
+the ignored evidence run; a real directory in that tree is required before TUN
+creation. The fixture independently unmounts it on success/failure, and namespace
+destruction removes the private mount if the harness is killed.
+
+The MTU gate requires actual runtime and kernel-TUN exchanges with multiple
+flows, exact bytes/FIN, pending output, failed seed retry, cancellation/expiry,
+and independent cleanup. The raw stack failure stays a separate negative
+control and cannot substitute for this gate.

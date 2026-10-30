@@ -508,7 +508,7 @@ async fn queued_shutdown_or_owner_loss_precedes_input_and_discards_queued_ingres
         } else {
             let failure = runtime.run().await.unwrap_err();
             assert_eq!(failure.cause, Error::ShutdownOwnerLost);
-            failure.report
+            *failure.report
         };
         assert_eq!(report.turns, 0);
         assert_eq!(report.admitted, 0);
@@ -578,4 +578,99 @@ async fn output_batch_limit_schedules_remaining_work_without_waiting_for_new_inp
     runtime.drain_output();
     assert_eq!(runtime.report.emitted_udp, 9);
     assert!(!runtime.udp.has_packet());
+}
+
+#[tokio::test(start_paused = true)]
+async fn pmtu_seed_retry_wakes_without_new_input_and_preserves_link_ingress() {
+    use smoltcp::socket::tcp;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::AsyncWriteExt;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let source_calls = calls.clone();
+    let (runtime, mut channels) = Runtime::with_pmtu(
+        adapter::Limits::default(),
+        udp_adapter::Limits::default(),
+        crate::accepted_probe::select_backend,
+        64,
+        adapter::PmtuConfig {
+            link_mtu: 1500,
+            reporter: |metadata| Some(metadata.source.ip()),
+            seed: Box::new(move || {
+                if source_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(std::io::ErrorKind::WouldBlock.into())
+                } else {
+                    Ok(4)
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let runner = tokio::spawn(runtime.run());
+    let source = crate::accepted_probe::source(false, 2).unwrap();
+    let destination =
+        std::net::SocketAddr::new(crate::accepted_probe::source(false, 91).unwrap().ip(), 9100);
+    let mut peer = crate::packet_peer::Peer::with_mtu(source.ip(), source.port(), 1500).unwrap();
+    peer.sockets
+        .get_mut::<tcp::Socket>(peer.tcp)
+        .connect(peer.interface.context(), destination, source)
+        .unwrap();
+    let mut flow = None;
+    let mut quote = None;
+    for step in 0..1000 {
+        peer.poll(step);
+        while let Some(packet) = peer.device.outgoing.pop_front() {
+            channels.ingress.try_inject(&packet).unwrap();
+        }
+        if let Ok(mut accepted) = channels.tcp.try_recv() {
+            accepted.stream.write_all(&[0x61; 8192]).await.unwrap();
+            flow = Some(accepted);
+        }
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        while let Ok(packet) = channels.packets.receiver_try_recv() {
+            if packet.len() > 1400 {
+                quote = Some(packet);
+                break;
+            }
+            peer.device.inject(packet).unwrap();
+        }
+        if quote.is_some() {
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    let quote = quote.expect("controlled live runtime output above path MTU");
+    let report = crate::pmtu_fixture::too_big(&quote, false, 1280).unwrap();
+    channels.ingress.try_inject(&report).unwrap();
+    // No packet, application operation or output receive follows this handoff.
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    tokio::time::advance(Duration::from_millis(9)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "retry must not spin");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the retry timer must wake an otherwise idle runner"
+    );
+    channels.shutdown.send(()).unwrap();
+    let report = runner.await.unwrap().unwrap();
+    assert_eq!(report.pmtu_reductions, 1);
+    assert!(report.timer_wakes >= 1);
+    assert_eq!(report.pmtu_deferred, 1);
+    assert!(channels.packets.recv().await.is_none());
+    drop(flow);
 }

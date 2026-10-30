@@ -66,25 +66,45 @@ packet channels. Its caller owns and joins the runtime and backend handlers;
 the adapter does not create hidden workers. TCP and UDP output share bounded
 turn budgets with rotating UDP priority.
 
-The selected **host MTU is fixed at 1280** for the first production slice,
-as already specified by plan section 4.1. Its largest unfragmented UDP
-payload is 1252 bytes for IPv4 or 1232 for IPv6. Bounded pre-admission
-reassembly accepts supported fragments whose reassembled IP packet fits
-1280 bytes. Overlaps, expired assemblies, excess retained state and larger
-reassembled datagrams are rejected. There is no outgoing inner fragmentation
-or general IPv6 extension-header support. Configuration values outside the
-implemented adapter's range must produce an unsupported-capability diagnostic
-before host mutation; the schema's broader syntactic range is not a promise
-that every adapter supports it.
+The initial host link MTU defaults to 1280; the experimental TCP runner also
+accepts a declared link MTU up to 1500. TCP egress PMTU is separate from link
+ingress sizing. UDP retains its own 1280-byte packet limit (1252 IPv4 or 1232
+IPv6 payload bytes), and bounded fragment reassembly retains its separate
+1280-byte ceiling. Larger datagrams, outgoing inner fragmentation and general
+IPv6 extension headers remain unsupported. Broader schema ranges do not bypass
+adapter/platform capability validation before mutation.
 
-**Raw smoltcp ignores TCP too-big feedback.** The failing `--mtu-check`
-remains a negative control, not a passing PMTU implementation. The selected
-fixed host interface needs no runtime interface rebuild. The separate
-`--adapter-mtu-check` verifies fixed segmentation, ICMP port-unreachable,
-bounded input reassembly, and the experimentally demonstrated retained-socket
-resize mitigation. Rebuild/feedback experiments do not authorize automatic
-host MTU changes in production. Host configuration, route sizing, and any
-later MTU extension must honor this limit explicitly.
+**Raw smoltcp ignores TCP too-big feedback.** `--raw-mtu-check` preserves that
+failing negative control. The selected adapter now handles downward discovery
+in the actual owned runner: emitted segment identities are retained per flow,
+ICMP matches a preselected reporter and the outstanding tuple/sequence, accepted
+ACKs retire reservations, and valid reductions replace only cached TCP egress
+capabilities. The physical link device, ingress MTU, socket set, application
+queues and flow/backend identities stay intact. A shared interface uses the
+minimum validated TCP budget, conservatively reducing other TCP paths too.
+
+The runner independently retries transient seed/output unavailability at 10 ms
+minimum intervals, preserves the original expiry, and rejects retired/stale or
+unrelated reports. Permanent errors preserve their cause through joined runtime
+shutdown. Fresh nonblocking OS entropy is used by the Linux TUN owner. No
+application write is replayed. MTUs below 1280 explicitly terminate the selected
+flow with an unsupported-operation error; upward probing is not implemented.
+
+`--mtu-check` now verifies actual wake-driven runtime adjustment for concurrent
+streams with 1280/1400 path budgets and a transient seed failure. The separate
+`--tun-pmtu-check` uses an independent kernel TCP client and forwarding router:
+after both flows transfer 16 KiB, the router lowers its route MTU from 1400 to
+1280, producing genuine ICMP while the same streams complete exact 64 KiB
+requests, responses and FIN. Both IP families run. Routes, TUN/veth interfaces
+and the namespace anchor are private and independently retired. Both scopes are
+required by the default host gate. `--adapter-mtu-check` remains a narrower
+fixed-sizing/reassembly experiment and cannot substitute for either scope.
+
+The [runtime PMTU contract](../implementation-contracts.md#27-host-runtime-pmtu-feedback)
+records API, memory, cancellation, ACK, reporter and retry obligations. Native
+macOS entropy/networking, arbitrary Internet router trust, upward discovery,
+sub-1280 support and per-path throughput optimization remain separate explicit
+capabilities; they are not inferred from these controlled Linux results.
 
 ### Active WireGuard role
 

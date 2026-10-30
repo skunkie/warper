@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # Implementation Status
 
-Phase 0 is complete for Linux. [ADR 0002](adr/0002-network-stack.md)
+Phase 0 Linux role evidence includes integrated host-runtime PMTU; the
+required expanded host gate also runs genuine router transitions. [ADR 0002](adr/0002-network-stack.md)
 selects direct smoltcp role adapters and BoringTun within their declared
 limits. Both full role gates have real controlled-peer and independent
 cleanup evidence. This does not establish a production networking service
@@ -18,7 +19,7 @@ CIDR policy; the parser, protocol backends and service remain unimplemented.
 | Phase | Status | Evidence / next unmet gate |
 | --- | --- | --- |
 | Development infrastructure | Available | `scripts/check.sh`: licensing, actionlint with ShellCheck, composite validation, Python harness tests, Rust formatting/Clippy/rustdoc/tests/release and dependency policy |
-| 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; final runs, source snapshots, limits and historical failures are indexed at `target/evidence/phase-0/closure/README.md` |
+| 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
 | 1: Headless Linux service slice | In progress | `crates/warper-core/` implements immutable bounded IPv4/IPv6 longest-prefix policy and shared backend identity. Next: configuration parser/CLI fixture registration, authenticated control, durable Linux driver/journal and actual SOCKS5/TUN service lifecycle |
 | 2: Linux DNS and routing | Not started | Production DNS parsing/transport, complete service-binding dependency gates, response handoff, route leases, retained-state admission and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
@@ -38,18 +39,20 @@ belong to the ignored evidence package, rather than this durable ledger.
 | Minimal workspace | Exact Rust 1.99.1/2024 workspace with tracked lockfile, shared lints and stage-aware CI. Both role gates run the full repository check script before networking. |
 | Configuration/reference baseline | Canonical examples and original-shaped/migration/capability fixtures under `examples/` and `tests/fixtures/configuration/`, with documented intentional fixes. Executable production parser/CLI registration remains Phase 1. |
 | Host-facing interception | Packet probes plus isolated Linux kernel TUN TCP/UDP in both families, two distinct controlled backend listeners, original tuples, concurrent 64 KiB transfers, response after FIN, empty/unequal/maximum datagrams and bounded queues. |
-| Host failure and sizing | TUN adapter SIGKILL followed by fresh traffic, independent bridge joins/interface removal, supported kernel IPv4 fragments, bounded input reassembly, fixed 1280-byte segmentation and ICMP port-unreachable. The raw-stack PMTU failure remains preserved. |
+| Host failure and sizing | TUN adapter SIGKILL followed by fresh traffic, independent bridge joins/interface removal, supported kernel IPv4 fragments, bounded input reassembly, fixed 1280-byte segmentation and ICMP port-unreachable. The raw-stack PMTU failure remains a separate negative control; runtime and routed TUN PMTU are required gate scopes. |
 | Active tunnel role | Actual smoltcp TCP/UDP through BoringTun and an independent Linux kernel WireGuard peer, both inner families and outer families, handshake-loss retry, completed rekey, sustained loss/recovery, exact FIN/bytes, no lost-UDP application replay and independently verified cleanup. |
-| MTU feasibility | Local/kernel/routed MTU scopes demonstrate retained TCP adaptation in all four inner/outer combinations without repeating application writes. Queue-busy and ownership tests retain the original reservation. General production path attribution is not inferred. |
+| MTU feasibility | Local/kernel/routed MTU scopes demonstrate retained TCP adaptation in all four inner/outer combinations without repeating application writes. Queue-busy and ownership tests retain the original reservation. The host runner additionally retains two real kernel TCP flows across genuine 1500→1400→1280 router feedback, with entropy retry and unchanged ingress. General production path attribution is not inferred. |
 | Decision and initial interfaces | Accepted ADR 0002; source-linked section 6 of `implementation-contracts.md`; executable route-driver/failure/task/DNS ownership models, with bounded deterministic state and controlled time. |
-| Evidence package | Default gate logs and nested run directories, `target/evidence/phase-0/README.md`, closure index/source snapshot, coverage review and controlled TUN workload measurements. Earlier failed/limited runs remain archived. |
+| Evidence package | Default gate logs and nested run directories, `target/evidence/phase-0/README.md`, closure and runtime-PMTU indexes/source snapshots, coverage review and controlled TUN workload measurements. Earlier failed/limited runs remain archived. |
 
 ## Retained Constraints and Later Gates
 
-- The initial host MTU is exactly 1280. Raw smoltcp still ignores dynamic TCP
-  too-big feedback; `host-stack --mtu-check` intentionally fails with typed
-  unsupported PMTU. `--adapter-mtu-check` tests the explicitly selected adapter
-  policy. It does not turn dynamic host PMTU into a supported capability.
+- The default host link MTU is 1280. The experimental TCP runner supports link
+  MTUs through 1500 and actual downward PMTU discovery to 1280. Raw smoltcp still
+  ignores feedback (`--raw-mtu-check`), while `--mtu-check` and
+  `--tun-pmtu-check` must pass actual adapter/runtime and kernel-router evidence.
+  Below-range feedback explicitly fails the selected flow. Upward probing and
+  per-path throughput optimization remain capability extensions.
 - Inner reassembly is bounded to 1280-byte packets with supported plain IP
   headers. Larger datagrams, outgoing inner fragmentation and general IPv6
   extension headers remain unsupported. Unsupported operations never select

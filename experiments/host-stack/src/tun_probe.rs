@@ -25,14 +25,49 @@ const TRANSFER: usize = 65536;
 const RESPONSE: &[u8] = b"tun-fixture-response-after-fin";
 
 pub async fn run(local: &str, remote: &str) -> Result<()> {
+    run_inner(local, remote, false).await
+}
+
+pub async fn run_pmtu(local: &str, remote: &str) -> Result<()> {
+    run_inner(local, remote, true).await
+}
+
+async fn run_inner(local: &str, remote: &str, pmtu: bool) -> Result<()> {
     let socket = UnixDatagram::bind(local)?;
     socket.connect(remote)?;
-    let (runtime, mut channels) = Runtime::new(
-        adapter::Limits::default(),
-        udp_adapter::Limits::default(),
-        crate::udp_probe::select_backend,
-        64,
-    )?;
+    let (runtime, mut channels) = if pmtu {
+        let mut unavailable = true;
+        Runtime::with_pmtu(
+            adapter::Limits::default(),
+            udp_adapter::Limits::default(),
+            crate::udp_probe::select_backend,
+            64,
+            adapter::PmtuConfig {
+                link_mtu: 1500,
+                reporter: |metadata| {
+                    Some(if metadata.source.is_ipv4() {
+                        std::net::Ipv4Addr::new(10, 66, 66, 254).into()
+                    } else {
+                        std::net::Ipv6Addr::new(0xfd66, 0x66, 0, 0, 0, 0, 0, 0xfe).into()
+                    })
+                },
+                seed: Box::new(move || {
+                    if unavailable {
+                        unavailable = false;
+                        return Err(std::io::ErrorKind::WouldBlock.into());
+                    }
+                    crate::mtu_reduction::prepare_seed()
+                }),
+            },
+        )?
+    } else {
+        Runtime::new(
+            adapter::Limits::default(),
+            udp_adapter::Limits::default(),
+            crate::udp_probe::select_backend,
+            64,
+        )?
+    };
     let first_backend = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let second_backend = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let backends = [first_backend.local_addr()?, second_backend.local_addr()?];
@@ -46,7 +81,7 @@ pub async fn run(local: &str, remote: &str) -> Result<()> {
     handlers.spawn(serve_backend(second_backend, 0x62));
     let mut runner_finished = false;
     let outcome = tokio::time::timeout(Duration::from_secs(15), async {
-        let mut packet = [0; MTU + 1];
+        let mut packet = [0; 1501];
         loop {
             tokio::select! {
                 result = &mut runner => {
@@ -65,7 +100,13 @@ pub async fn run(local: &str, remote: &str) -> Result<()> {
                 }
                 accepted = channels.tcp.recv() => {
                     let flow = accepted.context("TCP acceptance closed")?;
-                    validate_metadata(flow.metadata.source, flow.metadata.destination, flow.metadata.backend, false)?;
+                    let mut source = flow.metadata.source;
+                    // The second MTU case uses fresh source ports rather than
+                    // depending on the kernel's TCP TIME-WAIT reuse policy.
+                    if pmtu && matches!(source.port(), 40101 | 40102) {
+                        source.set_port(source.port() - 100);
+                    }
+                    validate_metadata(source, flow.metadata.destination, flow.metadata.backend, false)?;
                     let backend = backend_address(flow.metadata.backend, &backends)?;
                     handlers.spawn(handle_tcp(flow, backend));
                 }
@@ -85,9 +126,10 @@ pub async fn run(local: &str, remote: &str) -> Result<()> {
 
     let _shutdown_delivered = channels.shutdown.send(()).is_ok();
     let mut cleanup = Vec::new();
+    let mut report = None;
     if !runner_finished {
         match tokio::time::timeout(Duration::from_secs(1), &mut runner).await {
-            Ok(Ok(Ok(_))) => {}
+            Ok(Ok(Ok(result))) => report = Some(result),
             Ok(result) => cleanup.push(format!("runtime shutdown failed: {result:?}")),
             Err(_) => {
                 runner.abort();
@@ -113,6 +155,17 @@ pub async fn run(local: &str, remote: &str) -> Result<()> {
         return Err(error.context(format!("additional cleanup failures: {cleanup:?}")));
     }
     ensure!(cleanup.is_empty(), "cleanup failures: {cleanup:?}");
+    if pmtu {
+        let report = report.context("missing TUN PMTU shutdown report")?;
+        ensure!(
+            report.pmtu_feedback > 0 && report.pmtu_reductions > 0 && report.pmtu_deferred > 0,
+            "TUN runtime did not discover/retry/reduce its path: {report:?}"
+        );
+        println!(
+            "{{\"feedback\":{},\"reductions\":{},\"deferred\":{}}}",
+            report.pmtu_feedback, report.pmtu_reductions, report.pmtu_deferred
+        );
+    }
     Ok(())
 }
 

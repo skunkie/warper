@@ -88,15 +88,15 @@ def udp_fragment(packet, ipv6):
     return destination, identity, field & 0x1FFF, bool(field & 0x2000)
 
 
-async def from_tun(fd, bridge, ipv6=False, boundary=None, fragments=None, fragment_headers=None):
+async def from_tun(fd, bridge, ipv6=False, boundary=None, fragments=None, fragment_headers=None, mtu=MTU):
     loop = asyncio.get_running_loop()
     while True:
         await ready(fd)
         try:
-            packet = os.read(fd, MTU + 1)
+            packet = os.read(fd, mtu + 1)
         except BlockingIOError:
             continue
-        if not packet or len(packet) > MTU:
+        if not packet or len(packet) > mtu:
             raise RuntimeError("invalid TUN packet length")
         if boundary is not None:
             flow = boundary_udp_flow(packet, ipv6)
@@ -124,11 +124,11 @@ async def from_tun(fd, bridge, ipv6=False, boundary=None, fragments=None, fragme
         await loop.sock_sendall(bridge, packet)
 
 
-async def to_tun(fd, bridge, ipv6=False, boundary=None):
+async def to_tun(fd, bridge, ipv6=False, boundary=None, mtu=MTU):
     loop = asyncio.get_running_loop()
     while True:
-        packet = await loop.sock_recv(bridge, MTU + 1)
-        if not packet or len(packet) > MTU:
+        packet = await loop.sock_recv(bridge, mtu + 1)
+        if not packet or len(packet) > mtu:
             raise RuntimeError("invalid adapter packet length")
         while True:
             try:
@@ -339,6 +339,10 @@ async def run(executable, crash_after_udp=False, fragmented_ipv4=False):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[2] == "--pmtu":
+        from tun_pmtu_runtime import run as run_pmtu
+        asyncio.run(run_pmtu(sys.argv[1], sys.argv[3]))
+        raise SystemExit(0)
     if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("--crash-after-udp", "--fragmented-ipv4")):
         raise SystemExit("usage: tun_feasibility.py HOST_STACK_EXECUTABLE [--crash-after-udp|--fragmented-ipv4]")
     asyncio.run(run(sys.argv[1], len(sys.argv) == 3 and sys.argv[2] == "--crash-after-udp",

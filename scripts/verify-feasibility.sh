@@ -7,13 +7,13 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--tun-crash-check|--tun-fragment-check|--kernel-peer|--mtu-check|--adapter-mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--tun-crash-check|--tun-fragment-check|--kernel-peer|--mtu-check|--raw-mtu-check|--tun-pmtu-check|--adapter-mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --tun-crash-check && "$scope" != --tun-fragment-check && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --adapter-mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --tun-crash-check && "$scope" != --tun-fragment-check && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --raw-mtu-check && "$scope" != --tun-pmtu-check && "$scope" != --adapter-mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
@@ -21,7 +21,7 @@ if [[ "$scope" == --kernel-peer && "$probe" != wireguard-stack ]]; then
     echo "--kernel-peer requires wireguard-stack" >&2
     exit 2
 fi
-if [[ ( "$scope" == --mtu-check || "$scope" == --adapter-mtu-check || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ) && "$probe" != host-stack ]]; then
+if [[ ( "$scope" == --mtu-check || "$scope" == --raw-mtu-check || "$scope" == --tun-pmtu-check || "$scope" == --adapter-mtu-check || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ) && "$probe" != host-stack ]]; then
     echo "$scope requires host-stack" >&2
     exit 2
 fi
@@ -61,7 +61,7 @@ if [[ "$scope" == gate ]]; then
         exit "$status"
     fi
     if [[ "$probe" == host-stack ]]; then
-        scopes=(--packet-only --tun --tun-crash-check --tun-fragment-check --adapter-mtu-check)
+        scopes=(--packet-only --tun --tun-crash-check --tun-fragment-check --adapter-mtu-check --mtu-check --tun-pmtu-check)
     else
         scopes=(--packet-only --kernel-peer --kernel-mtu-check --router-mtu-check)
     fi
@@ -82,7 +82,17 @@ fi
 
 probe_arguments=()
 isolation_mode=packet
-if [[ "$scope" == --mtu-check || "$scope" == --adapter-mtu-check ]]; then probe_arguments+=("$scope"); fi
+if [[ "$scope" == --mtu-check || "$scope" == --raw-mtu-check || "$scope" == --adapter-mtu-check ]]; then probe_arguments+=("$scope"); fi
+if [[ "$scope" == --tun-pmtu-check ]]; then
+    isolation_mode=tun
+    probe_arguments+=(--pmtu)
+    for tool in nsenter sysctl sleep mount umount; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "Required TUN PMTU fixture tool is missing: $tool" >&2
+            exit 1
+        fi
+    done
+fi
 if [[ "$scope" == --tun ]]; then isolation_mode=tun; fi
 if [[ "$scope" == --tun-crash-check ]]; then
     isolation_mode=tun
@@ -115,6 +125,8 @@ if [[ "$scope" == --router-mtu-check ]]; then
     done
 fi
 timeout_seconds=20
+if [[ "$scope" == --mtu-check ]]; then timeout_seconds=40; fi
+if [[ "$scope" == --tun-pmtu-check ]]; then timeout_seconds=75; fi
 if [[ "$scope" == --tun ]]; then timeout_seconds=35; fi
 if [[ "$scope" == --tun-crash-check ]]; then timeout_seconds=60; fi
 if [[ "$scope" == --tun-fragment-check ]]; then timeout_seconds=50; fi
@@ -145,6 +157,10 @@ evidence_root="$repository_root/target/evidence/phase-0"
 mkdir -p "$evidence_root"
 run_directory=$(mktemp -d "$evidence_root/$probe.XXXXXXXX")
 echo "Evidence: $run_directory"
+if [[ "$scope" == --tun-pmtu-check ]]; then
+    mkdir "$run_directory/state"
+    probe_arguments+=("$run_directory/state")
+fi
 {
     echo "probe=$probe"
     echo "scope=$scope"
@@ -176,14 +192,15 @@ timeout --signal=TERM --kill-after=2s "${timeout_seconds}s" \
 cat "$run_directory/probe.log"
 {
     echo "probe_exit=$status"
-    if [[ "$scope" == --mtu-check || "$scope" == --adapter-mtu-check ]]; then echo "mtu_probe_exit=$status"; fi
+    if [[ "$scope" == --mtu-check || "$scope" == --raw-mtu-check || "$scope" == --adapter-mtu-check ]]; then echo "mtu_probe_exit=$status"; fi
     if [[ "$scope" == --outer-mtu-check ]]; then
         echo "outer_local_mtu_probe_exit=$status"
         echo "NOT RUN remote router MTU discovery or concurrent physical-path TCP sizing"
     fi
     echo "cleanup=namespace child reaped by unshare; no persistent network state allocated"
-    if [[ "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ]]; then
+    if [[ "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check || "$scope" == --tun-pmtu-check ]]; then
         echo "kernel_tun_probe_exit=$status"
+        if [[ "$scope" == --tun-pmtu-check ]]; then echo "tun_runtime_pmtu_exit=$status"; fi
         if [[ "$scope" == --tun-crash-check ]]; then echo "tun_crash_probe_exit=$status"; fi
         if [[ "$scope" == --tun-fragment-check ]]; then echo "tun_fragment_probe_exit=$status"; fi
         echo "NOT RUN native macOS utun or distinct SSH/SOCKS protocol backend instances"

@@ -24,7 +24,7 @@ pub const PACKET_CAPACITY: usize = 64;
 pub const BYTE_CAPACITY: usize = 8192;
 
 pub struct PacketDevice {
-    incoming: VecDeque<Vec<u8>>,
+    pub(crate) incoming: VecDeque<Vec<u8>>,
     pub outgoing: VecDeque<Vec<u8>>,
     mtu: usize,
 }

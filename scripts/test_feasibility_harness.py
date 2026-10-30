@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0, address_exit=0, route_mismatch=False, mismatch_after=0, check_exit=0, adapter_exit=0):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0, address_exit=0, route_mismatch=False, mismatch_after=0, check_exit=0, adapter_exit=0, mtu_exit=0, raw_exit=1, tun_pmtu_exit=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -24,7 +24,7 @@ class FeasibilityHarnessTests(unittest.TestCase):
         shutil.copyfile(Path(__file__).with_name("run-router-mtu-isolated.sh"), root / "scripts/run-router-mtu-isolated.sh")
         shutil.copyfile(Path(__file__).with_name("verify_router_paths.py"), root / "scripts/verify_router_paths.py")
         (root / "scripts/tun_feasibility.py").write_text(
-            f'import sys\nprint("fixture-tun", *sys.argv[1:])\nsys.exit({probe_exit})\n'
+            f'import sys\nprint("fixture-tun", *sys.argv[1:])\nsys.exit({tun_pmtu_exit} if "--pmtu" in sys.argv else {probe_exit})\n'
         )
         (root / "docs").mkdir()
         (root / "experiments").mkdir()
@@ -60,6 +60,8 @@ class FeasibilityHarnessTests(unittest.TestCase):
 set -eu
 echo fixture-probe "$@"
 if [[ "${{1:-}}" == --adapter-mtu-check ]]; then exit {adapter_exit}; fi
+if [[ "${{1:-}}" == --mtu-check ]]; then exit {mtu_exit}; fi
+if [[ "${{1:-}}" == --raw-mtu-check ]]; then exit {raw_exit}; fi
 if [[ "${{1:-}}" == --router-mtu-peer ]]; then
     touch "$2/ready"
     while [[ ! -f "$2/stop" ]]; do sleep 0.01; done
@@ -144,8 +146,8 @@ if sys.argv[0].endswith("verify_router_paths.py"):
         self.assertIn("NOT RUN kernel TUN/utun", outcome)
         self.assertTrue((evidence / "Cargo.lock").is_file())
 
-    def test_mtu_scope_reaches_host_probe_and_preserves_unsupported_exit(self):
-        result, evidence = self.run_harness(probe="host-stack", scope="--mtu-check", probe_exit=1)
+    def test_mtu_scope_reaches_runtime_probe_and_preserves_failure(self):
+        result, evidence = self.run_harness(probe="host-stack", scope="--mtu-check", mtu_exit=1)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("fixture-probe --mtu-check", (evidence / "probe.log").read_text())
         self.assertIn("mtu_probe_exit=1", (evidence / "result.txt").read_text())
@@ -398,11 +400,29 @@ if sys.argv[0].endswith("verify_router_paths.py"):
         result, evidence = self.run_harness(probe="host-stack", scope="")
         self.assertEqual(result.returncode, 0, result.stderr)
         outcome = (evidence / "result.txt").read_text()
-        for scope in ["packet-only", "tun", "tun-crash-check", "tun-fragment-check", "adapter-mtu-check"]:
+        for scope in ["packet-only", "tun", "tun-crash-check", "tun-fragment-check", "adapter-mtu-check", "mtu-check", "tun-pmtu-check"]:
             self.assertIn(f"--{scope} exit=0", outcome)
             self.assertTrue((evidence / f"{scope}.log").is_file())
         self.assertIn("PASS Linux host-stack role gate", outcome)
         self.assertIn("native macOS", outcome)
+
+    def test_host_gate_requires_dynamic_runtime_and_kernel_pmtu_success(self):
+        for failure in ({"mtu_exit": 7}, {"tun_pmtu_exit": 8}):
+            result, evidence = self.run_harness(probe="host-stack", scope="", **failure)
+            self.assertEqual(result.returncode, next(iter(failure.values())), result.stderr)
+            outcome = (evidence / "result.txt").read_text()
+            self.assertNotIn("PASS Linux", outcome)
+            self.assertIn("--adapter-mtu-check exit=0", outcome)
+
+    def test_raw_negative_control_is_separate_from_dynamic_gate(self):
+        result, evidence = self.run_harness(probe="host-stack", scope="--raw-mtu-check")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("--raw-mtu-check", (evidence / "probe.log").read_text())
+        self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+        result, evidence = self.run_harness(probe="host-stack", scope="--tun-pmtu-check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--pmtu", (evidence / "probe.log").read_text())
+        self.assertIn("tun_runtime_pmtu_exit=0", (evidence / "result.txt").read_text())
 
     def test_wireguard_gate_requires_rekey_and_independent_mtu_scopes(self):
         result, evidence = self.run_harness(scope="")
@@ -413,7 +433,7 @@ if sys.argv[0].endswith("verify_router_paths.py"):
         self.assertIn("--kernel-peer --rekey", (evidence / "kernel-peer.log").read_text())
         self.assertIn("PASS Linux wireguard-stack role gate", outcome)
 
-    def test_role_gate_stops_on_workspace_or_final_adapter_failure(self):
+    def test_role_gate_stops_on_workspace_or_adapter_failure(self):
         result, evidence = self.run_harness(probe="host-stack", scope="", check_exit=9)
         self.assertEqual(result.returncode, 9, result.stderr)
         self.assertEqual((evidence / "result.txt").read_text(), "workspace_checks_exit=9\n")

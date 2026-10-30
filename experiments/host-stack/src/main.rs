@@ -26,6 +26,7 @@ mod reassembly;
 #[cfg(test)]
 mod reassembly_tests;
 mod runtime;
+mod runtime_pmtu;
 mod runtime_probe;
 mod shared_mtu;
 #[cfg(target_os = "linux")]
@@ -52,10 +53,23 @@ const RESPONSE: &[u8] = b"synthetic-response-after-fin";
 async fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments == ["--mtu-check"] {
-        return mtu_probe::run_probe();
+        mtu_probe::run_adapter_probe()?;
+        for ipv6 in [false, true] {
+            for mtu in [1280, 1400] {
+                runtime_pmtu::run(ipv6, mtu).await?;
+            }
+        }
+        return Ok(());
+    }
+    if arguments == ["--raw-mtu-check"] {
+        return mtu_probe::run_raw_probe();
     }
     if arguments == ["--adapter-mtu-check"] {
         return mtu_probe::run_adapter_probe();
+    }
+    #[cfg(target_os = "linux")]
+    if arguments.len() == 3 && arguments[0] == "--tun-pmtu-bridge" {
+        return tun_probe::run_pmtu(&arguments[1], &arguments[2]).await;
     }
     #[cfg(target_os = "linux")]
     if arguments.len() == 3 && arguments[0] == "--tun-bridge" {
@@ -94,7 +108,7 @@ async fn main() -> Result<()> {
     }
     ensure!(
         arguments == ["--wrapper"],
-        "usage: host-stack [--wrapper|--mtu-check|--adapter-mtu-check]"
+        "usage: host-stack [--wrapper|--mtu-check|--raw-mtu-check|--adapter-mtu-check]"
     );
     let mut failures = 0;
     for ipv6 in [false, true] {

@@ -38,6 +38,7 @@ pub enum Error {
     EgressClosed,
     ShutdownOwnerLost,
     InvalidClock,
+    Pmtu,
     Tcp(AdmissionError),
     Udp(udp_adapter::Error),
     Reassembly(reassembly::Error),
@@ -65,12 +66,18 @@ pub struct Report {
     pub discarded_packets: u64,
     pub reassembled: u64,
     pub fragment_timeouts: u64,
+    pub pmtu_feedback: u64,
+    pub pmtu_reductions: u64,
+    pub pmtu_deferred: u64,
+    pub pmtu_expired: u64,
+    pub pmtu_unsupported: u64,
 }
 
 #[derive(Debug)]
 pub struct Failure {
     pub cause: Error,
-    pub report: Report,
+    pub report: Box<Report>,
+    pub pmtu: Option<adapter::PmtuError>,
 }
 
 impl fmt::Display for Failure {
@@ -83,16 +90,23 @@ impl fmt::Display for Failure {
     }
 }
 
-impl std::error::Error for Failure {}
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.pmtu
+            .as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+    }
+}
 
 #[derive(Clone)]
 pub struct Ingress {
     sender: mpsc::Sender<Vec<u8>>,
+    mtu: usize,
 }
 
 impl Ingress {
     pub fn try_inject(&self, packet: &[u8]) -> Result<(), Error> {
-        if packet.len() > MTU {
+        if packet.len() > self.mtu {
             return Err(Error::PacketTooLarge);
         }
         let permit = self.sender.try_reserve().map_err(|error| match error {
@@ -132,6 +146,13 @@ impl Egress {
         }
     }
 
+    pub(crate) fn receiver_try_recv(&mut self) -> Result<Vec<u8>, mpsc::error::TryRecvError> {
+        if self.stopped.load(Ordering::Acquire) {
+            self.discard();
+        }
+        self.receiver.try_recv()
+    }
+
     fn discard(&mut self) {
         self.receiver.close();
         while self.receiver.try_recv().is_ok() {}
@@ -162,6 +183,7 @@ pub struct Runtime {
     stopped: Arc<AtomicBool>,
     udp_first: bool,
     report: Report,
+    pmtu_failure: Option<adapter::PmtuError>,
 }
 
 impl Runtime {
@@ -171,11 +193,35 @@ impl Runtime {
         select_backend: fn(SocketAddr) -> Option<BackendId>,
         capacity: usize,
     ) -> Result<(Self, Channels), Error> {
+        Self::build(tcp_limits, udp_limits, select_backend, capacity, None)
+    }
+
+    pub fn with_pmtu(
+        tcp_limits: adapter::Limits,
+        udp_limits: udp_adapter::Limits,
+        select_backend: fn(SocketAddr) -> Option<BackendId>,
+        capacity: usize,
+        pmtu: adapter::PmtuConfig,
+    ) -> Result<(Self, Channels), Error> {
+        Self::build(tcp_limits, udp_limits, select_backend, capacity, Some(pmtu))
+    }
+
+    fn build(
+        tcp_limits: adapter::Limits,
+        udp_limits: udp_adapter::Limits,
+        select_backend: fn(SocketAddr) -> Option<BackendId>,
+        capacity: usize,
+        pmtu: Option<adapter::PmtuConfig>,
+    ) -> Result<(Self, Channels), Error> {
         if !(1..=64).contains(&capacity) {
             return Err(Error::InvalidCapacity);
         }
-        let (tcp, accepted_tcp) =
-            HostAdapter::new(tcp_limits, select_backend).map_err(Error::Tcp)?;
+        let mtu = pmtu.as_ref().map_or(MTU, |config| config.link_mtu);
+        let (mut tcp, accepted_tcp) =
+            HostAdapter::with_mtu(tcp_limits, select_backend, mtu).map_err(Error::Tcp)?;
+        if let Some(config) = pmtu {
+            tcp.enable_pmtu(config).map_err(Error::Tcp)?;
+        }
         let (udp, accepted_udp) =
             UdpAdapter::new(udp_limits, select_backend).map_err(Error::Udp)?;
         let reassembly =
@@ -197,9 +243,10 @@ impl Runtime {
                 stopped: stopped.clone(),
                 udp_first: false,
                 report: Report::default(),
+                pmtu_failure: None,
             },
             Channels {
-                ingress: Ingress { sender: input },
+                ingress: Ingress { sender: input, mtu },
                 packets: Egress {
                     receiver: packets,
                     stopped,
@@ -227,6 +274,12 @@ impl Runtime {
         self.report.udp_application_closed = self.udp.statistics().application_closed;
         self.report.reassembled = self.reassembly.statistics().completed;
         self.report.fragment_timeouts = self.reassembly.statistics().timed_out;
+        let statistics = self.tcp.statistics();
+        self.report.pmtu_feedback = statistics.pmtu_feedback;
+        self.report.pmtu_reductions = statistics.pmtu_reductions;
+        self.report.pmtu_deferred = statistics.pmtu_deferred;
+        self.report.pmtu_expired = statistics.pmtu_expired;
+        self.report.pmtu_unsupported = statistics.pmtu_unsupported;
         self.tcp.cancel();
         self.udp.cancel();
         self.reassembly.cancel();
@@ -234,7 +287,11 @@ impl Runtime {
         let report = std::mem::take(&mut self.report);
         match outcome {
             Ok(()) => Ok(report),
-            Err(cause) => Err(Failure { cause, report }),
+            Err(cause) => Err(Failure {
+                cause,
+                report: Box::new(report),
+                pmtu: self.pmtu_failure.take(),
+            }),
         }
     }
 
@@ -251,6 +308,10 @@ impl Runtime {
             }
             let now = origin.elapsed();
             self.reassembly.advance(now).map_err(Error::Reassembly)?;
+            if let Err(error) = self.tcp.poll_pmtu(now) {
+                self.pmtu_failure = Some(error);
+                return Err(Error::Pmtu);
+            }
             {
                 let mut cx = Context::from_waker(&waker);
                 self.tcp.poll_io(&mut cx, now).map_err(Error::Tcp)?;
@@ -326,7 +387,24 @@ impl Runtime {
 
     fn admit(&mut self, packet: &[u8], now: std::time::Duration) -> Result<(), Error> {
         let complete;
-        let packet = match self.reassembly.accept(packet, now) {
+        let plain_tcp = match packet.first().map(|byte| byte >> 4) {
+            Some(4) if packet.len() >= 20 => {
+                packet[0] == 0x45
+                    && packet[9] == 6
+                    && u16::from_be_bytes([packet[2], packet[3]]) as usize == packet.len()
+                    && u16::from_be_bytes([packet[6], packet[7]]) & 0xbfff == 0
+            }
+            Some(6) if packet.len() >= 40 => {
+                packet[6] == 6
+                    && u16::from_be_bytes([packet[4], packet[5]]) as usize + 40 == packet.len()
+            }
+            _ => false,
+        };
+        let packet = match if plain_tcp {
+            Ok(Outcome::Pass)
+        } else {
+            self.reassembly.accept(packet, now)
+        } {
             Ok(Outcome::Pass) => packet,
             Ok(Outcome::Pending) => return Ok(()),
             Ok(Outcome::Complete(bytes)) => {
@@ -358,6 +436,7 @@ impl Runtime {
                 ) => return Err(Error::Tcp(error)),
                 Err(_) => false,
             },
+            1 | 58 => self.tcp.receive_pmtu(packet).map_err(Error::Tcp)?,
             17 => match self.udp.inject(packet) {
                 Ok(_) => true,
                 Err(

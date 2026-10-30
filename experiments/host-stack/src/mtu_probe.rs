@@ -40,7 +40,7 @@ impl fmt::Display for UnsupportedPmtu {
 
 impl std::error::Error for UnsupportedPmtu {}
 
-pub fn run_probe() -> Result<()> {
+pub fn run_raw_probe() -> Result<()> {
     run_adapter_probe()?;
     Err(UnsupportedPmtu.into())
 }
@@ -66,7 +66,9 @@ pub fn run_adapter_probe() -> Result<()> {
         crate::fragment_probe::run_probe(ipv6)?;
         println!("PASS fixed 1280-byte TCP segmentation and ICMP port-unreachable, IPv6={ipv6}");
         println!("PASS bounded pre-admission fragment input, IPv6={ipv6}");
-        println!("LIMITATION dynamic PMTU remains unavailable, IPv6={ipv6}");
+        println!(
+            "LIMITATION raw stack ignores PMTU; runtime integration checked separately, IPv6={ipv6}"
+        );
     }
     Ok(())
 }
@@ -813,8 +815,8 @@ mod tests {
     }
 
     #[test]
-    fn fixed_mtu_and_icmp_work_but_dynamic_pmtu_gate_stays_closed() {
-        let error = run_probe().unwrap_err();
+    fn raw_stack_pmtu_failure_remains_a_negative_control() {
+        let error = run_raw_probe().unwrap_err();
         assert!(
             error.downcast_ref::<UnsupportedPmtu>().is_some(),
             "unexpected probe failure: {error:#}"

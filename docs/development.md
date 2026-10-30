@@ -153,8 +153,10 @@ PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 120s unshare --user -
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --tun-fragment-check
 ./scripts/verify-feasibility.sh host-stack --adapter-mtu-check
-# Raw stack negative control; intentionally returns unsupported PMTU:
 ./scripts/verify-feasibility.sh host-stack --mtu-check
+PATH=/usr/sbin:$PATH ./scripts/verify-feasibility.sh host-stack --tun-pmtu-check
+# Raw stack negative control; intentionally returns unsupported PMTU:
+./scripts/verify-feasibility.sh host-stack --raw-mtu-check
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
 ./scripts/verify-feasibility.sh wireguard-stack --kernel-peer
@@ -191,16 +193,25 @@ before network mutation, removes its kernel interface after success/failure,
 and verifies removal using the link inventory.
 Do not run against the live host network to work around isolation failures.
 
-The explicit host `--mtu-check` scope currently returns nonzero with a typed
-unsupported-PMTU diagnostic. It verifies fixed 1280-byte TCP segmentation,
-ICMPv4/v6 port-unreachable responses, and valid too-big feedback quoting an
-actual oversized TCP packet, then observes the subsequent oversized retry.
-It records that the raw stack does not reassemble fragments with selected
-features, then verifies the bounded pre-admission fragment boundary in both
-orders. This closes only the supported fragment-input subset; dynamic PMTU
-still fails explicitly.
-`cargo run --locked -p host-stack -- --mtu-check` runs the same probe without
-the namespace harness. Other host probes keep their narrower scope.
+The host `--mtu-check` scope runs the real asynchronous runner with concurrent
+accepted streams, selected reporters, exact bytes/FIN, path budgets of 1400 and
+1280, and transient seed failure/retry. `--tun-pmtu-check` adds actual kernel
+clients behind a private forwarding router; after both flows transfer 16 KiB,
+the fixture lowers the router route MTU from 1400 to 1280 while retaining the
+connections. Genuine ICMP drives two runtime reductions; all request/response
+bytes and FIN are verified before TUN/veth/namespace cleanup. This fixture
+requires `nsenter`, `sysctl`, `sleep`, `mount` and `umount`; include `/usr/sbin`
+on PATH. Unix socket/control state lives in a private tmpfs mounted over an
+owned directory in the ignored evidence run; the fixture checks its removal. These
+are required default-host-gate scopes, not optional fixed-MTU substitutes.
+
+`--raw-mtu-check` keeps the failing raw-stack negative control: too-big feedback
+alone does not alter smoltcp's cached sizing. `--adapter-mtu-check` verifies the
+narrower fixed-segmentation/ICMP/reassembly and manual sizing experiments. The
+runtime handles bounded downward discovery without a dependency fork. Link
+ingress remains 1500 during egress reductions; UDP/reassembly keep independent
+1280-byte limits. Below-range feedback fails the selected stream explicitly;
+upward probing, general router trust and native macOS remain unverified.
 
 The default host probe injects controlled IPv4/IPv6 packets into direct
 smoltcp 0.14 AnyIP interception. Two preconfigured destinations have separate
@@ -428,7 +439,8 @@ The required gate entry points are also available:
 
 Each command runs `scripts/check.sh` followed by its required role scopes,
 stopping on the first failure. The host gate runs packet, real kernel TUN,
-adapter crash/replacement, kernel IPv4 fragments, and adapter MTU evidence.
+adapter crash/replacement, kernel IPv4 fragments, adapter sizing, dynamic
+runtime PMTU and genuine routed TUN PMTU evidence.
 The WireGuard gate runs packet traffic, independent kernel peer with completed
 rekey, kernel MTU, and remote-router MTU/recovery. For the router scope include
 `/usr/sbin` on PATH and install `tc`, `nsenter`, `sysctl`, `mount`, and `umount`.
@@ -437,8 +449,8 @@ logs identify each independently isolated child run. It records source hashes,
 workspace checks and per-scope exit codes, including any failed result.
 
 `--packet-only` remains a narrower command and cannot itself close a role
-gate. `--mtu-check` intentionally fails for the raw stack; the selected host
-policy is exercised by `--adapter-mtu-check`. The
+gate. `--raw-mtu-check` intentionally fails for the raw stack;
+`--adapter-mtu-check` alone cannot close the dynamic PMTU gate. The
 [network-stack ADR](adr/0002-network-stack.md) records the accepted Linux roles
 and limitations. Distinct SSH/SOCKS backends, production service recovery and
 physical exemptions, complete DNS/routing acceptance and native macOS remain
@@ -557,7 +569,8 @@ write is repeated. Device reconfiguration refuses nonempty queues before
 mutation; interface addresses, routes/lifetimes and any-IP policy are copied.
 This interface-wide experiment is not automatic PMTU discovery, a production
 migration API, or an asymmetric-path solution. Raw feedback still has no TCP
-sizing effect; the command continues to return typed unsupported-PMTU failure.
+sizing effect; `--raw-mtu-check` continues to return typed unsupported-PMTU
+failure. Section 27 of the contract now defines the integrated runtime path.
 
 `pmtu_feedback.rs` now connects that sizing action to one reserved outstanding
 TCP data segment. The matcher retains addresses, IP identity/length, a
@@ -573,7 +586,8 @@ resize; busy device queues preserve the reservation for retry within its
 original deadline. Successful interface replacement consumes it once. This
 does not authenticate the selected reporter and still leaves production path
 attribution, multiple/asymmetric flows, outer
-WireGuard PMTU and physical-path handling open; `--mtu-check` remains nonzero.
+general production WireGuard PMTU and physical-path handling open. The host
+runtime and routed TUN scopes now validate the integrated host sizing path.
 
 Default WireGuard packet probes now include encrypted inner PMTU feedback.
 Shared matching, controlled ICMP construction and interface replacement live
@@ -608,8 +622,7 @@ bytes over IPv4 or 1312 over IPv6 at outer MTU 1400). Pending packet attempts
 are retired only after validating the entire output queue as the same TCP flow;
 queued input, mixed UDP, foreign flows, invalid checksums and clocks fail before
 mutation. No inner feedback is generated. This is one serialized local path,
-not remote/physical discovery or concurrent flow sizing. The full PMTU gate
-remains open.
+not remote/physical discovery or concurrent flow sizing. General production physical-path PMTU integration remains open.
 
 Use `scripts/verify-feasibility.sh wireguard-stack --kernel-mtu-check` to
 repeat local outer-feedback TCP sizing against Linux kernel WireGuard rather

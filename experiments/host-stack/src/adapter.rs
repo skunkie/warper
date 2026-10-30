@@ -40,6 +40,10 @@ use tokio::{
 
 use crate::packet_peer::{BYTE_CAPACITY, MTU, PacketDevice};
 
+#[path = "adapter_pmtu.rs"]
+mod pmtu;
+pub use pmtu::{Config as PmtuConfig, Error as PmtuError};
+
 const MAX_FLOW_SLOTS: usize = 16;
 const IO_CHUNK_BYTES: usize = 1024;
 #[cfg(test)]
@@ -77,6 +81,7 @@ pub enum AdmissionError {
     ConsumerClosed,
     Cancelled,
     InvalidTime,
+    Pmtu(crate::pmtu_feedback::Error),
 }
 
 #[cfg(test)]
@@ -133,6 +138,11 @@ pub struct Statistics {
     pub timed_out: u64,
     pub reset: u64,
     pub application_closed: u64,
+    pub pmtu_feedback: u64,
+    pub pmtu_reductions: u64,
+    pub pmtu_deferred: u64,
+    pub pmtu_expired: u64,
+    pub pmtu_unsupported: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +154,7 @@ enum Termination {
     Timeout = 3,
     Reset = 4,
     ApplicationClosed = 5,
+    Unsupported = 6,
 }
 
 struct FlowLifetime {
@@ -164,6 +175,7 @@ impl AcceptedStream {
             2 => Some(io::ErrorKind::Interrupted.into()),
             3 => Some(io::ErrorKind::TimedOut.into()),
             4 => Some(io::ErrorKind::ConnectionReset.into()),
+            6 => Some(io::ErrorKind::Unsupported.into()),
             _ => Some(io::ErrorKind::BrokenPipe.into()),
         }
     }
@@ -256,6 +268,7 @@ struct FlowState {
     previous_state: tcp::State,
     application_eof: bool,
     network_eof: bool,
+    pmtu: Option<pmtu::Flow>,
     #[cfg(test)]
     last_feedback: Option<Duration>,
 }
@@ -298,6 +311,7 @@ pub struct HostAdapter {
     now: Duration,
     cancelled: bool,
     statistics: Statistics,
+    pmtu: Option<pmtu::Owner>,
     #[cfg(test)]
     feedback: VecDeque<Feedback>,
     #[cfg(test)]
@@ -381,6 +395,7 @@ impl HostAdapter {
                 now: Duration::ZERO,
                 cancelled: false,
                 statistics: Statistics::default(),
+                pmtu: None,
                 #[cfg(test)]
                 feedback: VecDeque::with_capacity(crate::packet_peer::PACKET_CAPACITY),
                 #[cfg(test)]
@@ -575,15 +590,23 @@ impl HostAdapter {
         }
         let timestamp = i64::try_from(now.as_millis()).map_err(|_| AdmissionError::InvalidTime)?;
         self.now = now;
-        self.interface.poll(
-            Instant::from_millis(timestamp),
-            &mut self.device,
-            &mut self.sockets,
-        );
+        if self.pmtu.is_some() {
+            self.poll_with_pmtu(timestamp)?;
+        } else {
+            self.interface.poll(
+                Instant::from_millis(timestamp),
+                &mut self.device,
+                &mut self.sockets,
+            );
+        }
         for slot in &mut self.slots {
             let Some(flow) = &mut slot.flow else { continue };
             let socket = self.sockets.get_mut::<tcp::Socket>(slot.socket);
-            let reason = if now - flow.created >= self.limits.max_age
+            let reason = if flow.lifetime.termination.load(Ordering::Acquire)
+                == Termination::Unsupported as u8
+            {
+                Some(Termination::Unsupported)
+            } else if now - flow.created >= self.limits.max_age
                 || (flow.pending.is_some() && now - flow.created >= self.limits.setup_timeout)
                 || (flow.pending.is_none() && now - flow.progress >= self.limits.idle_timeout)
             {
@@ -622,6 +645,7 @@ impl HostAdapter {
                     Termination::Reset => {
                         self.statistics.reset = self.statistics.reset.saturating_add(1)
                     }
+                    Termination::Unsupported => {}
                     Termination::ApplicationClosed => {
                         self.statistics.application_closed =
                             self.statistics.application_closed.saturating_add(1)
@@ -631,16 +655,22 @@ impl HostAdapter {
                 slot.flow = None;
             }
         }
-        self.interface.poll(
-            Instant::from_millis(timestamp),
-            &mut self.device,
-            &mut self.sockets,
-        );
+        if self.pmtu.is_some() {
+            self.poll_with_pmtu(timestamp)?;
+        } else {
+            self.interface.poll(
+                Instant::from_millis(timestamp),
+                &mut self.device,
+                &mut self.sockets,
+            );
+        }
         Ok(())
     }
 
     pub fn take_packet(&mut self) -> Option<Vec<u8>> {
-        self.device.outgoing.pop_front()
+        let packet = self.device.outgoing.pop_front()?;
+        self.record_pmtu(&packet);
+        Some(packet)
     }
 
     pub fn has_packet(&self) -> bool {
@@ -671,7 +701,7 @@ impl HostAdapter {
                 })
             })
             .min();
-        let transport = if transport_ready {
+        let transport = if transport_ready && !self.pmtu_pending() {
             self.interface
                 .poll_at(
                     Instant::from_millis(self.now.as_millis() as i64),
@@ -681,7 +711,11 @@ impl HostAdapter {
         } else {
             None
         };
-        lifecycle.into_iter().chain(transport).min()
+        lifecycle
+            .into_iter()
+            .chain(transport)
+            .chain(self.pmtu_deadline(transport_ready))
+            .min()
     }
 
     pub fn active_flows(&self) -> usize {
@@ -694,6 +728,7 @@ impl HostAdapter {
 
     pub fn cancel(&mut self) {
         self.cancelled = true;
+        self.pmtu = None;
         self.accepted = None;
         for slot in &mut self.slots {
             if let Some(flow) = slot.flow.take() {
@@ -759,6 +794,29 @@ impl HostAdapter {
         }
         let backend =
             (self.select_backend)(destination).ok_or(AdmissionError::UnselectedDestination)?;
+        let metadata = FlowMetadata {
+            id: FlowId(self.next_id),
+            source,
+            destination,
+            backend,
+        };
+        let reporter = if let Some(owner) = &self.pmtu {
+            let reporter = (owner.config.reporter)(metadata).ok_or(AdmissionError::Pmtu(
+                crate::pmtu_feedback::Error::InvalidReporter,
+            ))?;
+            if reporter.is_unspecified()
+                || reporter.is_multicast()
+                || reporter.is_ipv6() != source.is_ipv6()
+                || matches!(reporter, std::net::IpAddr::V4(address) if address.is_broadcast())
+            {
+                return Err(AdmissionError::Pmtu(
+                    crate::pmtu_feedback::Error::InvalidReporter,
+                ));
+            }
+            Some(reporter)
+        } else {
+            None
+        };
         let slot = self
             .slots
             .iter_mut()
@@ -799,12 +857,6 @@ impl HostAdapter {
             wake: self.wake.clone(),
             _permit: lifetime_permit,
         });
-        let metadata = FlowMetadata {
-            id: FlowId(self.next_id),
-            source,
-            destination,
-            backend,
-        };
         slot.flow = Some(FlowState {
             metadata,
             stream: driver,
@@ -821,6 +873,7 @@ impl HostAdapter {
             previous_state: tcp::State::Listen,
             application_eof: false,
             network_eof: false,
+            pmtu: reporter.map(pmtu::Flow::new),
             #[cfg(test)]
             last_feedback: None,
         });
