@@ -41,6 +41,12 @@ impl fmt::Display for UnsupportedPmtu {
 impl std::error::Error for UnsupportedPmtu {}
 
 pub fn run_probe() -> Result<()> {
+    run_adapter_probe()?;
+    Err(UnsupportedPmtu.into())
+}
+
+/// Verify the selected adapter policy while retaining raw-stack negative controls.
+pub fn run_adapter_probe() -> Result<()> {
     for ipv6 in [false, true] {
         port_unreachable(ipv6).context(format!("ICMP port-unreachable IPv6={ipv6}"))?;
         let fixed = tcp_sample(ipv6, MTU)?;
@@ -62,7 +68,7 @@ pub fn run_probe() -> Result<()> {
         println!("PASS bounded pre-admission fragment input, IPv6={ipv6}");
         println!("LIMITATION dynamic PMTU remains unavailable, IPv6={ipv6}");
     }
-    Err(UnsupportedPmtu.into())
+    Ok(())
 }
 
 fn addresses(ipv6: bool) -> Result<(IpAddr, IpAddr)> {

@@ -54,6 +54,9 @@ async fn main() -> Result<()> {
     if arguments == ["--mtu-check"] {
         return mtu_probe::run_probe();
     }
+    if arguments == ["--adapter-mtu-check"] {
+        return mtu_probe::run_adapter_probe();
+    }
     #[cfg(target_os = "linux")]
     if arguments.len() == 3 && arguments[0] == "--tun-bridge" {
         return tun_probe::run(&arguments[1], &arguments[2]).await;
@@ -91,7 +94,7 @@ async fn main() -> Result<()> {
     }
     ensure!(
         arguments == ["--wrapper"],
-        "usage: host-stack [--wrapper|--mtu-check]"
+        "usage: host-stack [--wrapper|--mtu-check|--adapter-mtu-check]"
     );
     let mut failures = 0;
     for ipv6 in [false, true] {

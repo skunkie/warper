@@ -13,7 +13,7 @@ need their own record.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-development-workflow.md) | Accepted | Stage-aware checks, contract-first implementation, licensing, and reproducible gates |
-| [0002](0002-network-stack.md) | Proposed | Select adapters for host interception and active WireGuard dialing after executable probes |
+| [0002](0002-network-stack.md) | Accepted for Linux; native macOS pending | Direct smoltcp role adapters with BoringTun, bounded ownership, and explicit MTU limits |
 | [0003](0003-dns-endpoint-routing.md) | Accepted policy; implementation pending | Separate DNS freshness from route grace and gate HTTPS/SVCB endpoint publication |
 | [0004](0004-desktop-service.md) | Accepted direction; native implementation evidence pending | Tauri desktop, independent networking service, and a managed macOS app bundle |
 | [0005](0005-macos-development-authentication.md) | Accepted policy; UX-05 evidence pending | Administrator-enrolled exact build identities for macOS local use without paid signing |

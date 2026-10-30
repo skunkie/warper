@@ -6,7 +6,12 @@ SPDX-License-Identifier: MIT
 
 # Post-Feasibility Implementation Contracts
 
-Status: acceptance checklist; concrete Rust signatures and selected library APIs are pending Phase 0. Complete this document against the selected stack before Phase 1 production modules depend on those interfaces. Prototype APIs may change while investigating feasibility.
+Status: initial Linux slice contract selected after Phase 0. Section 6 locks
+its backend-neutral TCP, route-driver and task ownership boundaries against
+compile-checked usage. Sections 7 onward retain detailed experimental evidence;
+features outside the initial fixed-CIDR slice remain proposals until their
+own production contract and acceptance gates pass. No macOS or production
+DNS gate is claimed here.
 
 ## 1. Required Contract Deliverables
 
@@ -106,12 +111,95 @@ Before declaring this contract gate passed:
 3. Record measurable limits and how cancellation/failure was exercised; include driver ACK delay, uncertain ACK, partial rollback, task termination, pending-response/grace expiry (NET-10), service-binding publication (NET-11), and global retained-state exhaustion/renewal/rollback (NET-12). The platform control contract also needs UX-05's native no-paid-account authentication evidence before macOS-dependent implementation.
 4. Verify that `docs/configuration.md`, `docs/implementation-plan.md`, the implementation, and acceptance evidence describe the same behavior. Record unresolved limitations in `docs/implementation-status.md` and leave affected gates open.
 
-## 6. Experimental Boundaries
+## 6. Initial Slice Contract
 
-These are compile-checked experiment APIs, not finalized production
-contracts. No production module depends on them. Stack selection, the
-initial production contract gate, and the failure-injection requirements
-above remain open.
+[ADR 0002](adr/0002-network-stack.md) selects direct smoltcp 0.14.0 and
+BoringTun 0.7.1 with the root manifest's exact features. The next production
+slice uses a fixed 1280-byte host MTU, static CIDRs, SOCKS5 TCP and no system
+DNS mutation. The concrete interfaces below are compiled in
+[`initial-contract`](../experiments/initial-contract/src/lib.rs), with real
+accepted-stream usage in the host experiment. Promote the applicable types
+into core/service modules when the slice needs them; production packages must
+never import an experiment or expose smoltcp/BoringTun types.
+
+| Boundary | Concrete source and usage |
+| --- | --- |
+| Static policy | [`routing.rs`](../crates/warper-core/src/routing.rs): `Policy::new(&[Entry], limit) -> Result<Policy, Error>` validates canonical IPv4/IPv6 prefixes, rejects duplicate/conflicting assignments and bounds construction. `select(IpAddr) -> Option<BackendId>` performs deterministic longest-prefix selection without allocation or transport fallback. The caller retains the result for each flow. |
+| Captured TCP | [`transport.rs`](../experiments/initial-contract/src/transport.rs): `Metadata { id: u64, source: SocketAddr, destination: SocketAddr, backend: BackendId }`; `CapturedTcp { metadata, stream: Box<dyn TcpIo> }`; `TcpIo: AsyncRead + AsyncWrite + Unpin + Send`. `AcceptedFlow::into_contract` is used by the controlled packet and Linux TUN relays. |
+| Backend TCP | `Backend: Send + Sync`, `id`, `capabilities`, `open_tcp(&self, SocketAddr, Request) -> OpenTcp<'_>`; the boxed future and stream are `Send`. `Capabilities` advertises IPv4/IPv6/TCP/UDP independently. The TUN fixture's `ControlledBackend` opens distinct real loopback peers through this interface; it is not a production protocol backend. |
+| Setup ownership | `Request { deadline: tokio::time::Instant, cancellation: watch::Receiver<bool> }`; `Request::run` bounds the complete setup operation. Cancellation or loss of its owner drops the owned future/I/O. `Error` distinguishes unsupported capability, cancellation, timeout, resource limit and I/O, retaining the I/O cause with redacted Display. |
+| Route driver | [`routes.rs`](../experiments/initial-contract/src/routes.rs): `Transaction::new(OperationId, Route) -> Result<Self, Error>` validates a canonical IPv4/IPv6 prefix. `Driver::execute(operation, route, command) -> impl Future<Output = Ack> + Send`; `inspect` returns `Observed::{Absent, Owned, Foreign}`. The operation owner retains the transaction through timeout/cancellation. |
+| Route progress | `advance_driver(&mut self, &mut impl Driver, Instant)` executes one serial command under a deadline. Install/remove timeout produces uncertainty and inspection, never a positive answer. `complete` rejects wrong operation/command acknowledgements. `can_release_answer` requires committed ownership and a live caller. |
+| Flow retention | `acquire_flow` admits references after mapping publication and before retirement; cancellation closes admission. `release_flow` enables removal only after the last reference. Kernel removal is acknowledged before mapping withdrawal. A driver must compare full ownership/interface identity at removal, even following inspection. |
+| Supervision | [`supervisor.rs`](../experiments/initial-contract/src/supervisor.rs): `Supervisor::new(1..=64)`, `spawn`, `next_failure`, `shutdown(Instant, Option<Error>)`. Tasks are retained, cancellation is broadcast, stalled cooperative tasks are aborted and joined, and `Failure { primary, cleanup }` preserves both causes. Packet/service tasks must never block the executor. |
+
+`BackendId` now lives in [`warper-core`](../crates/warper-core/src/lib.rs);
+the experiments reuse that backend-independent identity. Static policy is the
+first Phase 1 increment. A policy snapshot does not mutate routes or implement
+configuration parsing, DNS discovery or backend health selection.
+
+Backend IDs are registry identities within a configuration generation;
+persistence/control must carry that generation and the stable configured ID.
+Flow and operation IDs must not be reused within their owner's lifetime.
+Limits for the production parser, registry, control messages, journal and
+platform driver must be concrete before those modules depend on them.
+These are Phase 1 implementation gates, not permission to introduce implicit
+fallbacks, unbounded adapters, or arbitrary privileged file/shell APIs.
+
+The accepted stream owns its lifetime permit until both application and driver
+release it. TCP shutdown closes sending while reads continue; the relay uses
+`copy_bidirectional` and never resubmits possibly delivered application data.
+The supervisor owns the TUN runner, backend workers and control worker; flow
+tasks own their setup/relay cancellation. The route manager serializes journal
+and driver commands without holding application locks over network I/O.
+The Linux driver must make journaling durable before installation and verify
+actual kernel acknowledgements; `Driver` is not itself that implementation.
+A lost caller wait is distinct from cancelling a service operation.
+
+### Contract failure evidence and later-phase boundaries
+
+`cargo test --locked -p initial-contract` exercises a working in-memory,
+fault-injecting driver: its install mutates state and then withholds the ACK.
+Controlled time expires, inspection observes the owned route, and rollback
+removes it before withdrawing the handler. Additional cases cover rejected
+operations, delayed commit, wrong acknowledgements, cancellation at every
+ACK boundary, partial rollback, foreign state and admitted flow references.
+Task tests verify cancellation, deadline abort, joined resource destruction,
+worker failure propagation and preservation of the initial error.
+
+[`dns.rs`](../experiments/initial-contract/src/dns.rs) supplies **contract
+models**, not finalized production DNS interfaces. `Ledger<N>` reserves an
+entire endpoint set, coalesces same-key renewals, and separates pending output,
+grace, flow ownership and optional positive/negative caches. Its fixed-size
+names/provenance, bounded request/index arrays and full per-record allocation
+charges make entry and logical-byte exhaustion independently testable. There
+is no growing expiry heap. Allocator bookkeeping and externally held tokens
+are additional costs, explicitly outside this model's logical retained-byte
+budget. Production accounting must add and document them.
+
+NET-10 model cases keep queued/partial output pending across expiry, preserve
+zero cache TTL, anchor grace at handoff, retain active flows, reject foreign
+handles and cancel without renewing. NET-11's endpoint publication model waits
+for every required route's commit and rejects a target whose winning domain
+policy selects another backend. NET-12 model cases exhaust entry/byte budgets
+for distinct names sharing one IP, roll back partial/concurrent reservations,
+coalesce repeated renewals without timer growth, reclaim expired state, and
+separate cache eviction from protected ownership.
+
+The eventual DNS manager must serialize `validate_endpoints` and handoff with
+route retirement; these separate model operations are not an atomic production
+API. The model consumes a prevalidated complete endpoint set and does not
+parse DNS, resolve CNAME/SVCB dependencies, perform transport retries, or prove
+physical captures. Production NET-10–NET-12 acceptance and complete retained
+allocation accounting remain Phase 2 requirements. UX-05 remains a native
+macOS gate. This contract evidence does not substitute for any of them.
+
+### Experimental API detail
+
+The following historical prototype details explain the evidence and rejected
+alternatives. Only the role selection and initial slice boundaries above are
+accepted for dependent work. Physical egress/PMTU proposals below require
+extension before production use; fixed seeds and synthetic inputs are fixtures.
 
 - `experiments/packet_peer.rs`: `Peer::new(IpAddr, u16) -> anyhow::Result<Peer>`
   owns one raw-IP device, interface, socket set, TCP socket, and UDP socket.
@@ -981,8 +1069,9 @@ byte sequence exactly once, preserve endpoints and FIN/half-close, and keep
 all subsequent packets within 1280. Existing raw ICMP behavior remains a
 negative control. Production feedback validation/attribution, per-path state and expiry,
 UDP errors for queued output, smaller physical paths, and production WireGuard
-integration remain separate work; the MTU gate still returns unsupported and ADR 0002
-remains proposed.
+integration remain separate work. The raw-stack MTU negative control still
+returns unsupported; ADR 0002 accepts a fixed host MTU and the demonstrated
+stack roles, not general production PMTU integration.
 
 ## 18. Experimental Matched TCP PMTU Feedback
 
@@ -1423,7 +1512,7 @@ actual route/exemption verification and change detection, concurrent and
 asymmetric paths, shared-interface TCP/UDP behavior, delayed feedback across
 generation retirement, cancellation and recovery, and native platform cases.
 The production API, limits and OS mechanisms remain pending that evidence;
-this proposal does not close the Phase 0 or MTU gates.
+this proposal does not establish production physical-egress or PMTU acceptance.
 
 ## 25. Experimental Kernel Peer Link Transition
 

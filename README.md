@@ -11,8 +11,10 @@ SOCKS5, and WireGuard, with DNS-based route discovery and a Tauri desktop
 client. The macOS app will bundle the client and networking service.
 
 The repository contains the design, configuration examples, development
-infrastructure, and Phase 0 Rust stack experiments. A production networking
-service has not been implemented; stack selection remains open.
+infrastructure, Phase 0 Rust stack experiments, and a core static-routing
+policy beginning Phase 1. A production networking
+service has not been implemented. Phase 0 selects direct smoltcp adapters
+and BoringTun for Linux; native macOS networking remains unverified.
 
 - [Implementation plan](docs/implementation-plan.md)
 - [Configuration and CLI contract](docs/configuration.md)
@@ -25,7 +27,7 @@ service has not been implemented; stack selection remains open.
 
 Run `scripts/check.sh` to validate the repository, including its Rust
 experiments. See the development guide for isolated packet probes and the
-remaining real-traffic feasibility gates.
+real-traffic role gates and their limits.
 
 ## Acknowledgments and license
 

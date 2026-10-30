@@ -227,6 +227,20 @@ pub struct AcceptedFlow {
     pub stream: AcceptedStream,
 }
 
+impl AcceptedFlow {
+    pub fn into_contract(self) -> initial_contract::transport::CapturedTcp {
+        initial_contract::transport::CapturedTcp {
+            metadata: initial_contract::transport::Metadata {
+                id: self.metadata.id.0,
+                source: self.metadata.source,
+                destination: self.metadata.destination,
+                backend: initial_contract::routes::BackendId(u64::from(self.metadata.backend.0)),
+            },
+            stream: Box::new(self.stream),
+        }
+    }
+}
+
 struct PendingFlow {
     stream: AcceptedStream,
     permit: OwnedPermit<AcceptedFlow>,

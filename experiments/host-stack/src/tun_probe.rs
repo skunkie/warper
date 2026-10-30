@@ -7,6 +7,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, ensure};
+use initial_contract::transport::{self, Backend};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UnixDatagram},
@@ -161,16 +162,80 @@ async fn serve_backend(listener: TcpListener, expected: u8) -> Result<()> {
 }
 
 async fn handle_tcp(flow: AcceptedFlow, backend: SocketAddr) -> Result<()> {
-    relay_tcp(flow.stream, backend).await
+    let flow = flow.into_contract();
+    relay_tcp(
+        flow.stream,
+        backend,
+        flow.metadata.destination,
+        flow.metadata.backend,
+    )
+    .await
+}
+
+// Controlled peer used to exercise the backend contract; this is not a
+// SOCKS5 implementation and never participates in production configuration.
+struct ControlledBackend {
+    id: initial_contract::routes::BackendId,
+    destination: SocketAddr,
+    listener: SocketAddr,
+}
+
+impl Backend for ControlledBackend {
+    fn id(&self) -> initial_contract::routes::BackendId {
+        self.id
+    }
+
+    fn capabilities(&self) -> transport::Capabilities {
+        transport::Capabilities {
+            ipv4: self.destination.is_ipv4(),
+            ipv6: self.destination.is_ipv6(),
+            tcp: true,
+            udp: false,
+        }
+    }
+
+    fn open_tcp(
+        &self,
+        destination: SocketAddr,
+        request: transport::Request,
+    ) -> transport::OpenTcp<'_> {
+        Box::pin(request.run(async move {
+            if destination != self.destination {
+                return Err(transport::Error::UnsupportedCapability);
+            }
+            let stream = TcpStream::connect(self.listener)
+                .await
+                .map_err(transport::Error::Io)?;
+            Ok(Box::new(stream) as transport::TcpStream)
+        }))
+    }
 }
 
 async fn relay_tcp(
     mut downstream: impl AsyncRead + AsyncWrite + Unpin,
-    backend: SocketAddr,
+    listener: SocketAddr,
+    destination: SocketAddr,
+    id: initial_contract::routes::BackendId,
 ) -> Result<()> {
-    let mut upstream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(backend))
-        .await
-        .context("controlled backend connect deadline exceeded")??;
+    let backend = ControlledBackend {
+        id,
+        destination,
+        listener,
+    };
+    ensure!(
+        backend.capabilities().tcp && backend.id().0 != 0,
+        "invalid controlled backend"
+    );
+    let (_cancellation_owner, cancellation) = tokio::sync::watch::channel(false);
+    let mut upstream = backend
+        .open_tcp(
+            destination,
+            transport::Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation,
+            },
+        )
+        .await?;
     let (request, response) = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await?;
     ensure!(
         request == TRANSFER as u64,
@@ -275,7 +340,12 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let peer = serve_backend(listener, 0x61);
         let (mut client, downstream) = tokio::io::duplex(1024);
-        let relay = relay_tcp(downstream, address);
+        let relay = relay_tcp(
+            downstream,
+            address,
+            address,
+            initial_contract::routes::BackendId(1),
+        );
         let application = async move {
             client.write_all(&vec![0x61; TRANSFER]).await?;
             client.shutdown().await?;
@@ -312,7 +382,15 @@ mod tests {
         client.write_all(b"synthetic").await.unwrap();
         client.shutdown().await.unwrap();
         let (result, peer_result) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(relay_tcp(downstream, address), peer)
+            tokio::join!(
+                relay_tcp(
+                    downstream,
+                    address,
+                    address,
+                    initial_contract::routes::BackendId(1)
+                ),
+                peer
+            )
         })
         .await
         .unwrap();

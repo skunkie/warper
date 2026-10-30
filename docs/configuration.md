@@ -35,7 +35,7 @@ Status: implementation specification; the Rust parser/CLI do not exist yet. This
 | `ip` | string | Required | Bare unicast IPv4 address for local TUN DNS; reject CIDR syntax, unspecified, loopback, broadcast, and multicast addresses |
 | `ipv6_address` | string | Omitted | Required when `ipv6: true`, forbidden when false; bare unicast IPv6 address, not unspecified, loopback, multicast, or link-local |
 | `serve_dns` | boolean | `false` | False: split DNS for configured domains; true: forward unmatched queries through direct upstreams |
-| `mtu` | integer | `1280` | Initial supported range 1280–9000; runtime adapter/platform may reject a smaller supported range with a diagnostic |
+| `mtu` | integer | `1280` | Schema range 1280–9000; the selected initial host adapter supports exactly 1280 and must reject other values before mutation |
 
 Assign tunnel addresses as local host addresses (`/32` and `/128` or the platform's equivalent), without automatically capturing an entire surrounding subnet. Explicit DNS reachability is the driver's responsibility. Reject address collisions with discovered host state during preflight.
 
@@ -326,7 +326,8 @@ namespace and requires the configured MTU fixture. No YAML fields or installed
 commands change. Combining any scope with `--rekey`, another scope, or the
 host-stack executable is invalid. Success establishes local UDP MTU-error
 handling and retained TCP recovery; the kernel scope uses an independent
-kernel peer. The full Phase 0/PMTU gate remains incomplete.
+kernel peer. ADR 0002 selects the demonstrated Linux stack roles; general
+production physical-egress/PMTU integration remains unverified.
 
 The router scope instead creates client, forwarding-router and kernel-peer
 network namespaces with 1600-byte ingress and 1400-byte egress links. It requires
@@ -348,3 +349,9 @@ configure host links or routes.
 The standalone no-directory form remains available for the existing routed
 checks and does not request an interruption. Both forms require a mapped user
 namespace and controlled router topology; they are not production commands.
+
+The host experiment also supports `--adapter-mtu-check`, separately from the
+installed CLI. It verifies ADR 0002's adapter sizing/reassembly policy and
+returns success only if those assertions pass. The existing `--mtu-check`
+continues to return typed unsupported-PMTU failure for the raw stack; it is a
+negative control, not the selected fixed-MTU host adapter's gate.

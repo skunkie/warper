@@ -3,17 +3,17 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Packet, Linux TUN, and independent kernel-peer probes; full gates remain open.
+# Reproducible Linux role gates and individually runnable feasibility scopes.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 3 || ! "$1" =~ ^(host-stack|wireguard-stack)$ ]]; then
-    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--tun-crash-check|--tun-fragment-check|--kernel-peer|--mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
+    echo "usage: scripts/verify-feasibility.sh {host-stack|wireguard-stack} [--packet-only|--tun|--tun-crash-check|--tun-fragment-check|--kernel-peer|--mtu-check|--adapter-mtu-check|--outer-mtu-check|--kernel-mtu-check|--router-mtu-check] [--rekey]" >&2
     exit 2
 fi
 probe=$1
 scope=${2:-gate}
 rekey=${3:-}
-if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --tun-crash-check && "$scope" != --tun-fragment-check && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
+if [[ "$scope" != gate && "$scope" != --packet-only && "$scope" != --tun && "$scope" != --tun-crash-check && "$scope" != --tun-fragment-check && "$scope" != --kernel-peer && "$scope" != --mtu-check && "$scope" != --adapter-mtu-check && "$scope" != --outer-mtu-check && "$scope" != --kernel-mtu-check && "$scope" != --router-mtu-check ]]; then
     echo "Unknown scope: $scope" >&2
     exit 2
 fi
@@ -21,7 +21,7 @@ if [[ "$scope" == --kernel-peer && "$probe" != wireguard-stack ]]; then
     echo "--kernel-peer requires wireguard-stack" >&2
     exit 2
 fi
-if [[ ( "$scope" == --mtu-check || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ) && "$probe" != host-stack ]]; then
+if [[ ( "$scope" == --mtu-check || "$scope" == --adapter-mtu-check || "$scope" == --tun || "$scope" == --tun-crash-check || "$scope" == --tun-fragment-check ) && "$probe" != host-stack ]]; then
     echo "$scope requires host-stack" >&2
     exit 2
 fi
@@ -33,9 +33,56 @@ if [[ -n "$rekey" && ( "$rekey" != --rekey || "$probe" != wireguard-stack || "$s
     echo "--rekey requires wireguard-stack with a packet or kernel probe scope" >&2
     exit 2
 fi
+# A role gate runs its required real-traffic scopes rather than accepting a
+# packet-only result. Each nested scope retains its own environment and cleanup.
+if [[ "$scope" == gate ]]; then
+    repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    cd "$repository_root"
+    mkdir -p target/evidence/phase-0
+    gate_directory=$(mktemp -d "$repository_root/target/evidence/phase-0/$probe.gate.XXXXXXXX")
+    echo "Evidence: $gate_directory"
+    {
+        date -u '+utc=%Y-%m-%dT%H:%M:%SZ'
+        uname -srm
+        git rev-parse HEAD
+        git status --short
+    } > "$gate_directory/environment.txt"
+    cp Cargo.lock "$gate_directory/Cargo.lock"
+    # Include untracked contract sources, without persisting raw configuration.
+    source_roots=(experiments scripts docs)
+    if [[ -d crates ]]; then source_roots+=(crates); fi
+    find "${source_roots[@]}" -type f \( -name '*.rs' -o -name '*.toml' -o -name '*.sh' -o -name '*.py' -o -name '*.md' \) -print0 \
+        | sort -z | xargs -0 sha256sum > "$gate_directory/sources.sha256"
+    status=0
+    scripts/check.sh > "$gate_directory/checks.log" 2>&1 || status=$?
+    echo "workspace_checks_exit=$status" > "$gate_directory/result.txt"
+    if [[ "$status" -ne 0 ]]; then
+        cat "$gate_directory/checks.log" >&2
+        exit "$status"
+    fi
+    if [[ "$probe" == host-stack ]]; then
+        scopes=(--packet-only --tun --tun-crash-check --tun-fragment-check --adapter-mtu-check)
+    else
+        scopes=(--packet-only --kernel-peer --kernel-mtu-check --router-mtu-check)
+    fi
+    for child_scope in "${scopes[@]}"; do
+        child_arguments=("$probe" "$child_scope")
+        if [[ "$child_scope" == --kernel-peer ]]; then child_arguments+=(--rekey); fi
+        status=0
+        bash scripts/verify-feasibility.sh "${child_arguments[@]}" \
+            > "$gate_directory/${child_scope#--}.log" 2>&1 || status=$?
+        cat "$gate_directory/${child_scope#--}.log"
+        echo "$child_scope exit=$status" >> "$gate_directory/result.txt"
+        if [[ "$status" -ne 0 ]]; then exit "$status"; fi
+    done
+    echo "PASS Linux $probe role gate; native macOS and production acceptance NOT RUN" \
+        | tee -a "$gate_directory/result.txt"
+    exit 0
+fi
+
 probe_arguments=()
 isolation_mode=packet
-if [[ "$scope" == --mtu-check ]]; then probe_arguments+=(--mtu-check); fi
+if [[ "$scope" == --mtu-check || "$scope" == --adapter-mtu-check ]]; then probe_arguments+=("$scope"); fi
 if [[ "$scope" == --tun ]]; then isolation_mode=tun; fi
 if [[ "$scope" == --tun-crash-check ]]; then
     isolation_mode=tun
@@ -129,7 +176,7 @@ timeout --signal=TERM --kill-after=2s "${timeout_seconds}s" \
 cat "$run_directory/probe.log"
 {
     echo "probe_exit=$status"
-    if [[ "$scope" == --mtu-check ]]; then echo "mtu_probe_exit=$status"; fi
+    if [[ "$scope" == --mtu-check || "$scope" == --adapter-mtu-check ]]; then echo "mtu_probe_exit=$status"; fi
     if [[ "$scope" == --outer-mtu-check ]]; then
         echo "outer_local_mtu_probe_exit=$status"
         echo "NOT RUN remote router MTU discovery or concurrent physical-path TCP sizing"
@@ -156,7 +203,7 @@ cat "$run_directory/probe.log"
     else
         echo "NOT RUN independent WireGuard implementation"
     fi
-    echo "NOT RUN MTU/ICMP acceptance, backend outage/crash injection, native macOS"
+    echo "NOT RUN production MTU/ICMP acceptance, backend/service crash recovery, native macOS"
     if [[ "$rekey" == --rekey ]]; then
         echo "rekey_probe_exit=$status"
     else
@@ -166,9 +213,4 @@ cat "$run_directory/probe.log"
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
 fi
-if [[ "$scope" == gate ]]; then
-    echo "Phase 0 gate incomplete: required TUN, contract, and failure evidence remains open." >&2
-    echo "INCOMPLETE full feasibility gate" >> "$run_directory/result.txt"
-    exit 1
-fi
-echo "PASS ${scope#--} probe; full Phase 0 gate remains open." >> "$run_directory/result.txt"
+echo "PASS ${scope#--} probe; this scope alone is not the full role gate." >> "$run_directory/result.txt"

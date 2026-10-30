@@ -11,6 +11,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+initial-contract = { path = "../initial-contract" }
 anyhow.workspace = true
 futures.workspace = true
 netstack-smoltcp.workspace = true

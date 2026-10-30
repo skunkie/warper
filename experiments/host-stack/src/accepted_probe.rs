@@ -184,7 +184,9 @@ async fn drive(
     anyhow::bail!("asynchronous flow exchange exceeded controlled deadline")
 }
 
-async fn echo(mut flow: AcceptedFlow, index: usize) -> Result<FlowMetadata> {
+async fn echo(flow: AcceptedFlow, index: usize) -> Result<FlowMetadata> {
+    let metadata = flow.metadata;
+    let mut flow = flow.into_contract();
     let mut total = 0;
     let mut bytes = [0; 1024];
     loop {
@@ -207,11 +209,11 @@ async fn echo(mut flow: AcceptedFlow, index: usize) -> Result<FlowMetadata> {
         "request ended before all bytes arrived"
     );
     flow.stream
-        .write_all(TRAILERS[usize::from(flow.metadata.backend.0)])
+        .write_all(TRAILERS[usize::from(metadata.backend.0)])
         .await?;
     flow.stream.flush().await?;
     flow.stream.shutdown().await?;
-    Ok(flow.metadata)
+    Ok(metadata)
 }
 
 pub fn select_backend(destination: SocketAddr) -> Option<BackendId> {

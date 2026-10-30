@@ -10,8 +10,9 @@ Start with the [implementation plan](implementation-plan.md),
 [repository instructions](../AGENTS.md), and [ADR index](adr/README.md).
 The [service/client contract](service-and-client.md) defines the Tauri
 desktop, independent `warperd` service, local control, and managed bundle.
-The current repository contains contracts, development infrastructure, and
-experimental Rust stack probes.
+The current repository contains contracts, development infrastructure,
+experimental Rust stack probes, and the first production core static-routing
+policy. There is no production networking service yet.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
@@ -125,7 +126,10 @@ application, including abrupt termination and partial startup.
 The workspace contains `host-stack` and `wireguard-stack` experiments, with
 exact direct dependency pins and a shared bounded raw-IP peer device. The
 existing stage-aware CI now runs real workspace checks and native tests.
-These are experiments, not a runnable `warperd` or a finalized stack adapter.
+These are experiments, not a runnable `warperd`. ADR 0002 selects their
+Linux stack roles; the initial backend-neutral contract is compile-checked in
+`experiments/initial-contract/`. No production DNS/platform acceptance follows
+from those contract models.
 
 From a clean checkout, install the exact root toolchain using rustup, then:
 
@@ -148,6 +152,8 @@ PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 120s unshare --user -
 PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 120s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-feasibility-isolated.sh kernel python3 -m scripts.probe_wireguard_fragment_loss "$PWD/target/debug/wireguard-stack"
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --tun-fragment-check
+./scripts/verify-feasibility.sh host-stack --adapter-mtu-check
+# Raw stack negative control; intentionally returns unsupported PMTU:
 ./scripts/verify-feasibility.sh host-stack --mtu-check
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only
 ./scripts/verify-feasibility.sh wireguard-stack --packet-only --rekey
@@ -420,13 +426,23 @@ The required gate entry points are also available:
 ./scripts/verify-feasibility.sh wireguard-stack
 ```
 
-They run the packet experiment but **return nonzero while the full gate is
-incomplete**, even if the packet or kernel-peer experiment passes. Host-facing
-complete host TUN/utun acceptance, distinct SSH/SOCKS backend instances, production contracts,
-backend outage/crash cleanup, and MTU/ICMP acceptance are still
-unimplemented or unverified. Kernel tests will require a disposable
-TUN-capable Linux environment; native macOS gates require a separate runner.
-The [network-stack ADR](adr/0002-network-stack.md) remains proposed.
+Each command runs `scripts/check.sh` followed by its required role scopes,
+stopping on the first failure. The host gate runs packet, real kernel TUN,
+adapter crash/replacement, kernel IPv4 fragments, and adapter MTU evidence.
+The WireGuard gate runs packet traffic, independent kernel peer with completed
+rekey, kernel MTU, and remote-router MTU/recovery. For the router scope include
+`/usr/sbin` on PATH and install `tc`, `nsenter`, `sysctl`, `mount`, and `umount`.
+The aggregate gate creates a unique `PROBE.gate.*` evidence directory; nested
+logs identify each independently isolated child run. It records source hashes,
+workspace checks and per-scope exit codes, including any failed result.
+
+`--packet-only` remains a narrower command and cannot itself close a role
+gate. `--mtu-check` intentionally fails for the raw stack; the selected host
+policy is exercised by `--adapter-mtu-check`. The
+[network-stack ADR](adr/0002-network-stack.md) records the accepted Linux roles
+and limitations. Distinct SSH/SOCKS backends, production service recovery and
+physical exemptions, complete DNS/routing acceptance and native macOS remain
+later gates. Never generalize the Linux result to native macOS.
 
 The sandbox may deny access to `/dev/net/tun`; an approved unsandboxed run
 still uses disposable namespaces and must never change the live host to work
@@ -743,8 +759,8 @@ forwarding sysctls belong only to the private router network namespace. No host
 resolver, bus or physical configuration is touched. Supply `nsenter`, `sysctl`,
 `readlink`, `sleep`, `mount` and `umount` on PATH; `/usr/sbin` may be needed for
 sysctl. The full
-Phase0 gate remains open, especially short quotes, router trust and
-concurrent/asymmetric physical paths. See contract section 23.
+production physical-egress gate remains open, especially short quotes, router
+trust and concurrent/asymmetric physical paths. See contract section 23.
 
 The routed scope also runs four retained TCP cases. The peer's WireGuard link
 uses MTU 1500 so its advertised TCP MSS exercises the smaller routed outer path.
