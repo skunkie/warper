@@ -139,6 +139,9 @@ cargo test --locked --workspace
 PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 15s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_tun_pmtu
 # Independent Linux outer UDP fragmentation fixture (disposable namespaces):
 PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 15s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_outer_fragment
+# Encrypted WireGuard outer fragmentation (build first; disposable namespaces):
+cargo build --locked -p wireguard-stack
+PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 45s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_wireguard_fragment "$PWD/target/debug/wireguard-stack"
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --tun-fragment-check
 ./scripts/verify-feasibility.sh host-stack --mtu-check

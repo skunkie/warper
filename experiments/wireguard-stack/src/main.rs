@@ -34,6 +34,8 @@ mod link_monitor;
 #[cfg(target_os = "linux")]
 mod outer_errors;
 #[cfg(target_os = "linux")]
+mod outer_fragment;
+#[cfg(target_os = "linux")]
 mod outer_mtu_probe;
 #[cfg(target_os = "linux")]
 mod outer_owner;
@@ -544,19 +546,8 @@ fn is_application_data(result: &TunnResult<'_>) -> bool {
 fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
-        arguments.is_empty()
-            || arguments == ["--rekey"]
-            || arguments == ["--outer-mtu-check"]
-            || arguments == ["--kernel-mtu-check"]
-            || arguments == ["--router-mtu-check"]
-            || (arguments.len() == 2 && arguments[0] == "--router-mtu-check")
-            || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
-            || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-client")
-            || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-peer")
-            || arguments == ["--kernel-link-check"]
-            || arguments == ["--kernel-peer"]
-            || arguments == ["--kernel-peer", "--rekey"],
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
+        valid_arguments(&arguments),
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --outer-fragment-check | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
     );
     if arguments.first().is_some_and(|argument| {
         argument == "--physical-path-client" || argument == "--physical-path-peer"
@@ -610,6 +601,12 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         bail!("kernel MTU probe requires Linux disposable namespaces");
     }
+    if arguments == ["--outer-fragment-check"] {
+        #[cfg(target_os = "linux")]
+        return outer_fragment::run();
+        #[cfg(not(target_os = "linux"))]
+        bail!("outer fragmentation probe requires Linux disposable namespaces");
+    }
     if arguments == ["--outer-mtu-check"] {
         #[cfg(target_os = "linux")]
         return outer_mtu_probe::run();
@@ -654,6 +651,22 @@ fn main() -> Result<()> {
 
 fn probe(ipv6: bool, minimum_duration: Duration) -> Result<()> {
     probe_with_outer(ipv6, false, minimum_duration)
+}
+
+fn valid_arguments(arguments: &[String]) -> bool {
+    arguments.is_empty()
+        || arguments == ["--rekey"]
+        || arguments == ["--outer-mtu-check"]
+        || arguments == ["--outer-fragment-check"]
+        || arguments == ["--kernel-mtu-check"]
+        || arguments == ["--router-mtu-check"]
+        || (arguments.len() == 2 && arguments[0] == "--router-mtu-check")
+        || (arguments.len() == 2 && arguments[0] == "--router-mtu-peer")
+        || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-client")
+        || ((3..=4).contains(&arguments.len()) && arguments[0] == "--physical-path-peer")
+        || arguments == ["--kernel-link-check"]
+        || arguments == ["--kernel-peer"]
+        || arguments == ["--kernel-peer", "--rekey"]
 }
 
 fn probe_with_outer(ipv6: bool, outer_ipv6: bool, minimum_duration: Duration) -> Result<()> {
@@ -1141,6 +1154,16 @@ fn is_lost_datagram(packet: &[u8]) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outer_fragment_flag_rejects_extra_arguments() {
+        let valid = vec!["--outer-fragment-check".to_owned()];
+        assert!(valid_arguments(&valid));
+        for extra in ["--rekey", "unexpected"] {
+            let invalid = vec!["--outer-fragment-check".to_owned(), extra.to_owned()];
+            assert!(!valid_arguments(&invalid));
+        }
+    }
 
     fn receive_outer_data(
         socket: &UdpSocket,

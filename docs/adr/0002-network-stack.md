@@ -288,6 +288,15 @@ records exact scope. [RFC 1191](https://www.rfc-editor.org/rfc/rfc1191.html)
 and [RFC 8201](https://www.rfc-editor.org/rfc/rfc8201.html) define relevant
 path-MTU feedback; fixed link sizing cannot establish that behavior.
 
+A Linux-only loopback experiment also sends encrypted WireGuard traffic over a
+1280-byte path with outer UDP fragmentation explicitly enabled. Packet capture
+observes WireGuard data fragments in both outer families, while local peers
+complete TCP and UDP in all inner/outer combinations; no-fragment controls
+return a kernel size error. The declared fixture envelope deliberately exceeds
+the path MTU. This does not prove routed or physical transport, an independent
+WireGuard peer, fragment loss handling, macOS, or production safety; the
+existing outer path-budget guard remains unchanged.
+
 Until accepted, keep experimental packages isolated from production-facing
 interfaces. The adapters may differ by role; the production workspace must
 hide third-party types behind the contracts needed by its next working

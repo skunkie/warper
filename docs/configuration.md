@@ -286,6 +286,17 @@ uses private loopback, captures kernel UDP fragments, and restores the original
 loopback MTU and link state before exit. It does not enable fragmentation for
 the experimental WireGuard transport or change YAML configuration.
 
+The separate command `python3 -m scripts.probe_wireguard_fragment ABSOLUTE_BINARY`
+requires an absolute path to the built `wireguard-stack` executable and runs it
+with the experimental `--outer-fragment-check` argument. Run the wrapper inside
+disposable Linux user, network, and mount namespaces as documented in the
+development guide. The wrapper sets private loopback MTU 1280, captures outer
+fragments, supervises the child, and restores loopback state. The executable
+uses local BoringTun fixture peers and explicit socket fragmentation options;
+a no-fragment negative control must fail with the kernel's size error. It
+refuses the wrong namespace or route MTU. This is not a service option and
+does not change the production transport's path budget or YAML configuration.
+
 ## Development-Only Outer MTU Probes
 
 The experimental `wireguard-stack --outer-mtu-check`,

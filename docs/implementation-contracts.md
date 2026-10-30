@@ -886,6 +886,23 @@ peers, not SSH or SOCKS implementations, and UDP remains a separate synthetic
 association handler. A successful fixture does not complete NET-01 or the
 production backend contract.
 
+## Experimental Encrypted Outer Fragmentation
+
+A Linux-only private-loopback fixture uses two BoringTun peers with a declared
+1500-byte experimental envelope over a verified 1280-byte loopback path.
+Socket PMTU discovery is explicitly disabled only for this fixture. The peers
+exchange TCP and UDP traffic, including maximum supported and empty UDP
+payloads, across all inner/outer IP-family combinations. A bounded raw packet
+capture observes fragmented WireGuard data for both outer families. With
+fragmentation disabled, the corresponding negative controls require a kernel
+size error. Fixture sockets are released and loopback state is restored.
+
+This deliberately mismatches the fixture envelope and path MTU to test kernel
+fragmentation; it does not relax the existing path-budget guard. Loopback,
+same-library peers do not establish routed or physical behavior, independent
+kernel-peer interoperability, fragment-loss recovery, resource limits under
+hostile traffic, native macOS behavior, or a production fragmentation policy.
+
 ## 17. Experimental Interface MTU Reduction
 
 Status: a sizing-control feasibility probe, not complete PMTU discovery.

@@ -449,8 +449,14 @@ A separate Linux loopback fixture observes a 1312-byte UDP datagram split into
 outer IP fragments at a 1280-byte MTU and received intact, followed by an empty
 datagram, in both families. It verifies fragment sizes and independent
 loopback-state restoration (`target/evidence/phase-0/outer-fragment/README.md`).
-This does not exercise WireGuard, a routed or physical path, or production
-fragmentation policy.
+A separate encrypted fixture now observes fragmented WireGuard data on
+private loopback in both outer families while local BoringTun peers complete
+TCP and UDP in all inner/outer family combinations. No-fragment controls fail
+with the kernel size error (`target/evidence/phase-0/wireguard-outer-fragment/README.md`).
+The declared 1500-byte fixture envelope intentionally exceeds the 1280-byte
+path; the existing production candidate's guard is unchanged. Routed and
+physical paths, independent WireGuard peers, fragment loss, macOS and a
+production fragmentation policy remain unverified.
 
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header
