@@ -49,7 +49,19 @@ impl Workers {
     ) -> Result<Self> {
         let listener = TcpListener::bind((address, 9000))?;
         let udp = UdpSocket::bind((address, 9000))?;
-        Self::start_sockets(listener, udp, duration, Some(response_sent))
+        Self::start_sockets(
+            listener,
+            udp,
+            duration,
+            Some(response_sent),
+            REQUEST.to_vec(),
+        )
+    }
+
+    pub(super) fn start_fragment_loss(address: IpAddr, request: Vec<u8>) -> Result<Self> {
+        let listener = TcpListener::bind((address, 9000))?;
+        let udp = UdpSocket::bind((address, 9000))?;
+        Self::start_sockets(listener, udp, Duration::from_secs(30), None, request)
     }
 
     fn start_sockets(
@@ -57,6 +69,7 @@ impl Workers {
         udp: UdpSocket,
         duration: Duration,
         response_sent: Option<Arc<AtomicBool>>,
+        request: Vec<u8>,
     ) -> Result<Self> {
         listener.set_nonblocking(true)?;
         udp.set_nonblocking(true)?;
@@ -74,7 +87,7 @@ impl Workers {
                         &listener,
                         &stop,
                         deadline,
-                        REQUEST,
+                        &request,
                         RESPONSE,
                         response_sent.as_deref(),
                     )
@@ -1032,7 +1045,8 @@ mod tests {
         let tcp_address = listener.local_addr().unwrap();
         let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
         let udp_address = udp.local_addr().unwrap();
-        let mut workers = Workers::start_sockets(listener, udp, Duration::ZERO, None).unwrap();
+        let mut workers =
+            Workers::start_sockets(listener, udp, Duration::ZERO, None, REQUEST.to_vec()).unwrap();
         assert!(
             workers.finish().is_err(),
             "incomplete TCP work must not report peer success"

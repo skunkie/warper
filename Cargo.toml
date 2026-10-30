@@ -20,7 +20,7 @@ futures = { version = "=0.3.32", default-features = false, features = ["std", "a
 netstack-smoltcp = "=0.2.4"
 nix = { version = "=0.31.3", default-features = false, features = ["net", "uio"] }
 # Pinned Linux networking socket options reference the time module.
-rustix = { version = "=1.1.5", features = ["net", "rand", "time"] }
+rustix = { version = "=1.1.5", features = ["event", "net", "rand", "time"] }
 # Direct candidate and controlled peers; the wrapper retains its own 0.12 stack.
 smoltcp = { version = "=0.14.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }
 tokio = { version = "=1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }

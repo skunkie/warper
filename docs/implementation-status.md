@@ -459,8 +459,12 @@ in both directions for each outer family
 (`target/evidence/phase-0/kernel-wireguard-outer-fragment/README.md`). The
 declared 1500-byte fixture envelope intentionally exceeds the 1280-byte path;
 the existing production candidate's guard is unchanged. Routed and physical
-paths, fragment loss, macOS and a production fragmentation policy remain
-unverified.
+paths, macOS and a production fragmentation policy remain unverified. A
+separate private-loopback loss fixture drops outer fragment tails for each
+inner/outer family combination against the kernel peer. It observes TCP
+retransmission and successful completion, while a single UDP datagram is lost
+and a later heartbeat succeeds (`target/evidence/phase-0/kernel-outer-fragment-loss/README.md`).
+This controlled loss does not establish behavior on routed or physical paths.
 
 Short-quote correlation, general router trust, concurrent/physical-path policy and error propagation,
 dynamic PMTU, outgoing fragmentation, larger datagrams, and extension-header

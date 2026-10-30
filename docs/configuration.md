@@ -303,6 +303,15 @@ create and later remove its own `wg-feasibility` interface. This mode uses the
 Linux kernel WireGuard peer; it is not a service configuration and does not
 change the production path budget.
 
+The separate `python3 -m scripts.probe_wireguard_fragment_loss ABSOLUTE_BINARY`
+wrapper supervises the experimental `--kernel-outer-fragment-loss` child. It
+requires the disposable Linux kernel-peer harness, private loopback MTU 1280,
+and `tc`. The wrapper adds only its own private loopback qdisc and temporary
+fragment-drop filters, coordinates the child over bounded standard-input and
+output pipes, checks drop counters, then removes and verifies its network state.
+It is not an installed service option and does not change the production path
+budget or YAML configuration.
+
 ## Development-Only Outer MTU Probes
 
 The experimental `wireguard-stack --outer-mtu-check`,

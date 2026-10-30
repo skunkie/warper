@@ -144,6 +144,8 @@ cargo build --locked -p wireguard-stack
 PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 45s unshare --user --map-root-user --net --mount --fork --kill-child=KILL python3 -m scripts.probe_wireguard_fragment "$PWD/target/debug/wireguard-stack"
 # Independent Linux kernel WireGuard peer with private interface cleanup:
 PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 120s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-feasibility-isolated.sh kernel python3 -m scripts.probe_wireguard_fragment "$PWD/target/debug/wireguard-stack" --kernel-peer
+# Controlled loss of outer fragments with an independent kernel peer:
+PATH=/usr/sbin:$PATH timeout --signal=TERM --kill-after=2s 120s unshare --user --map-root-user --net --mount --fork --kill-child=KILL bash scripts/run-feasibility-isolated.sh kernel python3 -m scripts.probe_wireguard_fragment_loss "$PWD/target/debug/wireguard-stack"
 ./scripts/verify-feasibility.sh host-stack --tun-crash-check
 ./scripts/verify-feasibility.sh host-stack --tun-fragment-check
 ./scripts/verify-feasibility.sh host-stack --mtu-check

@@ -36,6 +36,8 @@ mod outer_errors;
 #[cfg(target_os = "linux")]
 mod outer_fragment;
 #[cfg(target_os = "linux")]
+mod outer_fragment_loss;
+#[cfg(target_os = "linux")]
 mod outer_mtu_probe;
 #[cfg(target_os = "linux")]
 mod outer_owner;
@@ -547,7 +549,7 @@ fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
         valid_arguments(&arguments),
-        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --outer-fragment-check | --kernel-outer-fragment-check | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
+        "usage: wireguard-stack [--kernel-peer [--rekey] | --kernel-link-check | --physical-path-client DIRECTORY INNER [OUTER] | --physical-path-peer DIRECTORY INNER [OUTER] | --outer-mtu-check | --outer-fragment-check | --kernel-outer-fragment-check | --kernel-outer-fragment-loss | --kernel-mtu-check | --router-mtu-check [DIRECTORY] | --router-mtu-peer DIRECTORY | --rekey]"
     );
     if arguments.first().is_some_and(|argument| {
         argument == "--physical-path-client" || argument == "--physical-path-peer"
@@ -600,6 +602,12 @@ fn main() -> Result<()> {
         return kernel_mtu::run();
         #[cfg(not(target_os = "linux"))]
         bail!("kernel MTU probe requires Linux disposable namespaces");
+    }
+    if arguments == ["--kernel-outer-fragment-loss"] {
+        #[cfg(target_os = "linux")]
+        return outer_fragment_loss::run();
+        #[cfg(not(target_os = "linux"))]
+        bail!("outer fragment loss probe requires Linux disposable namespaces");
     }
     if arguments == ["--kernel-outer-fragment-check"] {
         #[cfg(target_os = "linux")]
@@ -665,6 +673,7 @@ fn valid_arguments(arguments: &[String]) -> bool {
         || arguments == ["--outer-mtu-check"]
         || arguments == ["--outer-fragment-check"]
         || arguments == ["--kernel-outer-fragment-check"]
+        || arguments == ["--kernel-outer-fragment-loss"]
         || arguments == ["--kernel-mtu-check"]
         || arguments == ["--router-mtu-check"]
         || (arguments.len() == 2 && arguments[0] == "--router-mtu-check")
@@ -1164,7 +1173,11 @@ mod tests {
 
     #[test]
     fn outer_fragment_flag_rejects_extra_arguments() {
-        for flag in ["--outer-fragment-check", "--kernel-outer-fragment-check"] {
+        for flag in [
+            "--outer-fragment-check",
+            "--kernel-outer-fragment-check",
+            "--kernel-outer-fragment-loss",
+        ] {
             let valid = vec![flag.to_owned()];
             assert!(valid_arguments(&valid));
             for extra in ["--rekey", "unexpected"] {

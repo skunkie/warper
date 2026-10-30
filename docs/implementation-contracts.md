@@ -902,6 +902,14 @@ for each outer family while an independent Linux kernel peer completes all
 inner/outer family combinations. Its workers are joined, fixture sockets are
 released, and the parent independently removes the kernel interface.
 
+A separate private-loopback loss fixture drops the final outer fragment with
+owned traffic-control filters, then removes the filters. Its independent kernel
+peer verifies one application TCP write completes via stack retransmission,
+while one lost UDP datagram is not replayed and a later heartbeat succeeds.
+Filter drop counters, worker joins, socket release and independent network
+cleanup are required observations. This controlled fixture does not establish
+loss recovery across a router or production flow ownership.
+
 Both fixtures deliberately mismatch the declared envelope and path MTU to test
 kernel fragmentation; they do not relax the existing path-budget guard. Private
 loopback does not establish routed or physical behavior, fragment-loss recovery,
