@@ -8,8 +8,9 @@ SPDX-License-Identifier: MIT
 
 Status: implementation specification; the Rust parser/CLI do not exist yet.
 Core implements offline path resolution and injectable invoking-account
-validation in `crates/warper-core/src/configuration/paths.rs`; native OS identity
-lookup and parser/CLI integration remain unimplemented. This document defines
+validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
+account lookup in `crates/warper-config/src/identity.rs`. Parser/CLI integration
+remains unimplemented. This document defines
 the initial schema. Update it, its examples, and validation fixtures together
 when a justified decision changes the contract.
 

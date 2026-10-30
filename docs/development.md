@@ -12,8 +12,8 @@ The [service/client contract](service-and-client.md) defines the Tauri
 desktop, independent `warperd` service, local control, and managed bundle.
 The current repository contains contracts, development infrastructure,
 experimental Rust stack probes, and the first production core static-routing
-policy and offline configuration path preparation. There is no production
-networking service yet.
+policy, offline configuration paths, and a native Unix account adapter in
+`warper-config`. There is no production networking service yet.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
@@ -69,6 +69,18 @@ Review untracked files as well: Git diff checks do not inspect them.
 Handwritten files need SPDX copyright/license headers. Use explicit
 `REUSE.toml` annotations for generated or noncommentable formats; preserve
 actual third-party licensing when introducing dependencies or assets.
+
+The read-only native identity probe runs separately from deterministic tests:
+
+```sh
+cargo run --locked -p warper-config --example identity
+```
+
+It checks the current OS account and default source path without opening that
+path, printing account fields, or consulting sudo variables. It can block in
+the system account database; automated unit tests instead use synthetic records
+and injected lookup outcomes. Linux evidence does not establish native macOS
+account lookup. This example is not an installed CLI command.
 
 ## Repository stages and CI
 
