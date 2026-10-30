@@ -12,8 +12,8 @@ selects direct smoltcp role adapters and BoringTun within their declared
 limits. Both full role gates have real controlled-peer and independent
 cleanup evidence. This does not establish a production networking service
 or native macOS support. Phase 1 has begun with backend-independent static
-CIDR policy and offline configuration paths; the parser, protocol backends and
-service remain unimplemented.
+CIDR policy, offline configuration paths and bounded YAML decoding; schema
+validation, the CLI, protocol backends and service remain unimplemented.
 
 ## Phase Ledger
 
@@ -22,7 +22,7 @@ service remain unimplemented.
 | Development infrastructure | Available | `scripts/check.sh`: licensing, actionlint with ShellCheck, composite validation, Python harness tests, Rust formatting/Clippy/rustdoc/tests/release and dependency policy |
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
-| 1: Headless Linux service slice | In progress | `crates/warper-core/` implements immutable bounded IPv4/IPv6 longest-prefix policy, shared backend identity, injectable invoking-account validation and offline configuration paths. `warper-config` supplies Unix OS account lookup with a Linux native probe. Evidence: `target/evidence/phase-1/configuration-paths/` and `target/evidence/phase-1/native-identity/`. Next: configuration parser/CLI fixture registration, authenticated control, durable Linux driver/journal and actual SOCKS5/TUN service lifecycle |
+| 1: Headless Linux service slice | In progress | Core implements bounded static policy, backend identity and offline paths. `warper-config` supplies Unix account lookup and bounded YAML decoding with decoder-only fixture tests (ADR 0006). Evidence: `target/evidence/phase-1/configuration-paths/`, `native-identity/` and `yaml-decoder/`. Next: schema/semantic validation and full parser/CLI fixture registration, authenticated control, durable Linux driver/journal and actual SOCKS5/TUN service lifecycle |
 | 2: Linux DNS and routing | Not started | Production DNS parsing/transport, complete service-binding dependency gates, response handoff, route leases, retained-state admission and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |

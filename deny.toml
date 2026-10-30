@@ -19,7 +19,10 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.9
-exceptions = []
+# Exact transitive YAML dependency; notice/review conditions are in ADR 0006.
+exceptions = [
+    { crate = "foldhash@=0.2.0", allow = ["Zlib"] },
+]
 
 [bans]
 multiple-versions = "warn"

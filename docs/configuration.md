@@ -6,13 +6,15 @@ SPDX-License-Identifier: MIT
 
 # Canonical Configuration and CLI Contract
 
-Status: implementation specification; the Rust parser/CLI do not exist yet.
+Status: implementation specification; the schema validator/CLI do not exist yet.
 Core implements offline path resolution and injectable invoking-account
 validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
-account lookup in `crates/warper-config/src/identity.rs`. Parser/CLI integration
-remains unimplemented. This document defines
-the initial schema. Update it, its examples, and validation fixtures together
-when a justified decision changes the contract.
+account lookup in `crates/warper-config/src/identity.rs`. Bounded YAML decoding
+is implemented in `warper-config::yaml`, following
+[ADR 0006](adr/0006-bounded-yaml-decoding.md); schema/semantic validation and CLI
+integration remain unimplemented. This document defines the initial schema.
+Update it, its examples, and fixtures together when a justified decision changes
+the contract.
 
 ## 1. Parsing and Path Rules
 
@@ -23,6 +25,32 @@ when a justified decision changes the contract.
 - Resolve accounts from OS records rather than `HOME`. Only an elevated root caller uses sudo identity fields; an ordinary user cannot select another account through those variables. Reject empty paths and embedded NUL bytes. Resolution is lexical: preserve symlinks and `..`, and do not require referenced files to exist during offline validation.
 - File-valued secrets are UTF-8, nonempty, and limited to 16 KiB; remove one final LF or CRLF, preserving all other characters. At runtime, require a regular file, owned by the invoking user or root, without group/other permissions. Read with checks that avoid a check/open race; never print its contents.
 - `check-config` performs parsing, normalization, path resolution, and semantic validation without opening credential/trust files, making network requests, or changing host state. Import reads selected credential/trust material in the ordinary-user native client. Service preflight reads only its protected managed material, validates keys, detects host conflicts, and checks privileges; a control request never redirects privileged file reads.
+
+### Decoder boundary
+
+The YAML decoder is a separate stage from schema and semantic validation.
+Decoding success alone never authorizes import, route publication, or service
+startup. Accept at most 1 MiB of UTF-8 source, 65,536 value/key nodes, and value
+depth 16 (the root is depth zero). These fixed admission limits also apply to
+offline input; configuration fields cannot raise them. Check source size before
+UTF-8 validation or parser construction. Third-party scanner/container overhead
+is additional to source size; these bounds are not a whole-process memory cap.
+
+Use YAML 1.2 core scalar resolution: quoted and block scalars are strings;
+unquoted booleans, integers, and floats retain their types. Preserve integer
+spelling until field-specific range checks, so overflow cannot turn an integer
+into a string or float. Core `str`, `bool`, `int`, `float`, `map`, and `seq` tags
+may specify the corresponding type; reject custom/unsupported tags, mismatched
+tags, and all null values. The non-specific `!` tag preserves scalar strings
+or the corresponding container kind. Mapping keys must be strings. Do not
+expand merge keys; the schema rejects them as unknown fields.
+
+Decoder errors contain a stable category, reason, and bounded field path.
+Use only recognized schema key names in decoder paths; redact other keys as
+`[key]`. Never retain a scanner's source excerpt in an error, or expose values
+through decoded-value `Debug` output. Schema validation will additionally
+reject unknown keys, missing fields, and type/semantic violations. Its fixture
+expectations remain distinct from decoder-only fixture checks.
 
 ## 2. Root and Tunnel Fields
 
@@ -280,7 +308,9 @@ Phase 0 must capture original-shaped valid inputs plus explicit migration-error 
 The Phase 0 catalog is `tests/fixtures/configuration/cases.toml`. It records
 canonical examples, original-shaped synthetic inputs, normalization,
 migration/error expectations, and the required backend capability matrix.
-It is declarative test input; no production parser/CLI has validated it yet.
+Decoder-only tests in `crates/warper-config/tests/yaml_fixtures.rs` register
+these inputs and reject the duplicate-key fixture. The remaining catalog
+expectations are still declarative: no schema validator/CLI has validated them.
 Missing SSH trust is represented as a preflight failure with a nonexistent
 trust store, rather than an offline read of the developer's trust files.
 

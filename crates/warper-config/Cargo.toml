@@ -12,6 +12,7 @@ publish.workspace = true
 
 [dependencies]
 warper-core = { path = "../warper-core" }
+yaml-rust2.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["user"] }
