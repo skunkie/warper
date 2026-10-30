@@ -6,7 +6,12 @@ SPDX-License-Identifier: MIT
 
 # Canonical Configuration and CLI Contract
 
-Status: implementation specification; the Rust parser/CLI do not exist yet. This document defines the initial schema. Update it, its examples, and validation fixtures together when a justified decision changes the contract.
+Status: implementation specification; the Rust parser/CLI do not exist yet.
+Core implements offline path resolution and injectable invoking-account
+validation in `crates/warper-core/src/configuration/paths.rs`; native OS identity
+lookup and parser/CLI integration remain unimplemented. This document defines
+the initial schema. Update it, its examples, and validation fixtures together
+when a justified decision changes the contract.
 
 ## 1. Parsing and Path Rules
 
@@ -14,6 +19,7 @@ Status: implementation specification; the Rust parser/CLI do not exist yet. This
 - Do not interpolate environment variables or execute substitutions. Treat `$`, backticks, and similar characters literally, including in passwords.
 - Import, offline validation, and foreground diagnostics use `--config PATH` or the invoking user's `~/.warp.yaml`. The installed service uses an approved managed snapshot, never a home-directory search or sudo environment at boot. With elevated sudo, resolve and cross-check `SUDO_UID`/`SUDO_USER`; reject inconsistent identity information. With neither set, use the current account. Define this lookup through an injectable identity provider for offline tests.
 - Expand `~` and `~/` to the invoking user's home, including under sudo; reject `~otheruser`. Resolve relative paths inside YAML against the configuration file's directory. Resolve a relative `--config` against the original working directory. Do not change identity/home semantics for privilege preflight.
+- Resolve accounts from OS records rather than `HOME`. Only an elevated root caller uses sudo identity fields; an ordinary user cannot select another account through those variables. Reject empty paths and embedded NUL bytes. Resolution is lexical: preserve symlinks and `..`, and do not require referenced files to exist during offline validation.
 - File-valued secrets are UTF-8, nonempty, and limited to 16 KiB; remove one final LF or CRLF, preserving all other characters. At runtime, require a regular file, owned by the invoking user or root, without group/other permissions. Read with checks that avoid a check/open race; never print its contents.
 - `check-config` performs parsing, normalization, path resolution, and semantic validation without opening credential/trust files, making network requests, or changing host state. Import reads selected credential/trust material in the ordinary-user native client. Service preflight reads only its protected managed material, validates keys, detects host conflicts, and checks privileges; a control request never redirects privileged file reads.
 

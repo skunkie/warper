@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Backend-independent selection policy. Networking belongs to the service.
+//! Backend-independent policy and offline configuration preparation.
 
+pub mod configuration;
 pub mod routing;
 
 /// Registry identity within one immutable configuration generation.

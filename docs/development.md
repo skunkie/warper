@@ -12,7 +12,8 @@ The [service/client contract](service-and-client.md) defines the Tauri
 desktop, independent `warperd` service, local control, and managed bundle.
 The current repository contains contracts, development infrastructure,
 experimental Rust stack probes, and the first production core static-routing
-policy. There is no production networking service yet.
+policy and offline configuration path preparation. There is no production
+networking service yet.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
