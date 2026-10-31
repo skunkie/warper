@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0021. Linux bound TCP egress API
 
-- Status: accepted scoped socket API; production connector evidence pending.
+- Status: accepted scoped protected TCP connector; full driver integration pending.
 - Date: 2026-10-31
 - Related: ADR 0016, NET-01 and NET-04.
 
@@ -73,4 +73,9 @@ and preserves half-close ownership. No monitor task is detached. Socket and
 monitor retire before their permit and native context. Kernel queue accounting
 is exposed separately from payload budgets; full service admission remains an
 integration gate. Genuine production connector/idle-invalidation execution
-remains unverified pending the disposable native run.
+passes in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41239873952)
+at `25396a0`, including an independently parked reader, retained half-close
+admission, changed-path rejection and the real journaled TUN/SOCKS flow. Both
+root probes exit zero without timeout and preserve host state independently.
+Production capture ownership, full native-budget admission and complete daemon
+readiness remain open.

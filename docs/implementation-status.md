@@ -250,8 +250,8 @@ Local cancellation/admission and boundary tests pass. Actual journaled-owner
 TCP packet traffic/retirement and surviving-port runtime ownership pass in
 [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41234617793)
 at `feaa91a`, with independently preserved host state. Evidence is under `target/evidence/phase-1/owned-tun-packet-port/`. The fixture's capture route
-and loopback connector still do not establish production route ownership or
-verified physical egress; daemon supervision/recovery remain open.
+still does not establish production route ownership; the protected connector
+has its separate evidence below. Daemon supervision/recovery remain open.
 
 The bound TCP egress experiment (ADR 0021) now exercises source/device binding,
 actual tuple route verification and an isolated peer under a competing capture
@@ -265,9 +265,10 @@ The initial protected TCP connector now prepares deterministic route/link
 selection and verifies fresh source/device-bound tuples per admitted connection.
 It bounds lifetime slots and native queues, monitors both stream directions and
 closes on change/loss without path/backend fallback. Local path/waker/error
-checks pass; actual production connector under capture, idle invalidation and
-its integration with the real kernel SOCKS5 flow remain unverified pending CI.
-Evidence is under `target/evidence/phase-1/protected-tcp-connector/`. Hardware
+checks pass. Actual production connector under capture, independent idle
+invalidation and real kernel SOCKS5 integration pass in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41239873952)
+at `25396a0`, with independently preserved host state. Evidence is under `target/evidence/phase-1/protected-tcp-connector/`. Hardware
 path evidence, full native budget admission, capture publication/recovery and
 daemon/control integration remain open.
 
