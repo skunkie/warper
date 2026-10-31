@@ -12,6 +12,7 @@ pub mod context;
 pub mod link_lookup;
 mod netlink;
 pub mod route_lookup;
+pub mod tun;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueryError {

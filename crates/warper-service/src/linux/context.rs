@@ -209,6 +209,9 @@ impl Context {
     pub fn recorded_owner(&self) -> RecordedOwner {
         self.recorded
     }
+    pub(super) fn runtime(&self) -> &RuntimeLease {
+        &self.lease
+    }
     pub fn classify(&self, recorded: &RecordedOwner) -> Classification {
         classify(&self.recorded, recorded)
     }

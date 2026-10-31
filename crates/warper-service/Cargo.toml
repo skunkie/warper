@@ -24,12 +24,12 @@ tokio = { workspace = true, features = ["net", "test-util"] }
 netlink-packet-core.workspace = true
 netlink-packet-route.workspace = true
 netlink-sys.workspace = true
+tun-rs.workspace = true
 nix.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 warper-control = { path = "../warper-control" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tun-rs.workspace = true
 nix = { workspace = true, features = ["sched"] }
 rustix = { workspace = true, features = ["fs"] }
 

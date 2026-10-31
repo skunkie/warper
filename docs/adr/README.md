@@ -30,6 +30,7 @@ need their own record.
 | [0016](0016-bounded-linux-route-lookups.md) | Accepted read-only boundary | Bounded native IPv4 TCP observations without physical-path authority |
 | [0017](0017-protected-network-journal-storage.md) | Accepted local storage boundary | Fixed bounded network snapshots with explicit pending/uncertain recovery |
 | [0018](0018-native-journal-owner-context.md) | Accepted read-only evidence boundary | Pinned native boot, namespaces, instance and process-start context |
+| [0019](0019-journaled-initial-tun-lifecycle.md) | Proposed native gate | Durable preparation, fresh descriptor ownership and verified TUN retirement |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or

@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0018. Native journal owner context
 
-- Status: accepted native read-only evidence; public root integration pending.
+- Status: accepted native owner-context boundary with public root evidence.
 - Date: 2026-10-31
 - Related: ADR 0008, ADR 0009, ADR 0015, ADR 0017, Phase 1 native recovery.
 
@@ -67,7 +67,10 @@ zero start ticks, bounds, namespace labels and every owner classification.
 The isolated root TUN fixture now verifies public capture, a fresh service
 instance fence, retained flock and a joined thread that unshares only its own
 network namespace and must fail revalidation. Parent context and independent
-cleanup must remain valid. Fresh public root execution remains pending.
+cleanup must remain valid. The
+[owner-dispatched gate](https://github.com/skunkie/warper/actions/runs/41215393408)
+passes at `e7711c7`, including real foreign-thread rejection, retained ownership
+and independently preserved host state.
 Retain artifacts under `target/evidence/phase-1/native-journal-context/`.
 
 This establishes an owner component, not a complete platform journal, physical

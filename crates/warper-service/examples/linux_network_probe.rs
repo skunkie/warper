@@ -11,7 +11,7 @@ mod linux {
         fs, io,
         net::{Ipv4Addr, SocketAddr, SocketAddrV4},
         os::unix::{
-            fs::{FileTypeExt, MetadataExt},
+            fs::{FileTypeExt, MetadataExt, PermissionsExt},
             net::UnixStream as NativeStream,
         },
         process::Command,
@@ -112,10 +112,17 @@ mod linux {
             }))
         }
     }
-    fn native_context() -> Result<warper_service::linux::context::Context, Failure> {
+    fn native_context() -> Result<
+        (
+            warper_service::linux::context::Context,
+            Arc<warper_control::runtime::RuntimeLease>,
+        ),
+        Failure,
+    > {
         use warper_control::runtime::{RuntimeLease, connection::ConnectionStore};
         use warper_service::linux::context::{Classification, Context, RecordedOwner};
         let lease = Arc::new(RuntimeLease::acquire()?);
+        let retained_lease = Arc::downgrade(&lease);
         let connection = ConnectionStore::open(&lease)?;
         let context = Arc::new(Context::capture(lease.clone(), &connection)?);
         let recorded = RecordedOwner::decode(&context.recorded_owner().encode())?;
@@ -156,7 +163,94 @@ mod linux {
         println!(
             "PASS native boot/process/namespace context, prior-instance fencing and joined foreign-thread rejection"
         );
-        Ok(context)
+        let lease = retained_lease
+            .upgrade()
+            .ok_or("native context lost runtime ownership")?;
+        Ok((context, lease))
+    }
+    async fn journaled_tun_lifecycle(
+        context: Arc<warper_service::linux::context::Context>,
+        foreign: &tun_rs::SyncDevice,
+    ) -> Result<(), Failure> {
+        use warper_service::linux::tun::{Error as TunError, NameOutcome, Owner, Stage};
+        let original = foreign.name()?;
+        let before = inspect_link(&original).await?;
+        let mut owner = Owner::prepare(context.clone(), Some("warper-journal"), MTU as u16)?;
+        if owner.stage() != Stage::Prepared {
+            return Err("TUN intent was not prepared".into());
+        }
+        owner.allocate()?;
+        if owner.stage() != Stage::Allocated || owner.index() == Some(before.index.get()) {
+            return Err("journaled TUN allocation differs".into());
+        }
+        foreign.set_name("warper-journal")?;
+        let collision = owner.apply_name();
+        foreign.set_name(&original)?;
+        if collision != Err(TunError::Conflict) {
+            return Err("journaled TUN rename did not preserve a raced foreign name".into());
+        }
+        owner.close()?;
+        owner.close()?;
+        if owner.stage() != Stage::Retired || inspect_link(&original).await? != before {
+            return Err("journaled TUN rollback changed foreign identity".into());
+        }
+        drop(owner);
+        let mut owner = Owner::prepare(context.clone(), Some("warper-journal"), MTU as u16)?;
+        owner.allocate()?;
+        if owner.apply_name()? != NameOutcome::Renamed
+            || owner.apply_name()? != NameOutcome::AlreadyApplied
+        {
+            return Err("journaled TUN rename/idempotency differs".into());
+        }
+        let observed = inspect_link("warper-journal").await?;
+        if Some(observed.index.get()) != owner.index()
+            || observed.mtu.get() != MTU as u32
+            || observed.flags & nix::libc::IFF_UP as u32 != 0
+        {
+            return Err("journaled TUN was not the intended down interface".into());
+        }
+        owner.close()?;
+        owner.close()?;
+        drop(owner);
+        let mut owner = Owner::prepare(context.clone(), None, MTU as u16)?;
+        owner.allocate()?;
+        if owner.apply_name()? != NameOutcome::OsSelected {
+            return Err("OS-selected TUN name was not preserved".into());
+        }
+        owner.close()?;
+        if inspect_link(&original).await? != before {
+            return Err("journaled TUN retirement changed foreign metadata".into());
+        }
+        drop(owner);
+        let started = tokio::time::Instant::now();
+        let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let mut latencies = Vec::with_capacity(20);
+        for _ in 0..20 {
+            let before = tokio::time::Instant::now();
+            let mut owner = Owner::prepare(context.clone(), None, MTU as u16)?;
+            owner.allocate()?;
+            owner.close()?;
+            latencies.push(before.elapsed().as_nanos());
+        }
+        let elapsed = started.elapsed().as_nanos();
+        let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
+            + i128::from(after.tv_nsec)
+            - i128::from(cpu.tv_nsec);
+        latencies.sort_unstable();
+        let memory = fs::read_to_string("/proc/self/status")?;
+        let peak = memory
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .ok_or("native workload peak RSS unavailable")?;
+        println!(
+            "journaled_tun iterations=20 concurrency=1 elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 {peak}",
+            latencies[9], latencies[18], latencies[19]
+        );
+        println!(
+            "PASS journaled fresh TUN creation, raced rename rollback, naming idempotency and verified retirement"
+        );
+        Ok(())
     }
     async fn peers() -> Result<JoinSet<Result<(), Failure>>, Failure> {
         let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -372,7 +466,8 @@ mod linux {
     }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         isolated(mount, net)?;
-        let context = native_context()?;
+        let (context, runtime_lease) = native_context()?;
+        let context = Arc::new(context);
         // Read-only production query in the fixture's private network namespace.
         // This observes a route; it does not authorize the loopback connector.
         let (query_owner, cancellation) = tokio::sync::watch::channel(false);
@@ -431,6 +526,7 @@ mod linux {
         println!("PASS native link change permanently invalidates bounded monitor");
         let foreign_name = foreign.name()?;
         let result=async {
+            journaled_tun_lifecycle(context.clone(),&foreign).await?;
             let foreign_identity=inspect_link(&foreign_name).await?;
             if foreign_identity.kind!=warper_service::linux::link_lookup::Kind::Tun
                 || foreign_identity.mtu.get()!=1400 {return Err("foreign fixture TUN inspection differs".into());}
@@ -488,10 +584,72 @@ mod linux {
             Ok(_) => Vec::new(),
             Err(error) => vec![Box::new(error) as Failure],
         };
+        let storage_recovery = (|| -> Result<(), Failure> {
+            use warper_control::runtime::journal::{Error as JournalError, NetworkJournal};
+            use warper_service::linux::tun::{Error as TunError, Owner};
+            let mut owner = Owner::prepare(context.clone(), Some("warper-failure"), MTU as u16)?;
+            owner.allocate()?;
+            let index = owner.index().ok_or("faulted TUN lacked an index")?;
+            fs::write("/var/lib/warper/network.pending", b"partial")?;
+            fs::set_permissions(
+                "/var/lib/warper/network.pending",
+                fs::Permissions::from_mode(0o600),
+            )?;
+            if owner.apply_name() != Err(TunError::Storage(JournalError::RecoveryRequired)) {
+                return Err("pending storage did not block native rename".into());
+            }
+            if !matches!(owner.close(),Err(failure) if failure.primary==TunError::Storage(JournalError::RecoveryRequired))
+                || !matches!(
+                    nix::net::if_::if_indextoname(index),
+                    Err(nix::errno::Errno::ENODEV | nix::errno::Errno::ENXIO)
+                )
+            {
+                return Err(
+                    "TUN cleanup did not preserve storage failure and close its descriptor".into(),
+                );
+            }
+            let mut journal = NetworkJournal::open(&runtime_lease)?;
+            let token = journal
+                .inspect_pending(&runtime_lease)?
+                .ok_or("missing injected pending state")?;
+            journal.discard_pending(&runtime_lease, token)?;
+            owner.close()?;
+            println!(
+                "PASS native TUN cleanup surfaces storage failure and finishes only after explicit pending recovery"
+            );
+            Ok(())
+        })();
+        if let Err(error) = storage_recovery {
+            cleanup.push(error);
+        }
+        let abandoned = (|| -> Result<(), Failure> {
+            use warper_service::linux::tun::{Error as TunError, Owner};
+            let mut owner = Owner::prepare(context.clone(), None, MTU as u16)?;
+            owner.allocate()?;
+            let index = owner.index().ok_or("abandoned TUN lacked an index")?;
+            drop(owner);
+            if !matches!(
+                nix::net::if_::if_indextoname(index),
+                Err(nix::errno::Errno::ENODEV | nix::errno::Errno::ENXIO)
+            ) || !matches!(
+                Owner::prepare(context.clone(), None, MTU as u16),
+                Err(TunError::RecoveryRequired)
+            ) {
+                return Err("dropped TUN did not close conservatively behind recovery".into());
+            }
+            println!(
+                "PASS dropped TUN closes only its descriptor and preserves explicit journal recovery"
+            );
+            Ok(())
+        })();
+        if let Err(error) = abandoned {
+            cleanup.push(error);
+        }
         if let Err(error) = context.revalidate() {
             cleanup.push(Box::new(error) as Failure);
         }
         drop(context);
+        drop(runtime_lease);
         if let Err(error) = warper_control::runtime::RuntimeLease::acquire() {
             cleanup.push(Box::new(error) as Failure);
         }

@@ -712,3 +712,11 @@ of these identities is configurable or accepted from a client as native proof.
 The service pins namespace descriptors and retains the runtime lease until
 native resources retire. Stored identities permit classification/inspection;
 process liveness and full object ownership checks remain necessary for recovery.
+
+The initial native TUN owner accepts only MTU 1280 and a validated optional Linux
+name. It creates an unnamed down nonpersistent device, journals ownership and
+renames that newly owned descriptor through the kernel. No existing named TUN
+is adopted. Cleanup verifies retirement of the owned descriptor and leaves
+foreign/reused names untouched. Its fixed WTUN version-one payload records only
+TUN lifecycle; address, route, exemption and service readiness are not supplied
+by successful allocation. Active or uncertain prior state requires recovery.

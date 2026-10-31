@@ -22,8 +22,8 @@ The released `tun` 0.8.14 uses WTFPL, outside the existing dependency policy.
 Direct local ioctl code would expand the unsafe boundary. The candidate
 [tun-rs 2.8.16](https://crates.io/crates/tun-rs/2.8.16) is Apache-2.0 and exposes
 safe creation, rename, MTU and Tokio packet I/O. Keep its default address
-management and offload/framing features disabled. It is currently a Linux-only
-development dependency for an executable probe, not a production driver choice.
+management and offload/framing features disabled. ADR 0019 promotes the same exact Linux dependency for a journaled lifecycle
+adapter; its broader mutation/traffic integration remains gated separately.
 The lockfile retains its exact registry checksums and platform dependency graph;
 no existing package versions are upgraded.
 

@@ -1890,3 +1890,39 @@ liveness, object ownership marks, full journal schema and mutation/recovery
 policy remain required before cleanup or continuation. Debug/errors omit native
 record values. Capture/revalidation uses bounded synchronous procfs reads in
 retained native workers; no task, namespace mutation or network change is made.
+
+### Journaled initial TUN lifecycle
+
+`linux::tun::Owner` is a synchronous native-worker boundary for the initial
+1280-byte Linux TUN. `prepare(Arc<Context>, optional_name, mtu)` validates native
+scope, the fixed protected real TUN device and name availability before writing
+a durable Prepared intent. `allocate` always creates an unnamed, down,
+nonpersistent device; never pass a configured name to the upstream constructor.
+Validate descriptor-derived name/index/MTU and persist Allocated ownership before
+success. `apply_name` writes Renaming intent before the atomic kernel rename,
+then verifies/persists Named ownership. An unchanged/OS-selected name is explicit;
+no interface becomes usable or Connected through this boundary.
+
+The version-one fixed 160-byte `WTUN` platform payload contains the 88-byte owner
+component, lifecycle stage, MTU, optional requested/actual names and kernel index.
+Only absent or validated Retired journal state permits a fresh preparation.
+Unknown, active, pending or uncertain state requires recovery. Each native step
+revalidates context and committed journal; any failed native/storage mutation
+blocks further application. Keep the live device in the owner for explicit
+rollback. Cleanup closes only the freshly created owned descriptor, never an
+interface selected by stored name/index. Kernel index absence must be verified
+before durably recording Retired. Record retirement intent before close when
+storage is available; the original Prepared intent also covers compensating
+closure of an owned temporary descriptor after storage failure. Preserve the
+initial failure alongside rollback/storage/absence-check errors.
+
+Repeated close verifies unchanged Retired storage. Drop closes the owned device
+before releasing context/instance ownership but does not advance the journal or
+claim asynchronous cleanup. The supervisor must run/join native workers and
+call explicit close. A crash leaves a conservative recovery record; this version
+never deletes an interface based on stored identity alone. External persistence
+or unexpected surviving indices fail cleanup rather than touching foreign state.
+Validate the protected device node before invoking the upstream builder so its
+missing-node repair path is not selected. No network address, UP flag, route,
+DNS setting, packet task or application flow is published here. Those native
+transactions and full platform recovery remain subsequent implementation gates.

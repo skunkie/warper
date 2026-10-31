@@ -203,10 +203,19 @@ journal meaning, native mutation/rollback and the running daemon remain open.
 The native journal owner component (ADR 0018) pins network/PID namespaces and
 records boot, instance and process-start identity while retaining runtime
 ownership. Local real-procfs and bounded parser/classification tests pass.
-Public root capture and foreign-thread namespace rejection remain pending the
-next isolated gate. Evidence is retained under
+Public root capture and foreign-thread namespace rejection pass in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41215393408)
+at `e7711c7`, including joined thread cleanup and preserved host state. Evidence is retained under
 `target/evidence/phase-1/native-journal-context/`. Full platform journal meaning,
 process liveness, object ownership and mutation/recovery remain open.
+
+The initial journaled TUN owner (ADR 0019) implements durable preparation,
+fresh down allocation, atomic requested naming and verified descriptor-based
+retirement. Local codec and strict compile checks pass; actual journaled native
+allocation/raced-conflict rollback and its lifecycle workload await the next
+owner-dispatched gate. Evidence is under
+`target/evidence/phase-1/journaled-tun/`. Address/UP/route/exemption transactions,
+packet-worker integration, recovery and the running daemon remain open.
 
 ## Gate Evidence
 
