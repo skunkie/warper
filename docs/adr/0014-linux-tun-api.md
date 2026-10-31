@@ -4,9 +4,9 @@ SPDX-FileCopyrightText: 2026 skunkie
 SPDX-License-Identifier: MIT
 -->
 
-# 0014. Candidate safe Linux TUN API
+# 0014. Safe Linux TUN API boundary
 
-- Status: proposed; native API gate pending, production driver not implemented.
+- Status: accepted scoped Linux API; journaled production driver pending.
 - Date: 2026-10-31
 - Related: ADR 0002, ADR 0012, ADR 0013, NET-01, NET-05.
 
@@ -73,3 +73,23 @@ instance identity, native route/conflict handling, physical endpoint exemptions,
 journaled startup rollback/recovery, task supervision and actual daemon/control
 lifecycle evidence. Fixture `ip` commands are bounded test setup, never a
 replacement for the required production netlink driver.
+
+## Accepted native scope
+
+The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41191632642)
+passes at `e2e1f99`. Its exact probe/artifact demonstrates two independently
+owned unnamed TUNs, typed rename collision with unchanged foreign state, actual
+kernel TCP through the prepared production adapters, exact application bytes,
+duplex response after FIN, joined workers and last-owner interface removal.
+The independent harness reports no timeout and preserved host links/routes,
+resolver and device metadata. The existing root control/recovery gate also
+passes with the private device mount.
+
+Accept the exact released API for a thin Linux adapter using unnamed creation,
+nonpersistent descriptor ownership and collision-safe naming. Do not promote
+fixture shell operations into production or infer general physical egress,
+journaling/recovery, SIGKILL handling or daemon/control lifecycle from this run.
+Retained raw results are under
+`target/evidence/phase-1/privileged-control-ci/run-41191632642/`. Production
+modules must preserve the ownership/admission conditions above and add their
+own acknowledged driver and lifecycle evidence.

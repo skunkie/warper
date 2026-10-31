@@ -688,8 +688,9 @@ adapters, checks a retained foreign TUN/name collision and last-owner cleanup,
 and independently joins its workers. A controlled proxy verifies the invented
 numeric destination before mapping it to its loopback target. This does not
 establish journaled production OS changes, physical interface protection or a
-running control service. The published gate remains open until its artifact
-reports successful native execution and independent host-state preservation.
+running control service. The scoped native API gate has successful creation/collision/I/O/drop and
+independent host preservation evidence (ADR 0014). Production driver and daemon
+acceptance remain separate open gates.
 
 ## Release readiness
 
