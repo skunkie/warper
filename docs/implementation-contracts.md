@@ -2053,3 +2053,51 @@ mount/network/PID harness independently reaps processes and verifies host state.
 This is proposed API evidence, not a production physical-path lease: monitored
 path generations, continuous invalidation, reservations, endpoint refresh,
 exemption ownership and daemon integration remain open.
+
+### Initial Linux protected TCP connector
+
+Construct preparation in a retained native worker from verified native context,
+1..=64 numeric IPv4 endpoints, the currently owned capture index and 1..=16
+stream slots. Revalidate context before collecting read-only route/link
+observations. Preparation subscribes before inspection and rejects any pending
+change, but its stored observations alone confer no send authority. Supported
+paths are unicast over unstacked Ethernet/veth, or explicit loopback endpoints
+using a local loopback route. Other virtual/stacked links, TUN, nonlocal loopback,
+IPv6 and ambiguous routes remain unsupported; no alternate path is selected.
+
+Each admitted connection owns a fresh change subscription and one stream permit.
+Reinspect the selected link, bind SO_BINDTODEVICE and the observed source before
+connect, verify option/local-port readback, and query the exact TCP/UID/source/
+interface tuple against the prepared route. Check notifications before SYN;
+race connect against invalidation and inspect the tuple/route again before
+returning. Bindings remain the capture-loop backstop across observation races.
+Any mismatch or notification/loss fails closed without unbound retry. Kernel
+TCP send and receive queues are each capped/read back at 64 KiB; the monitor
+queue is capped at 64 KiB. Query/monitor parse capacity and at most two stored
+I/O wakers per stream are separately bounded; the service must account these
+native resources alongside its payload budget before admission.
+
+Returned streams own their descriptor, monitor, permit and native context in
+that retirement order. Before each read/write/flush/half-close, poll the monitor
+with a waker that notifies both I/O directions. Any event/error permanently
+closes the socket and returns a typed/redacted network-unreachable I/O failure.
+An idle pending read wakes on changes; no worker or hidden monitoring task is
+spawned. Half-close retains the permit and read side. Caller timeout/drop closes
+setup resources; stream drop releases capacity only after socket/monitor close.
+Fresh dials must repeat all current-path checks against the prepared selection;
+network changes never select another interface/backend implicitly. Full daemon
+readiness, capture publication/recovery and hardware deployment evidence remain
+independent gates.
+
+Link inspection now distinguishes unstacked Ethernet (Ether layer with no link
+kind) and veth (Ether plus Veth kind). Bridges and other stacked/unknown links
+remain Other, and neither classification alone proves physical egress. The
+change subscription also exposes `poll_invalidation(Context)` for retained I/O
+owners: Pending consumes no datagram; ready errors/events are sticky and close
+the monitor. Callers provide deadline/cancellation and combine wakers when more
+than one I/O direction waits on the same monitor.
+
+Portable transport errors distinguish UnsupportedIntegration (an unavailable
+verified OS transport path) from UnsupportedCapability (an unsupported backend
+operation). Neither category permits selecting a different backend or direct
+connection. Native route/monitor details remain behind the Linux adapter.

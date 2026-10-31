@@ -22,6 +22,8 @@ pub enum Query<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
     Loopback,
+    Ethernet,
+    Veth,
     Tun,
     Other,
 }
@@ -120,6 +122,8 @@ fn observation(message: LinkMessage, query: Query<'_>) -> Result<Observation, Er
         (LinkLayerType::Loopback, None) if message.header.flags.contains(LinkFlags::Loopback) => {
             Kind::Loopback
         }
+        (LinkLayerType::Ether, None) => Kind::Ethernet,
+        (LinkLayerType::Ether, Some(InfoKind::Veth)) => Kind::Veth,
         (LinkLayerType::None, Some(InfoKind::Tun)) => Kind::Tun,
         (LinkLayerType::Loopback, _) | (_, Some(InfoKind::Tun)) => {
             return Err(Error::UnsupportedLink);
@@ -211,6 +215,27 @@ mod tests {
         other
             .attributes
             .retain(|attribute| !matches!(attribute, LinkAttribute::LinkInfo(_)));
+        assert_eq!(
+            observation(other.clone(), index()).unwrap().kind,
+            Kind::Ethernet
+        );
+        other
+            .attributes
+            .push(LinkAttribute::LinkInfo(vec![LinkInfo::Kind(
+                InfoKind::Veth,
+            )]));
+        assert_eq!(
+            observation(other.clone(), index()).unwrap().kind,
+            Kind::Veth
+        );
+        other
+            .attributes
+            .retain(|attribute| !matches!(attribute, LinkAttribute::LinkInfo(_)));
+        other
+            .attributes
+            .push(LinkAttribute::LinkInfo(vec![LinkInfo::Kind(
+                InfoKind::Bridge,
+            )]));
         assert_eq!(observation(other, index()).unwrap().kind, Kind::Other);
     }
 

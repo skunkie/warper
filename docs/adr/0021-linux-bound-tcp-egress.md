@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0021. Linux bound TCP egress API
 
-- Status: proposed; real competing-route TCP evidence pending.
+- Status: accepted scoped socket API; production connector evidence pending.
 - Date: 2026-10-31
 - Related: ADR 0016, NET-01 and NET-04.
 
@@ -18,7 +18,7 @@ connection followed by post-connect inspection can already have emitted a SYN
 through capture. Source binding alone does not constrain the egress interface.
 Manual prefix exemptions have separate journal/ownership/conflict obligations.
 
-## Proposed decision
+## Decision
 
 Probe the released Tokio IPv4 TCP source/device binding API before production
 modules depend on it. Bind the verified source and device before connect,
@@ -52,4 +52,25 @@ owner-dispatched Linux CI's `linux_network_probe` under
 state checks. The `--physical-peer` role requires initial root plus inherited
 private namespace anchors and accepts one bounded synthetic connection.
 Evidence belongs under `target/evidence/phase-1/bound-tcp-egress/`. Real native
-binding/bypass behavior remains unverified pending that run.
+binding/bypass behavior passes in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41235377897)
+at `999e86f`, with independently preserved host state. This establishes the
+scoped socket mechanism; hardware deployment and complete daemon acceptance
+remain unverified.
+
+## Initial connector implementation
+
+Preparation records deterministic route/link selection for at most 64 IPv4
+endpoints under a change subscription, after native-worker context validation.
+These observations confer no send authority. Each dial reserves one of at most
+16 lifetime slots, subscribes afresh, verifies the selected link, binds source
+and device, and validates the actual tuple route before connect and again before
+return. Limit/read back TCP receive/send kernel buffers to 64 KiB each.
+
+Support unstacked Ethernet/veth unicast and explicit local loopback endpoints;
+reject other underlays and mismatches without alternate selection. Per-stream
+monitor polling wakes both I/O directions, closes the socket on any change/loss
+and preserves half-close ownership. No monitor task is detached. Socket and
+monitor retire before their permit and native context. Kernel queue accounting
+is exposed separately from payload budgets; full service admission remains an
+integration gate. Genuine production connector/idle-invalidation execution
+remains unverified pending the disposable native run.

@@ -255,11 +255,21 @@ verified physical egress; daemon supervision/recovery remain open.
 
 The bound TCP egress experiment (ADR 0021) now exercises source/device binding,
 actual tuple route verification and an isolated peer under a competing capture
-/32, with retained child cleanup and independent host-state checks. Compile
-checks are available; native bypass remains unverified pending disposable CI.
-Evidence is under `target/evidence/phase-1/bound-tcp-egress/`. A production
+/32, with retained child cleanup and independent host-state checks. Native
+socket bypass passes in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41235377897)
+at `999e86f`, with independently preserved host state. Evidence is under `target/evidence/phase-1/bound-tcp-egress/`. A production
 physical connector, continuous path invalidation and exemption ownership remain
 open even if the candidate socket API passes.
+
+The initial protected TCP connector now prepares deterministic route/link
+selection and verifies fresh source/device-bound tuples per admitted connection.
+It bounds lifetime slots and native queues, monitors both stream directions and
+closes on change/loss without path/backend fallback. Local path/waker/error
+checks pass; actual production connector under capture, idle invalidation and
+its integration with the real kernel SOCKS5 flow remain unverified pending CI.
+Evidence is under `target/evidence/phase-1/protected-tcp-connector/`. Hardware
+path evidence, full native budget admission, capture publication/recovery and
+daemon/control integration remain open.
 
 ## Gate Evidence
 

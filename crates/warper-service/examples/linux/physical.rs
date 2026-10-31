@@ -4,16 +4,19 @@
 
 //! Controlled bound-TCP API experiment, not a production physical-path lease.
 
-use super::{Failure, ip, isolated, join_native, preserve};
+use super::{Failure, ip, isolated, join_native, preserve, protected_connector};
 use std::{
+    future::poll_fn,
     io,
     io::Write,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    pin::Pin,
     process::{Command, Stdio},
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf},
     net::{TcpListener, TcpSocket},
 };
 use tun_rs::DeviceBuilder;
@@ -29,7 +32,11 @@ const DESTINATION: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
 const PORT: u16 = 40123;
 const SAMPLE: &[u8] = b"controlled-tcp";
 
-pub(super) async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
+pub(super) async fn exercise(
+    context: Arc<warper_service::linux::context::Context>,
+    mount: &str,
+    net: &str,
+) -> Result<(), Failure> {
     let mut namespace_created = false;
     let mut link_created = false;
     let result = async {
@@ -51,7 +58,7 @@ pub(super) async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         ])?;
         ip(&["-n", NAMESPACE, "link", "set", PEER, "up"])?;
         ip(&["-n", NAMESPACE, "link", "set", "lo", "up"])?;
-        exchange(mount, net).await
+        exchange(context, mount, net).await
     }
     .await;
     let mut cleanup = Vec::new();
@@ -64,7 +71,11 @@ pub(super) async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
     preserve(result, cleanup)
 }
 
-async fn exchange(mount: &str, net: &str) -> Result<(), Failure> {
+async fn exchange(
+    context: Arc<warper_service::linux::context::Context>,
+    mount: &str,
+    net: &str,
+) -> Result<(), Failure> {
     let endpoint = SocketAddrV4::new(DESTINATION, PORT);
     let (request_owner, _) = tokio::sync::watch::channel(false);
     let request = || Request {
@@ -102,6 +113,8 @@ async fn exchange(mount: &str, net: &str) -> Result<(), Failure> {
     let capture = DeviceBuilder::new().mtu(1280).enable(true).build_sync()?;
     capture.set_name(CAPTURE)?;
     capture.set_nonblocking(true)?;
+    let connector =
+        protected_connector(context, vec![endpoint.into()], capture.if_index()?, 1).await?;
     ip(&[
         "route",
         "add",
@@ -174,6 +187,7 @@ async fn exchange(mount: &str, net: &str) -> Result<(), Failure> {
             Ok::<_, Failure>(())
         })
         .await??;
+        protected_exchange(&connector, endpoint, &request_owner).await?;
         let mut buffer = [0; 1281];
         for _ in 0..32 {
             match capture.recv(&mut buffer) {
@@ -208,27 +222,148 @@ async fn exchange(mount: &str, net: &str) -> Result<(), Failure> {
     Ok(())
 }
 
+async fn protected_exchange(
+    connector: &warper_service::linux::egress::Connector,
+    endpoint: SocketAddrV4,
+    owner: &tokio::sync::watch::Sender<bool>,
+) -> Result<(), Failure> {
+    use warper_service::linux::egress::{Error as EgressError, PathInvalidated};
+    let request = || Request {
+        deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+        cancellation: owner.subscribe(),
+    };
+    let mut stream = connector.connect(endpoint.into(), request()).await?;
+    let source = stream.source();
+    if stream.endpoint() != endpoint {
+        return Err("protected stream endpoint differs".into());
+    }
+    stream.write_all(SAMPLE).await?;
+    stream.shutdown().await?;
+    if !matches!(
+        connector.connect(endpoint.into(), request()).await,
+        Err(EgressError::ResourceLimit)
+    ) {
+        return Err("TCP half-close released protected stream admission".into());
+    }
+    let mut response = Vec::with_capacity(12);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        (&mut stream).take(12).read_to_end(&mut response),
+    )
+    .await??;
+    let mut expected = source.port().to_be_bytes().to_vec();
+    expected.extend_from_slice(b"after-fin");
+    if response != expected {
+        return Err("protected stream source/FIN response differs".into());
+    }
+    drop(stream);
+    let mut stream = connector.connect(endpoint.into(), request()).await?;
+    let (parked, ready) = tokio::sync::oneshot::channel();
+    let mut reader = tokio::spawn(async move {
+        let mut byte = [0; 1];
+        let mut buffer = ReadBuf::new(&mut byte);
+        let mut parked = Some(parked);
+        let result = poll_fn(|context| {
+            let result = Pin::new(&mut stream).poll_read(context, &mut buffer);
+            if result.is_pending()
+                && let Some(parked) = parked.take()
+                && parked.send(()).is_err()
+            {
+                return std::task::Poll::Ready(Err(io::ErrorKind::Interrupted.into()));
+            }
+            result
+        })
+        .await;
+        (stream, result)
+    });
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(1), ready).await,
+        Ok(Ok(()))
+    ) {
+        let cleanup = cancel_reader(reader).await;
+        return preserve(Err("protected idle reader did not park".into()), cleanup);
+    }
+    if let Err(primary) = ip(&["link", "set", EGRESS, "mtu", "1400"]) {
+        let cleanup = cancel_reader(reader).await;
+        return preserve(Err(primary), cleanup);
+    }
+    // The timeout observes a separate task; it cannot poll or wake that task's
+    // read future. Completion therefore needs the network-monitor waker.
+    let (stream, result) = match tokio::time::timeout(Duration::from_secs(1), &mut reader).await {
+        Ok(joined) => joined?,
+        Err(_) => {
+            let cleanup = cancel_reader(reader).await;
+            return preserve(
+                Err("network change did not wake the protected idle reader".into()),
+                cleanup,
+            );
+        }
+    };
+    let error = result
+        .err()
+        .ok_or("idle stream did not fail on path change")?;
+    if error.kind() != io::ErrorKind::NetworkUnreachable
+        || error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<PathInvalidated>())
+            .is_none()
+    {
+        return Err("path invalidation lost its typed native failure".into());
+    }
+    drop(stream);
+    if !matches!(
+        connector.connect(endpoint.into(), request()).await,
+        Err(EgressError::PathMismatch)
+    ) {
+        return Err("changed egress selected a replacement path implicitly".into());
+    }
+    println!(
+        "PASS production protected TCP under capture, retained half-close admission and idle change invalidation without path fallback"
+    );
+    Ok(())
+}
+
+async fn cancel_reader(
+    reader: tokio::task::JoinHandle<(warper_service::linux::egress::Stream, io::Result<()>)>,
+) -> Vec<Failure> {
+    reader.abort();
+    match reader.await {
+        Err(error) if error.is_cancelled() => Vec::new(),
+        Err(error) => vec![Box::new(error)],
+        Ok((_stream, Err(error))) => vec![Box::new(error)],
+        Ok((_stream, Ok(()))) => Vec::new(),
+    }
+}
+
 pub(super) async fn peer(mount: &str, net: &str) -> Result<(), Failure> {
     isolated(mount, net)?;
     tokio::time::timeout(Duration::from_secs(5), async {
         let server = TcpListener::bind((DESTINATION, PORT)).await?;
         io::stdout().write_all(b"READY\n")?;
         io::stdout().flush()?;
-        let (mut stream, source) = server.accept().await?;
-        if source.ip() != SOURCE {
-            return Err("controlled TCP peer source differs".into());
+        for _ in 0..2 {
+            let (mut stream, source) = server.accept().await?;
+            if source.ip() != SOURCE {
+                return Err("controlled TCP peer source differs".into());
+            }
+            let mut request = Vec::with_capacity(SAMPLE.len() + 1);
+            (&mut stream)
+                .take(SAMPLE.len() as u64 + 1)
+                .read_to_end(&mut request)
+                .await?;
+            if request != SAMPLE {
+                return Err("controlled TCP peer request differs".into());
+            }
+            stream.write_all(&source.port().to_be_bytes()).await?;
+            stream.write_all(b"after-fin").await?;
+            stream.shutdown().await?;
         }
-        let mut request = Vec::with_capacity(SAMPLE.len() + 1);
-        (&mut stream)
-            .take(SAMPLE.len() as u64 + 1)
-            .read_to_end(&mut request)
-            .await?;
-        if request != SAMPLE {
-            return Err("controlled TCP peer request differs".into());
+        let (mut stream, _) = server.accept().await?;
+        let mut request = Vec::with_capacity(1);
+        (&mut stream).take(1).read_to_end(&mut request).await?;
+        if !request.is_empty() {
+            return Err("invalidated idle stream emitted application payload".into());
         }
-        stream.write_all(&source.port().to_be_bytes()).await?;
-        stream.write_all(b"after-fin").await?;
-        stream.shutdown().await?;
         Ok::<_, Failure>(())
     })
     .await?

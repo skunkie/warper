@@ -9,6 +9,7 @@ use std::{fmt, io};
 
 pub mod change_monitor;
 pub mod context;
+pub mod egress;
 pub mod link_lookup;
 mod netlink;
 pub mod route_lookup;

@@ -10,7 +10,12 @@ use netlink_packet_core::{NetlinkBuffer, NetlinkMessage, NetlinkPayload};
 use netlink_packet_route::RouteNetlinkMessage;
 use netlink_sys::{AsyncSocket, SocketAddr, TokioSocket};
 use nix::{errno::Errno, libc};
-use std::{fmt, future::poll_fn, io};
+use std::{
+    fmt,
+    future::poll_fn,
+    io,
+    task::{Context, Poll},
+};
 use tokio::time::sleep_until;
 use warper_core::transport::Request;
 
@@ -102,25 +107,35 @@ impl Monitor {
     /// pending future leaves the still-owned subscription intact; no packet is
     /// consumed across a suspension point. Cancellation/deadline invalidates.
     pub async fn wait(&mut self, mut request: Request) -> Invalidation {
+        let reason = tokio::select! { biased;
+            _ = request.cancellation.wait_for(|cancelled| *cancelled) => Invalidation::Cancelled,
+            () = sleep_until(request.deadline) => Invalidation::Timeout,
+            reason = poll_fn(|context| self.poll_invalidation(context)) => reason,
+        };
+        self.invalidate(reason)
+    }
+
+    /// Register one owner's waker without an internal task or deadline. Pending
+    /// consumes no datagram; a ready event/error permanently closes the monitor.
+    pub fn poll_invalidation(&mut self, context: &mut Context<'_>) -> Poll<Invalidation> {
         if let Some(reason) = self.invalidation {
-            return reason;
+            return Poll::Ready(reason);
         }
         let Some(socket) = &self.socket else {
-            return self.invalidate(Invalidation::InvalidMessage);
+            return Poll::Ready(self.invalidate(Invalidation::InvalidMessage));
         };
         let mut buffer = [0; MAX_DATAGRAM + 1];
         let mut remaining = &mut buffer[..];
-        let received = tokio::select! { biased;
-            _ = request.cancellation.wait_for(|cancelled| *cancelled) => Err(Invalidation::Cancelled),
-            () = sleep_until(request.deadline) => Err(Invalidation::Timeout),
-            result = poll_fn(|context| socket.poll_recv_from(context, &mut remaining)) => result.map_err(io_invalidation),
+        let result = match socket.poll_recv_from(context, &mut remaining) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(result) => result,
         };
         let length = MAX_DATAGRAM + 1 - remaining.len();
-        let reason = match received {
-            Err(reason) => reason,
+        let reason = match result {
             Ok(sender) => classify(&buffer[..length], sender),
+            Err(error) => io_invalidation(error),
         };
-        self.invalidate(reason)
+        Poll::Ready(self.invalidate(reason))
     }
 
     pub fn invalidation(&self) -> Option<Invalidation> {

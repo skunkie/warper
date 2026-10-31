@@ -738,3 +738,11 @@ committed activation, one bounded packet port can use the original descriptor.
 It cannot reconfigure the TUN or publish routes. Shutdown must join packet work
 and drop the port before explicit descriptor retirement; a live port returns
 PacketPortActive without pretending cleanup succeeded.
+
+The initial Linux protected TCP connector admits at most 64 numeric IPv4
+endpoints and 16 simultaneous setup/stream owners. It supports unstacked
+Ethernet/veth unicast paths and explicit local loopback endpoints, rejecting
+other path types rather than falling back. Each dial binds the observed source
+and interface and verifies its actual tuple; each stream invalidates on network
+change/loss. Its native kernel socket/monitor budgets remain separate from the
+existing payload-buffer accounting and must be admitted by the service.

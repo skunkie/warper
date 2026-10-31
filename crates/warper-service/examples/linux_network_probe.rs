@@ -26,9 +26,11 @@ mod linux {
     use tun_rs::DeviceBuilder;
     use warper_config::schema::{Config, Platform};
     use warper_control::{namespace, unix};
+    #[cfg(test)]
+    use warper_core::transport::{EndpointConnector, Error, OpenTcp, TcpStream as BoxedTcp};
     use warper_core::{
         configuration::paths::{Account, Paths},
-        transport::{EndpointConnector, Error, OpenTcp, Request, TcpStream as BoxedTcp},
+        transport::Request,
     };
     use warper_service::preflight::{Networking, Plan};
     use warper_stack::{Seed, host::MTU};
@@ -99,7 +101,9 @@ mod linux {
         )
         .await?)
     }
+    #[cfg(test)]
     struct LocalConnector(SocketAddr);
+    #[cfg(test)]
     impl EndpointConnector for LocalConnector {
         fn connect_tcp(&self, endpoint: SocketAddr, request: Request) -> OpenTcp<'_> {
             Box::pin(request.run(async move {
@@ -422,6 +426,26 @@ mod linux {
             }
         }
     }
+    async fn protected_connector(
+        context: Arc<warper_service::linux::context::Context>,
+        endpoints: Vec<SocketAddr>,
+        excluded: u32,
+        limit: usize,
+    ) -> Result<warper_service::linux::egress::Connector, Failure> {
+        let jobs = warper_service::native::Workers::new(1)?;
+        let excluded = std::num::NonZeroU32::new(excluded).ok_or("capture index missing")?;
+        let (owner, _) = tokio::sync::watch::channel(false);
+        let mut task = jobs.try_reserve()?.start(move || {
+            warper_service::linux::egress::Preparation::new(context, &endpoints, excluded, limit)
+        });
+        let preparation = join_native(&mut task, &owner).await??;
+        Ok(preparation
+            .prepare(Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation: owner.subscribe(),
+            })
+            .await?)
+    }
     async fn owned_packet_port(
         context: Arc<warper_service::linux::context::Context>,
     ) -> Result<
@@ -530,8 +554,8 @@ mod linux {
         }
         Ok(())
     }
-    fn networking() -> Result<Networking, Failure> {
-        let endpoint = "127.0.0.1:1080".parse()?;
+    fn plan() -> Result<Plan, Failure> {
+        let endpoint: SocketAddr = "127.0.0.1:1080".parse()?;
         let account = Account {
             uid: 1000,
             name: "fixture".into(),
@@ -542,8 +566,7 @@ mod linux {
             "tunnel: {{ip: 198.18.0.1, name: {NAME}}}\nprotocols: [{{socks5: {{host: '{endpoint}', ips: [198.18.0.2/32]}}}}]\n"
         );
         let config = Config::parse(source.as_bytes(), &paths, Platform::Linux)?;
-        Ok(Plan::prepare(&config, Platform::Linux)?
-            .instantiate(Seed::generate()?, Arc::new(LocalConnector(endpoint)))?)
+        Ok(Plan::prepare(&config, Platform::Linux)?)
     }
     #[derive(Debug)]
     struct CombinedFailure {
@@ -709,9 +732,9 @@ mod linux {
     }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         isolated(mount, net)?;
-        physical::exercise(mount, net).await?;
         let (context, runtime_lease) = native_context()?;
         let context = Arc::new(context);
+        physical::exercise(context.clone(), mount, net).await?;
         // Read-only production query in the fixture's private network namespace.
         // This observes a route; it does not authorize the loopback connector.
         let (query_owner, cancellation) = tokio::sync::watch::channel(false);
@@ -752,7 +775,7 @@ mod linux {
         {
             return Err("dropped pending wait changed private subscription".into());
         }
-        let networking = networking()?;
+        let plan = plan()?;
         // A retained TUN occupies the first generated name. The candidate
         // must create another device and preserve this independent owner.
         let foreign = DeviceBuilder::new().mtu(1400).enable(false).build_sync()?;
@@ -788,6 +811,9 @@ mod linux {
             println!("PASS native TUN name/index/MTU inspection and foreign identity preservation");
             drop(native);
             let (mut native_owner, port)=owned_packet_port(context.clone()).await?;
+            let endpoints=plan.endpoints().map(|(_,endpoint)|endpoint).collect();
+            let connector=protected_connector(context.clone(),endpoints,native_owner.index().ok_or("packet owner index missing")?,plan.flow_capacity()).await?;
+            let networking=plan.instantiate(Seed::generate()?,Arc::new(connector))?;
             let tun=Arc::new(port);
             let mut workers=peers().await?;
             let outcome=exchange(tun.clone(),networking).await;
@@ -958,7 +984,15 @@ mod linux {
                     channels,
                     relays,
                     ..
-                } = networking().unwrap();
+                } = {
+                    let plan = plan().unwrap();
+                    let endpoint = plan.endpoints().next().unwrap().1;
+                    plan.instantiate(
+                        Seed::generate().unwrap(),
+                        Arc::new(LocalConnector(endpoint)),
+                    )
+                    .unwrap()
+                };
                 channels.shutdown.send(()).unwrap();
                 assert_eq!(runtime.run().await.unwrap().admitted_packets, 0);
                 assert_eq!(relays.shutdown().await.admitted, 0);

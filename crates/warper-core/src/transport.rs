@@ -51,6 +51,7 @@ pub enum Rejection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     UnsupportedCapability,
+    UnsupportedIntegration,
     InvalidDestination,
     Cancelled,
     Timeout,
@@ -65,6 +66,9 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::UnsupportedCapability => {
                 "UnsupportedCapability: selected backend cannot perform this operation"
+            }
+            Self::UnsupportedIntegration => {
+                "UnsupportedIntegration: selected backend transport path is unavailable"
             }
             Self::InvalidDestination => "InvalidConfig: invalid captured destination",
             Self::Cancelled => "Cancelled: backend setup cancelled",
