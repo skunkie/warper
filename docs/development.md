@@ -230,8 +230,10 @@ permissions for the non-root uploader. Harness unit tests cover real temporary
 resolver sockets/joining, namespace refusal, supervisor timeout/failure,
 artifact preservation, primary/cleanup diagnostics and the workflow trust guard.
 A passing boundary job is not full UX-01 or Phase 1 service/TUN acceptance.
-Native privileged results remain unverified until the real job runs; local
-compilation is not evidence.
+A complete passing privileged run is required; local compilation is not
+evidence. The private D-Bus health query must explicitly address the bus daemon
+and its fixture-only policy must allow method replies. It never contacts or
+changes the host bus.
 
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored

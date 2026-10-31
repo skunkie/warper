@@ -11,6 +11,8 @@ import io
 import os
 from pathlib import Path
 import signal
+import subprocess
+import time
 import sys
 import tempfile
 import unittest
@@ -73,6 +75,32 @@ class ControlAcceptanceTests(unittest.TestCase):
             self.assertEqual(result["primary_error"], "ValueError")
             self.assertEqual(result["cleanup_error"], "OSError")
             self.assertFalse(result["host_state_preserved"])
+
+    def test_private_bus_policy_allows_actual_method_replies(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryFile() as log:
+            path = Path(directory)
+            bus_path = path / "bus"
+            config = path / "bus.conf"
+            config.write_text(fixture.BUS_CONFIG.replace("/run/dbus/system_bus_socket", str(bus_path)))
+            bus = subprocess.Popen([fixture.tool("dbus-daemon"), "--nofork", "--nopidfile",
+                                    f"--config-file={config}"], stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 3
+                while not bus_path.exists():
+                    self.assertIsNone(bus.poll(), "private fixture bus exited before readiness")
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                result = fixture.bus_health(f"unix:path={bus_path}")
+                self.assertIn(b"org.freedesktop.DBus", result.stdout)
+            finally:
+                if bus.poll() is None:
+                    bus.terminate()
+                try:
+                    status = bus.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    bus.kill()
+                    status = bus.wait(timeout=2)
+                self.assertIn(status, (0, -signal.SIGTERM))
 
     def test_namespace_guard_rejects_an_ordinary_descriptor_before_mutation(self):
         with tempfile.TemporaryFile() as file:

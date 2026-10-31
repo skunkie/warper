@@ -30,12 +30,12 @@ BUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Config
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig><type>system</type><listen>unix:path=/run/dbus/system_bus_socket</listen>
 <auth>EXTERNAL</auth><policy context="default"><allow user="*"/><allow own="*"/>
-<allow send_destination="*"/></policy></busconfig>
+<allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>
 """
 
 
-def command(args, **kwargs):
-    return subprocess.run(args, check=True, timeout=10, **kwargs)
+def command(args, *, timeout=10, **kwargs):
+    return subprocess.run(args, check=True, timeout=timeout, **kwargs)
 
 
 def tool(name):
@@ -217,6 +217,12 @@ def resolver_health(port=53):
             raise RuntimeError("private TCP resolver health failed")
 
 
+def bus_health(address):
+    return command([tool("dbus-send"), f"--bus={address}", "--type=method_call", "--print-reply",
+                    "--dest=org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.ListNames"],
+                   capture_output=True, timeout=2)
+
+
 def inner(args):
     require_private_namespace("mnt", args.mount_fd)
     require_private_namespace("net", args.net_fd)
@@ -247,8 +253,7 @@ def inner(args):
             if bus.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError("private bus readiness failed")
             time.sleep(0.01)
-        command([tool("dbus-send"), "--bus=unix:path=/run/dbus/system_bus_socket", "--type=method_call", "--print-reply",
-                 "/org/freedesktop/DBus", "org.freedesktop.DBus.ListNames"], capture_output=True)
+        bus_health("unix:path=/run/dbus/system_bus_socket")
         with Resolver():
             resolver_health()
             command(["/run/warper/peer-probe", "--exercise", str(args.mount_fd), str(args.net_fd)],
