@@ -2001,3 +2001,33 @@ verifies retirement. WTUN version three adds Enabling/Enabled, retaining the
 Retired records authorize fresh preparation. Native operations share the bounded
 worker netlink transport and one total operation deadline. Privileged external
 changes can invalidate observations; full monitoring/recovery stays open.
+
+### Owned native packet port
+
+The initial TUN owner registers its fresh down descriptor with an I/O-enabled
+Tokio runtime during allocation in a retained native worker. No named device,
+raw descriptor, cloned TUN queue or upstream device escapes. After committed
+Enabled, `packet_port` may issue one non-cloneable port. The port shares only
+the original descriptor and retains the native context/runtime lease, dropping
+the descriptor reference before that lease. It cannot reconfigure the device.
+Issuance validates context, storage and descriptor identity/MTU. Once issued,
+a second port is rejected even if the first was dropped.
+
+One receive and one send may be pending per port; concurrent same-direction
+operations return Busy without queueing. Receive uses exactly 1281 bytes to
+reject packets exceeding the 1280-byte MTU. Zero-length reads, oversized
+packets, short writes and native failures remain typed/redacted. Send accepts
+only nonempty packets up to MTU and never retries a partial write. One total
+Request deadline and cancellation/owner loss bound each asynchronous wait;
+dropping the future releases its direction reservation and retains no task.
+Failure/cancellation never authorizes replay of a potentially delivered packet.
+The caller owns framing/family validation and bounded packet queues.
+
+Explicit owner close returns PacketPortActive while a port reference survives;
+it does not advance the journal or pretend the interface was retired. Shutdown
+must cancel and join packet work and drop the port before descriptor retirement.
+Dropping the journal owner with a live port preserves context/runtime ownership
+until the last port drops and leaves conservative active journal state. There
+is no asynchronous cleanup hook or capture-route authority in this boundary.
+Verified physical protection, journaled route ownership and a supervising daemon
+remain separate gates.

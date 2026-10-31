@@ -98,3 +98,16 @@ activation gate passes in [owner-dispatched CI](https://github.com/skunkie/warpe
 at `ce5f4b2`, including repeated operations, joined rollback, a 20-cycle workload
 and independently preserved host state. Capture/physical-path integration and
 full recovery remain open.
+
+## Packet ownership extension
+
+Register the freshly created descriptor with the service's I/O-enabled Tokio
+runtime during allocation. Keep that same descriptor in the journal owner and
+issue one narrow packet port only after committed activation. Share its lifetime
+without cloning/adopting TUN queues; the port retains native runtime ownership
+and exposes no reconfiguration or raw descriptor. Explicit close rejects a live
+port before journal mutation. Async packet operations bound framing and direction
+admission and release reservations when their wait is dropped. The supervisor
+must join/drop packet work before retiring the owner. This adds no capture-route
+or physical-path authority. Genuine journaled-owner packet traffic and retirement
+remain unverified pending disposable CI.

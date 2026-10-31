@@ -8,13 +8,15 @@
 use super::context::{Context, RecordedOwner};
 use nix::{errno::Errno, net::if_::if_nametoindex};
 use std::{fmt, io, net::Ipv4Addr, sync::Arc};
-use tun_rs::{DeviceBuilder, SyncDevice};
+use tun_rs::{AsyncDevice, DeviceBuilder, DeviceImpl};
 use warper_control::runtime::journal::{Error as StorageError, NetworkJournal};
 use warper_core::transport::Request;
 
 mod address;
 mod link;
 mod node;
+mod packet;
+pub use packet::{BUFFER_BYTES, Error as PacketError, PacketPort};
 mod transaction;
 pub use transaction::{
     Cause as AddressCause, Delivery as AddressDelivery, Failure as AddressFailure,
@@ -38,6 +40,8 @@ pub enum Error {
     DeviceInspection(io::ErrorKind),
     Conflict,
     InvalidState,
+    NoRuntime,
+    PacketPortActive,
     RecoveryRequired,
     InvalidRecord,
     Io(io::ErrorKind),
@@ -60,6 +64,8 @@ impl fmt::Display for Error {
                 "UnsupportedIntegration: native TUN device inspection failed"
             }
             Self::Conflict => "Conflict: requested TUN name or owned identity changed",
+            Self::NoRuntime => "SystemConfiguration: native TUN allocation requires an I/O runtime",
+            Self::PacketPortActive => "Conflict: packet work must retire before native TUN close",
             Self::InvalidState => "Conflict: invalid TUN lifecycle transition",
             Self::RecoveryRequired => "RecoveryRequired: prior TUN state requires inspection",
             Self::InvalidRecord => "RecoveryRequired: invalid platform TUN journal",
@@ -96,12 +102,13 @@ pub enum NameOutcome {
 /// Retains the fresh device until explicit close or drop. No raw descriptor or
 /// upstream device escapes; a stored name/index can never attach an interface.
 pub struct Owner {
-    device: Option<SyncDevice>,
+    device: Option<Arc<AsyncDevice>>,
     identity: Option<Identity>,
     journal: NetworkJournal,
     revision: u64,
     record: Record,
     failed: bool,
+    port_issued: bool,
     // Device and journal resources retire before the last native context owner.
     context: Arc<Context>,
 }
@@ -148,6 +155,7 @@ impl Owner {
             revision,
             record,
             failed: false,
+            port_issued: false,
             context,
         })
     }
@@ -155,16 +163,17 @@ impl Owner {
         if self.record.stage != Stage::Prepared || self.device.is_some() {
             return Err(Error::InvalidState);
         }
+        tokio::runtime::Handle::try_current().map_err(|_| Error::NoRuntime)?;
         self.ready()?;
         node::verify()?;
-        let device = match DeviceBuilder::new().mtu(MTU).enable(false).build_sync() {
+        let device = match DeviceBuilder::new().mtu(MTU).enable(false).build_async() {
             Ok(device) => device,
             Err(error) => {
                 self.failed = true;
                 return Err(native_error(error));
             }
         };
-        self.device = Some(device);
+        self.device = Some(Arc::new(device));
         let result = (|| {
             let device = self.device.as_ref().ok_or(Error::InvalidState)?;
             let identity = identity(device)?;
@@ -353,7 +362,29 @@ impl Owner {
         }
         result
     }
+    /// Issue exactly one bounded packet port after committed activation. The
+    /// returned port retains the original descriptor and native runtime pin.
+    pub fn packet_port(&mut self) -> Result<PacketPort, Error> {
+        if self.port_issued || self.record.stage != Stage::Enabled {
+            return Err(Error::InvalidState);
+        }
+        self.ready()?;
+        self.verify_device()?;
+        let device = self.device.as_ref().ok_or(Error::InvalidState)?.clone();
+        self.port_issued = true;
+        Ok(PacketPort::new(device, self.context.clone()))
+    }
     pub fn close(&mut self) -> Result<(), Failure> {
+        if self
+            .device
+            .as_ref()
+            .is_some_and(|device| Arc::strong_count(device) != 1)
+        {
+            return Err(Failure {
+                primary: Error::PacketPortActive,
+                cleanup: [None; 2],
+            });
+        }
         if self.record.stage == Stage::Retired && self.device.is_none() {
             return self.check_storage().map_err(|primary| Failure {
                 primary,
@@ -463,7 +494,7 @@ impl fmt::Debug for Owner {
         f.write_str("TunOwner(<redacted>)")
     }
 }
-fn identity(device: &SyncDevice) -> Result<Identity, Error> {
+fn identity(device: &DeviceImpl) -> Result<Identity, Error> {
     let name = device.name().map_err(native_error)?;
     let index = device.if_index().map_err(native_error)?;
     if !record::valid_name(&name) || index == 0 || index > i32::MAX as u32 {

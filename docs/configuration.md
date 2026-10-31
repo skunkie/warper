@@ -732,3 +732,9 @@ ownership, journals intent and sets only IFF_UP. It verifies kernel ACK, UP stat
 and address ownership before success. WTUN version three extends the same
 160-byte layout with Enabling/Enabled, retaining conservative decoding of prior
 versions. Activation alone supplies no capture routes or connected readiness.
+
+Native TUN allocation requires an I/O-enabled Tokio service runtime. After
+committed activation, one bounded packet port can use the original descriptor.
+It cannot reconfigure the TUN or publish routes. Shutdown must join packet work
+and drop the port before explicit descriptor retirement; a live port returns
+PacketPortActive without pretending cleanup succeeded.

@@ -23,7 +23,7 @@ mod linux {
         net::{TcpListener, TcpStream},
         task::JoinSet,
     };
-    use tun_rs::{AsyncDevice, DeviceBuilder};
+    use tun_rs::DeviceBuilder;
     use warper_config::schema::{Config, Platform};
     use warper_control::{namespace, unix};
     use warper_core::{
@@ -420,6 +420,47 @@ mod linux {
             }
         }
     }
+    async fn owned_packet_port(
+        context: Arc<warper_service::linux::context::Context>,
+    ) -> Result<
+        (
+            warper_service::linux::tun::Owner,
+            warper_service::linux::tun::PacketPort,
+        ),
+        Failure,
+    > {
+        use warper_service::linux::tun::{Error as TunError, Owner, PacketPort, Stage};
+        let jobs = warper_service::native::Workers::new(1)?;
+        let (join_owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut task=jobs.try_reserve()?.start(move || -> Result<(Owner, PacketPort), Failure> {
+            let mut owner=Owner::prepare(context,Some(NAME),MTU as u16)?;
+            let result=(|| -> Result<PacketPort, Failure> {
+                owner.allocate()?;
+                owner.apply_name()?;
+                if !matches!(owner.packet_port(),Err(TunError::InvalidState)) {
+                    return Err("packet port escaped before committed activation".into());
+                }
+                let request=||Request {deadline:tokio::time::Instant::now()+Duration::from_secs(5), cancellation:cancellation.clone()};
+                owner.assign_ipv4(Ipv4Addr::new(198,18,0,1),request())?;
+                owner.enable(request())?;
+                let port=owner.packet_port()?;
+                if !matches!(owner.packet_port(),Err(TunError::InvalidState))
+                    || !matches!(owner.close(),Err(failure) if failure.primary==TunError::PacketPortActive)
+                    || owner.stage()!=Stage::Enabled {
+                    return Err("live packet port failed to preserve its native owner".into());
+                }
+                Ok(port)
+            })();
+            match result {
+                Ok(port)=>Ok((owner,port)),
+                Err(primary)=>match owner.close() {
+                    Ok(())=>Err(primary),
+                    Err(cleanup)=>Err(Box::new(CombinedFailure{primary,cleanup:vec![Box::new(cleanup)]})),
+                },
+            }
+        });
+        join_native(&mut task, &join_owner).await?
+    }
     async fn peers() -> Result<JoinSet<Result<(), Failure>>, Failure> {
         let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let destination = target.local_addr()?;
@@ -534,7 +575,10 @@ mod linux {
             Err(Box::new(CombinedFailure { primary, cleanup }))
         }
     }
-    async fn exchange(tun: Arc<AsyncDevice>, networking: Networking) -> Result<(), Failure> {
+    async fn exchange(
+        tun: Arc<warper_service::linux::tun::PacketPort>,
+        networking: Networking,
+    ) -> Result<(), Failure> {
         let Networking {
             runtime,
             mut channels,
@@ -544,6 +588,14 @@ mod linux {
         let owner = tokio::spawn(runtime.run());
         let app = application();
         tokio::pin!(app);
+        let started = tokio::time::Instant::now();
+        let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let (packet_owner, _) = tokio::sync::watch::channel(false);
+        let request = || Request {
+            deadline: started + Duration::from_secs(8),
+            cancellation: packet_owner.subscribe(),
+        };
+        let mut send_waits = Vec::with_capacity(1024);
         let mut buffer = [0; MTU + 1];
         let mut input = 0u64;
         let mut output = 0u64;
@@ -555,14 +607,17 @@ mod linux {
             loop {
                 tokio::select! {
                     result=&mut app=>{result?;break;},
-                    packet=tun.recv(&mut buffer)=>{
+                    packet=tun.recv(&mut buffer,request())=>{
                         let length=packet?;
                         if length==0 || length>MTU {return Err("TUN packet exceeds declared bounds".into());}
                         channels.ingress.try_inject(&buffer[..length])?;input+=1;
                     },
                     packet=channels.packets.recv()=>{
                         let packet=packet.ok_or("host packet owner stopped")?;
-                        if tun.send(&packet).await?!=packet.len() {return Err("TUN short write".into());}output+=1;
+                        if send_waits.len() == 1024 {return Err("fixture packet measurement limit".into());}
+                        let before=tokio::time::Instant::now();
+                        tun.send(&packet,request()).await?;
+                        send_waits.push(before.elapsed().as_nanos());output+=1;
                     },
                     flow=channels.tcp.recv()=>{
                         let flow=flow.ok_or("host acceptance owner stopped")?;
@@ -627,6 +682,24 @@ mod linux {
         {
             return Err("native TUN worker counters differ".into());
         }
+        let elapsed = started.elapsed().as_nanos();
+        let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
+            + i128::from(after.tv_nsec)
+            - i128::from(cpu.tv_nsec);
+        let memory = fs::read_to_string("/proc/self/status")?;
+        let peak = memory
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .ok_or("packet workload RSS missing")?;
+        send_waits.sort_unstable();
+        let n = send_waits.len();
+        println!(
+            "owned_packet_port flows=1 mtu=1280 request_bytes={PAYLOAD} response_bytes=16393 captured={input} returned={output} elapsed_ns={elapsed} cpu_ns={cpu_ns} send_wait_p50_ns={} send_wait_p95_ns={} send_wait_p99_ns={} kernel_drops=unmeasured {peak}",
+            send_waits[n / 2],
+            send_waits[n * 95 / 100],
+            send_waits[n * 99 / 100]
+        );
         println!(
             "PASS actual kernel TCP/TUN to production host/SOCKS5/relay adapters; {input} captured and {output} returned packets; exact 64 KiB, duplex and response after FIN"
         );
@@ -710,9 +783,9 @@ mod linux {
                 || owned.mtu.get()!=MTU as u32 || owned.index==foreign_identity.index
                 || inspect_link(&foreign_name).await?!=foreign_identity {return Err("native TUN identity inspection differs".into());}
             println!("PASS native TUN name/index/MTU inspection and foreign identity preservation");
-            let tun=Arc::new(AsyncDevice::new(native)?);
-            ip(&["address","add","198.18.0.1/32","dev",NAME])?;
-            tun.enabled(true)?;
+            drop(native);
+            let (mut native_owner, port)=owned_packet_port(context.clone()).await?;
+            let tun=Arc::new(port);
             let mut workers=peers().await?;
             let outcome=exchange(tun.clone(),networking).await;
             if outcome.is_err() {workers.abort_all();}
@@ -734,10 +807,14 @@ mod linux {
                 }
             }
             drop(tun);
+            let jobs=warper_service::native::Workers::new(1)?;
+            let (join_owner,_)=tokio::sync::watch::channel(false);
+            let mut closing=jobs.try_reserve()?.start(move||native_owner.close());
+            if let Err(error)=join_native(&mut closing,&join_owner).await? {cleanup.push(Box::new(error) as Failure);}
             let absent=nix::net::if_::if_nameindex()?.iter().all(|interface|interface.name().to_bytes()!=NAME.as_bytes());
             if !absent || before!=ip(&["-j","link","show","dev",&foreign_name])? {cleanup.push("native TUN cleanup or foreign preservation failed".into());}
             preserve(outcome,cleanup)?;
-            println!("PASS fresh unnamed TUN, collision preservation, last-owner cleanup and joined peers");
+            println!("PASS journaled TUN packet port, collision preservation, explicit retirement and joined peers");
             Ok(())
         }.await;
         drop(foreign);
@@ -787,33 +864,53 @@ mod linux {
         if let Err(error) = storage_recovery {
             cleanup.push(error);
         }
-        let abandoned = (|| -> Result<(), Failure> {
+        let abandoned: Result<_, Failure> = async {
             use warper_service::linux::tun::{Error as TunError, Owner};
-            let mut owner = Owner::prepare(context.clone(), None, MTU as u16)?;
-            owner.allocate()?;
+            let (owner, port) = owned_packet_port(context.clone()).await?;
             let index = owner.index().ok_or("abandoned TUN lacked an index")?;
             drop(owner);
-            if index_exists(index)?
+            if !index_exists(index)?
                 || !matches!(
                     Owner::prepare(context.clone(), None, MTU as u16),
                     Err(TunError::RecoveryRequired)
                 )
             {
-                return Err("dropped TUN did not close conservatively behind recovery".into());
+                return Err(
+                    "live packet port lost native ownership or conservative recovery".into(),
+                );
             }
-            println!(
-                "PASS dropped TUN closes only its descriptor and preserves explicit journal recovery"
-            );
-            Ok(())
-        })();
-        if let Err(error) = abandoned {
-            cleanup.push(error);
+            Ok((index, port))
         }
+        .await;
+        let pending_port = match abandoned {
+            Ok(port) => Some(port),
+            Err(error) => {
+                cleanup.push(error);
+                None
+            }
+        };
         if let Err(error) = context.revalidate() {
             cleanup.push(Box::new(error) as Failure);
         }
         drop(context);
         drop(runtime_lease);
+        if let Some((index, port)) = pending_port {
+            if !matches!(
+                warper_control::runtime::RuntimeLease::acquire(),
+                Err(warper_control::runtime::Error::AlreadyRunning)
+            ) {
+                cleanup.push("surviving packet port released runtime ownership".into());
+            }
+            drop(port);
+            match index_exists(index) {
+                Ok(false) => {}
+                Ok(true) => cleanup.push("last packet port failed to retire its TUN".into()),
+                Err(error) => cleanup.push(error),
+            }
+            println!(
+                "PASS surviving packet port retains device/runtime ownership and conservative recovery until last drop"
+            );
+        }
         if let Err(error) = warper_control::runtime::RuntimeLease::acquire() {
             cleanup.push(Box::new(error) as Failure);
         }
