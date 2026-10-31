@@ -237,8 +237,9 @@ exemptions, full recovery and daemon/control integration remain open.
 The initial owned TUN activation now journals intent before changing only IFF_UP
 and requires correlated ACK plus current link/address readback before commit.
 The bounded native worker transport is shared with address assignment; prior
-WTUN versions remain conservatively readable. Local parser/read-only checks
-are available; privileged activation remains unverified pending disposable CI.
+WTUN versions remain conservatively readable. Local checks and scoped
+privileged activation pass in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41233600374)
+at `ce5f4b2`, including the joined 20-cycle workload and preserved host state.
 Evidence is under `target/evidence/phase-1/journaled-tun-activation/`. Capture
 routes, endpoint exemptions, packet supervision and full recovery remain open.
 

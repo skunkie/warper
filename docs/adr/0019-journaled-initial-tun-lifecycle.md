@@ -93,5 +93,8 @@ version decoding. Set only IFF_UP on the owned index after committed address
 ownership; journal intent, require a correlated ACK and verify UP/address state
 before commit. Repetition verifies without mutation. The address and activation
 operations share a private bounded synchronous netlink transaction adapter.
-Activation is not capture publication or connected readiness. Privileged
-activation remains unverified pending disposable CI evidence.
+Activation is not capture publication or connected readiness. The scoped
+activation gate passes in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41233600374)
+at `ce5f4b2`, including repeated operations, joined rollback, a 20-cycle workload
+and independently preserved host state. Capture/physical-path integration and
+full recovery remain open.
