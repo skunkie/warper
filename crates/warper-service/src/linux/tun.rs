@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Journaled creation/rename/retirement of one fresh down Linux TUN.
+//! Journaled lifecycle of one fresh owned Linux TUN.
 //! Call only in retained native workers; this does not publish routes or traffic.
 
 use super::context::{Context, RecordedOwner};
@@ -13,8 +13,13 @@ use warper_control::runtime::journal::{Error as StorageError, NetworkJournal};
 use warper_core::transport::Request;
 
 mod address;
+mod link;
 mod node;
-pub use address::{Cause as AddressCause, Delivery as AddressDelivery, Failure as AddressFailure};
+mod transaction;
+pub use transaction::{
+    Cause as AddressCause, Delivery as AddressDelivery, Failure as AddressFailure,
+};
+pub use transaction::{Cause as NativeCause, Delivery as NativeDelivery, Failure as NativeFailure};
 mod record;
 pub use record::Stage;
 use record::{Identity, Record};
@@ -27,6 +32,7 @@ pub enum Error {
     InvalidInput,
     InvalidAddress,
     Address(AddressFailure),
+    Activation(NativeFailure),
     UnsupportedMtu,
     DeviceUnavailable,
     DeviceInspection(io::ErrorKind),
@@ -44,6 +50,7 @@ impl fmt::Display for Error {
             Self::Storage(_) => "SystemConfiguration: TUN journal operation failed",
             Self::InvalidAddress => "InvalidConfig: invalid initial TUN IPv4 address",
             Self::Address(_) => "SystemConfiguration: native TUN address transaction failed",
+            Self::Activation(_) => "SystemConfiguration: native TUN activation failed",
             Self::InvalidInput => "InvalidConfig: invalid TUN interface name",
             Self::UnsupportedMtu => "UnsupportedCapability: initial TUN MTU must be 1280",
             Self::DeviceUnavailable => {
@@ -233,7 +240,7 @@ impl Owner {
         }
         if !matches!(
             self.record.stage,
-            Stage::Allocated | Stage::Named | Stage::Addressed
+            Stage::Allocated | Stage::Named | Stage::Addressed | Stage::Enabled
         ) {
             return Err(Error::InvalidState);
         }
@@ -244,7 +251,7 @@ impl Owner {
         {
             return Err(Error::InvalidState);
         }
-        let wait = address::Wait::new(request).map_err(|cause| {
+        let wait = transaction::Wait::new(request).map_err(|cause| {
             Error::Address(AddressFailure {
                 delivery: AddressDelivery::NotSent,
                 cause,
@@ -254,7 +261,7 @@ impl Owner {
         self.verify_device()?;
         let index = self.identity.as_ref().ok_or(Error::InvalidState)?.index;
         let before = address::inspect(index, value, &wait).map_err(Error::Address)?;
-        if self.record.stage == Stage::Addressed {
+        if matches!(self.record.stage, Stage::Addressed | Stage::Enabled) {
             return if before.matches == 1 && before.owned_exact == 1 {
                 Ok(())
             } else {
@@ -281,6 +288,64 @@ impl Owner {
             }
             let mut committed = self.record.clone();
             committed.stage = Stage::Addressed;
+            self.save(committed)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    /// Set only IFF_UP after committed address ownership. No capture route is
+    /// published here. Run in a retained worker and join across caller detach.
+    pub fn enable(&mut self, request: Request) -> Result<(), Error> {
+        if !matches!(self.record.stage, Stage::Addressed | Stage::Enabled) {
+            return Err(Error::InvalidState);
+        }
+        let wait = transaction::Wait::new(request).map_err(|cause| {
+            Error::Activation(NativeFailure {
+                delivery: NativeDelivery::NotSent,
+                cause,
+            })
+        })?;
+        self.ready()?;
+        self.verify_device()?;
+        let index = self.identity.as_ref().ok_or(Error::InvalidState)?.index;
+        let address = self.record.address.ok_or(Error::InvalidState)?;
+        let verify_address = |wait: &transaction::Wait, delivery| -> Result<(), Error> {
+            let observed = address::inspect(index, address, wait).map_err(|mut failure| {
+                failure.delivery = delivery;
+                Error::Activation(failure)
+            })?;
+            if observed.matches != 1 || observed.owned_exact != 1 {
+                return Err(Error::Conflict);
+            }
+            Ok(())
+        };
+        verify_address(&wait, NativeDelivery::NotSent)?;
+        let up = link::is_up(index, &wait).map_err(Error::Activation)?;
+        if self.record.stage == Stage::Enabled {
+            return if up { Ok(()) } else { Err(Error::Conflict) };
+        }
+        if up {
+            return Err(Error::Conflict);
+        }
+        let mut intent = self.record.clone();
+        intent.stage = Stage::Enabling;
+        self.save(intent)?;
+        let result = (|| {
+            self.context.revalidate().map_err(Error::Context)?;
+            self.verify_device()?;
+            link::enable(index, &wait).map_err(Error::Activation)?;
+            if !link::is_up(index, &wait).map_err(|mut failure| {
+                failure.delivery = NativeDelivery::Uncertain;
+                Error::Activation(failure)
+            })? {
+                return Err(Error::Conflict);
+            }
+            verify_address(&wait, NativeDelivery::Uncertain)?;
+            self.verify_device()?;
+            let mut committed = self.record.clone();
+            committed.stage = Stage::Enabled;
             self.save(committed)
         })();
         if result.is_err() {

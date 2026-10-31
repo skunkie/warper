@@ -1980,3 +1980,24 @@ versions and malformed state/address combinations are preserved. Kernel dumps
 are observations under the service's serialized native owner; changes by other
 privileged network managers can invalidate them. Global live path monitoring,
 interface UP, capture routes, exemptions and full recovery remain open gates.
+
+### Initial owned TUN activation transaction
+
+After committed address ownership, `Owner::enable(Request)` may set only IFF_UP
+on the newly owned descriptor's verified index. It must validate context,
+storage, identity/MTU and the exact owned address before journaling Enabling.
+Send one RTM_NEWLINK with a change mask of IFF_UP only; no creation/replacement,
+name, MTU or other flags may be requested. Require the shared correlated native
+ACK, fresh link UP inspection and address verification before committing
+Enabled. Repetition verifies current ownership/UP without sending another
+mutation. Missing ACK or subsequent failure remains sticky and requires cleanup;
+never infer rejection from a timeout or replay an uncertain request.
+
+Activation publishes no capture route or connected-service status. Internal
+packet handlers and verified physical endpoint protection still must precede
+capture route publication. Rollback closes only the original descriptor and
+verifies retirement. WTUN version three adds Enabling/Enabled, retaining the
+160-byte layout and decoding version-one/two records conservatively; only
+Retired records authorize fresh preparation. Native operations share the bounded
+worker netlink transport and one total operation deadline. Privileged external
+changes can invalidate observations; full monitoring/recovery stays open.

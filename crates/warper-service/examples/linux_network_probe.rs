@@ -241,14 +241,39 @@ mod linux {
         journaled_address(context.clone(), foreign).await?;
         let started = tokio::time::Instant::now();
         let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
-        let mut latencies = Vec::with_capacity(20);
-        for _ in 0..20 {
-            let before = tokio::time::Instant::now();
-            let mut owner = Owner::prepare(context.clone(), None, MTU as u16)?;
-            owner.allocate()?;
-            owner.close()?;
-            latencies.push(before.elapsed().as_nanos());
-        }
+        let workers = warper_service::native::Workers::new(1)?;
+        let (cancellation_owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut task = workers
+            .try_reserve()?
+            .start(move || -> Result<Vec<u128>, Failure> {
+                let mut latencies = Vec::with_capacity(20);
+                for _ in 0..20 {
+                    let before = tokio::time::Instant::now();
+                    let mut owner = Owner::prepare(context.clone(), None, MTU as u16)?;
+                    let result = (|| -> Result<(), Failure> {
+                        owner.allocate()?;
+                        let request = || Request {
+                            deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+                            cancellation: cancellation.clone(),
+                        };
+                        owner.assign_ipv4(Ipv4Addr::new(198, 18, 0, 11), request())?;
+                        owner.enable(request())?;
+                        Ok(())
+                    })();
+                    let cleanup = owner.close();
+                    match (result, cleanup) {
+                        (Err(primary), Err(cleanup)) => {
+                            return Err(format!("{primary}; cleanup: {cleanup}").into());
+                        }
+                        (Err(primary), Ok(())) => return Err(primary),
+                        (Ok(()), Err(cleanup)) => return Err(cleanup.into()),
+                        (Ok(()), Ok(())) => {}
+                    }
+                    latencies.push(before.elapsed().as_nanos());
+                }
+                Ok(latencies)
+            });
+        let mut latencies = join_native(&mut task, &cancellation_owner).await??;
         let elapsed = started.elapsed().as_nanos();
         let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
         let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
@@ -261,7 +286,7 @@ mod linux {
             .find(|line| line.starts_with("VmHWM:"))
             .ok_or("native workload peak RSS unavailable")?;
         println!(
-            "journaled_tun iterations=20 concurrency=1 elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 {peak}",
+            "journaled_tun mode=address_activation iterations=20 concurrency=1 elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 {peak}",
             latencies[9], latencies[18], latencies[19]
         );
         println!(
@@ -300,11 +325,25 @@ mod linux {
                     {
                         return Err("foreign address was not rejected before mutation".into());
                     }
+                    if owner.enable(request()) != Err(TunError::InvalidState) {
+                        return Err("activation accepted missing address ownership".into());
+                    }
                     let address = Ipv4Addr::new(198, 18, 0, 9);
                     owner.assign_ipv4(address, request())?;
                     owner.assign_ipv4(address, request())?;
                     if owner.stage() != Stage::Addressed {
                         return Err("address ownership was not committed".into());
+                    }
+                    owner.enable(request())?;
+                    owner.assign_ipv4(address, request())?;
+                    owner.enable(request())?;
+                    if owner.stage() != Stage::Enabled {
+                        return Err("activation ownership was not committed".into());
+                    }
+                    let link =
+                        String::from_utf8(ip(&["-o", "link", "show", "dev", "warper-address"])?)?;
+                    if !link.split(['<', '>', ',']).any(|field| field == "UP") {
+                        return Err("activation did not set the isolated kernel UP flag".into());
                     }
                     let observed = String::from_utf8(ip(&[
                         "-o",
@@ -350,8 +389,25 @@ mod linux {
                     (Ok(()), Ok(())) => Ok(()),
                 }
             });
-        // Retain and join even if the shorter mutation deadline has expired.
-        let result = loop {
+        let result = join_native(&mut task, &cancellation_owner).await?;
+        let after = ip(&["-j", "address", "show", "dev", &foreign_name])?;
+        ip(&["address", "del", duplicate, "dev", &foreign_name])?;
+        result?;
+        if before != after {
+            return Err("owned address cleanup changed a foreign address".into());
+        }
+        println!(
+            "PASS journaled IPv4 /32 and UP ACK/readback, idempotency, foreign conflict and joined rollback"
+        );
+        Ok(())
+    }
+    async fn join_native<T: Send + 'static>(
+        task: &mut warper_service::native::Task<T>,
+        cancellation_owner: &tokio::sync::watch::Sender<bool>,
+    ) -> Result<T, Failure> {
+        // The independently bounded harness can terminate hung kernel work.
+        // A caller deadline here never discards the retained native job.
+        loop {
             match task
                 .wait(Request {
                     deadline: tokio::time::Instant::now() + Duration::from_secs(10),
@@ -360,19 +416,9 @@ mod linux {
                 .await
             {
                 Err(warper_service::native::Error::Deadline) => continue,
-                result => break result?,
+                result => return Ok(result?),
             }
-        };
-        let after = ip(&["-j", "address", "show", "dev", &foreign_name])?;
-        ip(&["address", "del", duplicate, "dev", &foreign_name])?;
-        result?;
-        if before != after {
-            return Err("owned address cleanup changed a foreign address".into());
         }
-        println!(
-            "PASS journaled IPv4 /32 address ACK/readback, idempotency, foreign conflict and joined rollback"
-        );
-        Ok(())
     }
     async fn peers() -> Result<JoinSet<Result<(), Failure>>, Failure> {
         let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;

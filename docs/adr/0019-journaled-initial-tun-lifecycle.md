@@ -84,3 +84,14 @@ storage-failure recovery, conservative drop and lifecycle workload. This accepts
 the scoped lifecycle only. Retain source, checks, coverage and downloaded evidence under
 `target/evidence/phase-1/journaled-tun/`. Reconsider for required persistence,
 external surviving state, unsafe upstream node handling or a broader MTU/profile.
+
+## Activation extension
+
+The address extension (ADR 0020) uses WTUN version two. Initial activation adds
+Enabling/Enabled in version three with the same layout and conservative prior
+version decoding. Set only IFF_UP on the owned index after committed address
+ownership; journal intent, require a correlated ACK and verify UP/address state
+before commit. Repetition verifies without mutation. The address and activation
+operations share a private bounded synchronous netlink transaction adapter.
+Activation is not capture publication or connected readiness. Privileged
+activation remains unverified pending disposable CI evidence.

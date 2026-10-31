@@ -234,6 +234,14 @@ at `51ddb3b`, with independently preserved host state. Evidence is under
 `target/evidence/phase-1/journaled-ipv4-address/`. UP, capture routes, physical
 exemptions, full recovery and daemon/control integration remain open.
 
+The initial owned TUN activation now journals intent before changing only IFF_UP
+and requires correlated ACK plus current link/address readback before commit.
+The bounded native worker transport is shared with address assignment; prior
+WTUN versions remain conservatively readable. Local parser/read-only checks
+are available; privileged activation remains unverified pending disposable CI.
+Evidence is under `target/evidence/phase-1/journaled-tun-activation/`. Capture
+routes, endpoint exemptions, packet supervision and full recovery remain open.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,

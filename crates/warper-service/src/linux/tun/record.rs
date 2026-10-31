@@ -17,6 +17,8 @@ pub enum Stage {
     Retired = 6,
     Addressing = 7,
     Addressed = 8,
+    Enabling = 9,
+    Enabled = 10,
 }
 #[derive(Clone, Eq, PartialEq)]
 pub(super) struct Identity {
@@ -40,7 +42,7 @@ impl Record {
     pub(super) fn encode(&self) -> [u8; LENGTH] {
         let mut bytes = [0; LENGTH];
         bytes[..4].copy_from_slice(b"WTUN");
-        bytes[4..8].copy_from_slice(&2u32.to_be_bytes());
+        bytes[4..8].copy_from_slice(&3u32.to_be_bytes());
         bytes[8..96].copy_from_slice(&self.owner.encode());
         bytes[96] = self.stage as u8;
         bytes[98..100].copy_from_slice(&MTU.to_be_bytes());
@@ -59,7 +61,7 @@ impl Record {
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != LENGTH
             || &bytes[..4] != b"WTUN"
-            || !matches!(&bytes[4..8], [0, 0, 0, 1] | [0, 0, 0, 2])
+            || !matches!(&bytes[4..8], [0, 0, 0, 1] | [0, 0, 0, 2] | [0, 0, 0, 3])
             || bytes[97] != 0
             || bytes[98..100] != MTU.to_be_bytes()
             || bytes[140..] != [0; 20]
@@ -75,8 +77,10 @@ impl Record {
             4 => Stage::Named,
             5 => Stage::Retiring,
             6 => Stage::Retired,
-            7 if bytes[4..8] == 2u32.to_be_bytes() => Stage::Addressing,
-            8 if bytes[4..8] == 2u32.to_be_bytes() => Stage::Addressed,
+            7 if bytes[4..8] != 1u32.to_be_bytes() => Stage::Addressing,
+            8 if bytes[4..8] != 1u32.to_be_bytes() => Stage::Addressed,
+            9 if bytes[4..8] == 3u32.to_be_bytes() => Stage::Enabling,
+            10 if bytes[4..8] == 3u32.to_be_bytes() => Stage::Enabled,
             _ => return Err(Error::InvalidRecord),
         };
         let requested = parse_name(&bytes[100..116])?;
@@ -105,8 +109,10 @@ impl Record {
                 stage,
                 Stage::Prepared | Stage::Allocated | Stage::Renaming | Stage::Named
             ) && address.is_some())
-            || (matches!(stage, Stage::Addressing | Stage::Addressed)
-                && (address.is_none() || identity.is_none()))
+            || (matches!(
+                stage,
+                Stage::Addressing | Stage::Addressed | Stage::Enabling | Stage::Enabled
+            ) && (address.is_none() || identity.is_none()))
         {
             return Err(Error::InvalidRecord);
         }
@@ -184,6 +190,8 @@ mod tests {
             Stage::Named,
             Stage::Addressing,
             Stage::Addressed,
+            Stage::Enabling,
+            Stage::Enabled,
             Stage::Retiring,
             Stage::Retired,
         ] {
@@ -200,8 +208,11 @@ mod tests {
                 stage,
                 requested: Some("warper-test".into()),
                 identity,
-                address: matches!(stage, Stage::Addressing | Stage::Addressed)
-                    .then_some(Ipv4Addr::new(198, 18, 0, 9)),
+                address: matches!(
+                    stage,
+                    Stage::Addressing | Stage::Addressed | Stage::Enabling | Stage::Enabled
+                )
+                .then_some(Ipv4Addr::new(198, 18, 0, 9)),
             };
             let decoded = Record::decode(&record.encode()).unwrap();
             assert_eq!(decoded.stage, stage);
@@ -248,6 +259,22 @@ mod tests {
         assert_eq!(
             Record::decode(&record.encode()).unwrap().address,
             record.address
+        );
+        let mut version_two = record.encode();
+        version_two[4..8].copy_from_slice(&2u32.to_be_bytes());
+        assert_eq!(
+            Record::decode(&version_two).unwrap().stage,
+            Stage::Addressed
+        );
+        version_two[96] = Stage::Enabled as u8;
+        assert!(matches!(
+            Record::decode(&version_two),
+            Err(Error::InvalidRecord)
+        ));
+        record.stage = Stage::Enabled;
+        assert_eq!(
+            Record::decode(&record.encode()).unwrap().stage,
+            Stage::Enabled
         );
         record.identity = None;
         assert!(matches!(
