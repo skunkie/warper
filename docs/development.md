@@ -17,6 +17,8 @@ YAML decoding/schema validation in `warper-config`. The thin `warper-cli`
 package implements offline check-config and help/version. Runtime preflight
 and service control remain unimplemented. There is no production networking
 service yet.
+`warper-control` contains the first Linux kernel peer/authorization boundary;
+it neither starts a control listener nor enrolls owners or changes service state.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
@@ -112,6 +114,42 @@ It reads only the selected source and OS account metadata; credential/trust
 paths are resolved without being opened. Success establishes offline validity,
 not connectivity. Bare `warper` and service operations return an explicit
 unsupported-capability error until local control is implemented.
+
+Linux peer checks can run separately with:
+
+```sh
+cargo test --locked -p warper-control
+```
+
+They use controlled anonymous Unix sockets, pipes and unconnected sockets,
+without account files, listener paths, host DNS, or root state changes. Kernel
+UIDs are compared with the controlled process's effective UID; no specific
+developer UID is required. Synthetic policy cases cover root/owner/foreign
+decisions and denied administration. A compile-fail API check rejects a claimed
+UID constructor and direct access to the bare policy evaluator. macOS returns
+UnsupportedIntegration rather than accepting a
+UID-only authentication bypass. Restricted sandboxes may deny socket inspection;
+record that separately and run these controlled probes with socket access.
+
+Native positive peer tests also require the initial user namespace: admission
+is enforced before every kernel credential snapshot. Namespace-root rejection
+has a separate controlled executable scope:
+
+```sh
+cargo build --locked -p warper-control --example namespace
+target/debug/examples/namespace --expect-initial
+unshare --user --map-root-user --fork --kill-child=KILL target/debug/examples/namespace --expect-nested-root
+```
+
+`--expect-self-overmount-rejected` is a development-only attack scope that also
+requires a disposable user/mount namespace with private mount propagation. It
+must never run as a service. See ADR 0008 for the exact command and evidence
+controller. The controller separately creates counterfeit procfs, checks both
+authentication directions fail, reaps the namespace process group on timeout,
+and verifies the parent namespace and temporary-fixture cleanup. These tests
+touch no host resolver or network state. Linux control now requires openat2
+resolution guards; missing support fails closed. Protected listeners/enrollment
+and complete control acceptance remain later gates.
 
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored

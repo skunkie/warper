@@ -1432,6 +1432,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "warper-control"
+version = "0.0.0"
+dependencies = [
+ "nix",
+ "rustix",
+]
+
+[[package]]
 name = "warper-core"
 version = "0.0.0"
 

@@ -125,6 +125,52 @@ verified administrative authorization. Once enrolled, that owner can
 observe state and request Connect/Disconnect without running the GUI as root.
 Other users receive no tunnel metadata or control access by default.
 
+### Initial Linux peer boundary
+
+Linux authorization uses kernel `SO_PEERCRED` from a connected Unix stream,
+after verifying its socket type/domain and connection. No caller-supplied UID,
+PID, path, GID or role is accepted as proof. The reserved invalid UID value is
+rejected. Reported UIDs are relative to the receiver's user namespace; unmapped
+IDs can be reported as an overflow UID, which this credential snapshot cannot
+distinguish from a real account. Both native client and service must validate
+their receiving UID namespace before interpreting UID 0 as the host service or
+host administrator. Initial-namespace admission must inspect the current thread
+through fixed `/proc`, verify procfs and a symlink descriptor, and resolve
+`thread-self/ns/user` with openat2 beneath/no-mount-crossing/no-magic-link guards.
+Only the kernel initial-user-namespace identifier is accepted; missing or
+unverifiable evidence fails closed without a weaker fallback. This requires
+Linux openat2 support (5.6 or newer). PID 1, namespace-parent EPERM, environment
+overrides and identity-looking uid_map text are not admission evidence.
+Admission is repeated before producing peer credentials on both endpoints;
+the bare policy evaluator is internal. The service must not change its user
+namespace between authorization and the corresponding privileged operation.
+Credential snapshots describe connection establishment; they do
+not prove current process liveness or code identity.
+An authorized process may delegate an established descriptor; this is not an
+executable-identity sandbox.
+
+With an enrolled owner UID loaded from protected service state, that owner may
+observe and request Connect/Disconnect. UID 0 may also perform administrative
+operations. Without an enrolled owner, only UID 0 is authorized. Foreign peers
+receive the same PermissionDenied result regardless of enrollment state; errors
+do not contain the owner UID or peer PID. Owner enrollment/replacement,
+configuration installation and administrative recovery require UID 0 in this
+initial Linux policy. This does not enroll anyone or persist policy by itself.
+
+Clients must verify a UID-0 service peer before sending configuration/material.
+That check is necessary but not sufficient: trusted UID namespaces, a fixed
+protected socket location, safe listener ownership/cleanup, version negotiation
+and bounded messaging are still required before any control request or secret
+transmission. No service
+listener or administrative mutation is introduced by the peer-check library.
+Protected owner storage and enrollment remain independent implementation gates.
+
+The Linux peer adapter is unavailable on macOS. UID-only checks must never
+substitute for the code-identity and mutual-authentication requirements in
+ADR 0005; until that native adapter exists, return UnsupportedIntegration.
+
+### Control API and managed material
+
 The API must cover status/snapshots, paginated routes/flows/logs, subscriptions,
 Connect/Disconnect operations, operation status, Explain, and authorized
 configuration installation/recovery. Specify version negotiation, bounded

@@ -18,6 +18,8 @@ need their own record.
 | [0004](0004-desktop-service.md) | Accepted direction; native implementation evidence pending | Tauri desktop, independent networking service, and a managed macOS app bundle |
 | [0005](0005-macos-development-authentication.md) | Accepted policy; UX-05 evidence pending | Administrator-enrolled exact build identities for macOS local use without paid signing |
 | [0006](0006-bounded-yaml-decoding.md) | Accepted; offline schema integration implemented | Bounded pull-event YAML decoding with redacted errors and explicit core scalar types |
+| [0007](0007-linux-control-peer-identity.md) | Accepted boundary; service integration pending | Linux kernel UID snapshots and owner/root policy, with namespace and protected-endpoint gates |
+| [0008](0008-initial-user-namespace.md) | Accepted for Linux admission | Guarded procfs namespace identity is mandatory before peer credentials; noninitial namespaces fail closed |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or
