@@ -222,6 +222,23 @@ Require exactly one of `password`, `password_file`, or `private_key_file`. If a 
 
 Allow either no authentication fields or `user` plus exactly one password source. Reject partial credentials instead of silently ignoring them. TCP is the required initial capability; no UDP enablement key is reserved until that extension has a tested contract.
 
+The production SOCKS5 adapter offers only no-authentication when credentials
+are absent, or only username/password when supplied. A proxy cannot downgrade
+configured credentials to no-authentication. Credentials are bounded by UTF-8
+byte length and never logged. Original numeric IPv4/IPv6 destination and port
+are sent in CONNECT; no destination lookup occurs in the adapter. Consume the
+entire bound-address reply before exposing the stream. SOCKS5 UDP remains
+unsupported, with no direct fallback.
+
+The service supplies a protected physical endpoint connector; the protocol
+adapter neither discovers routes nor constructs a default direct connector.
+One absolute setup deadline/cancellation owner covers physical connect and all
+negotiation. There are no internal retries or detached dial tasks. A permit
+bounds pending and established TCP streams and is retained through half-close
+until the stream is dropped. Configured limits above the semaphore's supported
+range fail runtime preparation rather than panic. This intentionally replaces
+the Go adapter's redial loop with bounded single-attempt setup.
+
 ### WireGuard
 
 | Key | Type | Required/default | Rules |

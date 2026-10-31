@@ -184,6 +184,22 @@ EOF, redaction and malformed header/body boundaries. Header-only invalid inputs
 must return the validation error before attempting a body read. These codec
 probes do not establish authenticated session order or implemented handlers.
 
+Production SOCKS5 checks can run separately:
+
+```sh
+cargo test --locked -p warper-core -p warper-backends
+cargo run --locked --release -p warper-backends --example socks5_workload
+```
+
+The test suite uses controlled duplex peers plus real loopback proxy/target
+servers in all four destination/physical address-family combinations, with
+joined tasks and exact bytes/FIN checks. The Linux release workload records
+latency percentiles, application bytes, process CPU ticks/RSS and loopback drop
+deltas for 100 64 KiB echoes at concurrency four. Capture OS/toolchain/CPU-clock
+conditions alongside JSON; counters include fixture servers and unrelated
+loopback activity may affect drops. It does not mutate routes or DNS and does
+not establish TUN performance, physical protection or service acceptance.
+
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
 checkout credentials, sets timeouts, and cancels superseded branch runs.

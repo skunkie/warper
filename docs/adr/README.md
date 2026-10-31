@@ -22,6 +22,7 @@ need their own record.
 | [0008](0008-initial-user-namespace.md) | Accepted for Linux admission | Guarded procfs namespace identity is mandatory before peer credentials; noninitial namespaces fail closed |
 | [0009](0009-linux-runtime-ownership.md) | Accepted ownership boundary; service integration pending | Fixed protected Linux runtime directory and persistent nonblocking instance lease |
 | [0010](0010-linux-owner-snapshots.md) | Accepted storage boundary; privileged integration pending | Fixed protected atomic owner snapshots with revision checks and uncertain-commit reporting |
+| [0011](0011-production-socks5-tcp.md) | Accepted protocol boundary; service integration pending | Production core TCP setup and bounded SOCKS5 CONNECT over protected connector injection |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or
