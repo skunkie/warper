@@ -16,6 +16,7 @@ pub mod client;
 pub mod connection;
 pub mod endpoint;
 pub mod enrollment;
+pub mod journal;
 mod state;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

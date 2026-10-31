@@ -1838,3 +1838,31 @@ identity or cleanup authority. A protected journal, boot/network-namespace
 identity and service ownership mark must establish ownership before mutation or
 recovery; a reused name or index is insufficient. Monitoring, physical binding
 and mutation acknowledgement requirements remain separate.
+
+### Protected network journal storage
+
+The fixed Linux `runtime::journal::NetworkJournal` is protected storage for the
+native platform, separate from connection intent and RPC authorization. Open
+and every operation require native root and the retained `RuntimeLease`, reuse
+protected state-directory pins and expose no path/UID/descriptor override.
+An exact versioned envelope bounds payloads to 64 KiB; the platform validates its
+own secret-free payload schema before depending on it. `read` returns a bounded
+revisioned snapshot. `replace(expected_revision, payload)` checks the observed
+snapshot, exclusively stages/syncs bytes and directory, rechecks prior/pending
+identity/content, renames atomically and syncs before success. It never mutates
+the network or treats storage success as kernel acknowledgement.
+
+An observed snapshot cannot disappear or change into revision zero. Failed
+staging preserves pending state and blocks writes. Uncertain durability blocks
+normal operations until unchanged inspection/resync. Recovery inspection pins
+bounded current/pending state; consuming discard revalidates directory/store,
+identity/timestamps/bytes and prior content before unlink/sync. Never promote
+pending state or remove changed objects. Abandoning a token preserves evidence;
+service handlers separately authorize/bound inspections. Each store retains four
+directory descriptors and at most one 64-KiB observed payload. A call/token can
+retain at most two bounded records/file pins; serialization/readback add bounded
+64-KiB transients, which the service must account before worker admission.
+Synchronous filesystem waits need retained blocking workers and may outlive a
+caller deadline; the final runtime reference cannot be released before joining.
+The platform journal schema, boot/namespace/instance ownership and actual native
+mutation/recovery integration remain open until independently implemented.

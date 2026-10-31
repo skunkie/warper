@@ -675,3 +675,33 @@ negative control has the separate `--raw-mtu-check` flag and intentionally
 fails. These commands do not add installed CLI or YAML fields. The link ingress
 MTU and TCP egress path budget are separate; the supported downward PMTU floor
 is 1280, with below-range feedback failing the selected stream explicitly.
+
+### Protected native network journal storage
+
+The Linux service's network journal uses fixed root-owned mode-0600
+`/var/lib/warper/network.journal` and exclusive `network.pending` staging under
+the existing protected mode-0700 state directory. No source path, caller UID or
+file descriptor override is accepted. This storage boundary requires native
+root and the retained runtime lease. It does not itself establish OS ownership,
+authorize RPC requests or replay an operation.
+
+The version-one envelope is `WJNL`, big-endian u32 version 1, nonzero u64 revision,
+u32 payload length, four reserved zero bytes and 1..65536 payload bytes. The
+platform owns the payload schema and must store only bounded, validated network
+metadata, never credentials, packet contents or raw imported configuration.
+Unknown/malformed envelopes and unsafe or changed files fail closed. Replacement
+requires the observed revision, stages/syncs the complete file and directory,
+revalidates current/pending ownership and bytes, then renames/syncs before
+returning its new revision. A positive result proves storage durability only.
+
+A failed staging operation preserves the pending file for explicit inspection;
+never promote or blindly delete it. Pending state blocks new replacements.
+Post-rename or discard sync uncertainty blocks further normal operations until
+explicit unchanged inspection/resync. Pending discard consumes an in-process
+inspection token bound to the store, directory, prior snapshot and staged
+identity/timestamps/bytes; mismatch preserves evidence. Service recovery handlers
+must require fresh administrative authorization and bound retained tokens.
+Filesystem work runs in retained blocking workers, outside application locks;
+kernel filesystem waits have no hard deadline. Workers retain runtime ownership
+until joined, including after a caller stops waiting. Driver intent/commit
+payloads, native ownership checks and recovery application remain separate gates.

@@ -91,5 +91,6 @@ The same bounded read-only transport now serves GetLink as well as GetRoute,
 with shared process-local sequence allocation and a mutation-message guard.
 Link observations bound retained comparison fields and distinguish TUN from
 TAP; they do not prove an owned generation. Native loopback name/index lookup
-passes locally. Fresh isolated TUN inspection remains pending; journaling,
+passes locally. The [isolated TUN inspection gate](https://github.com/skunkie/warper/actions/runs/41211693343)
+passes at `bc04a62` with foreign identity and host state preserved. Journaling,
 namespace identity, service ownership marks and native mutations remain open.

@@ -186,9 +186,18 @@ It does not close physical socket binding, snapshot consistency or the driver.
 Native link inspection now shares the bounded read-only route transport and
 retains name/index/alias/MTU/flags/kind for future ownership comparisons. Native
 loopback name/index tests and malformed/mismatched metadata tests pass locally.
-Fresh isolated TUN inspection is pending owner-dispatched CI. This is not a
+[Owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41211693343)
+passes isolated TUN inspection at `bc04a62`, including foreign identity
+preservation and independently preserved host state. This is not a
 journal ownership proof or production mutation driver. Evidence is retained
 under `target/evidence/phase-1/linux-link-lookup/`.
+
+The protected network journal storage boundary (ADR 0017) supplies bounded,
+revisioned snapshots, exact staging checks and explicit partial/uncertain
+recovery. Private real-file tests pass; public native root storage execution is
+pending the next owner-dispatched gate. Evidence is retained under
+`target/evidence/phase-1/network-journal-storage/`. This is storage only: platform
+journal meaning, native mutation/rollback and the running daemon remain open.
 
 ## Gate Evidence
 

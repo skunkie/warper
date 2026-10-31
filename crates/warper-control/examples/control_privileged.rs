@@ -9,7 +9,10 @@ mod linux {
     use std::{
         fs,
         io::{Read, Write},
-        os::unix::{fs::MetadataExt, net::UnixStream},
+        os::unix::{
+            fs::{MetadataExt, PermissionsExt},
+            net::UnixStream,
+        },
         process::{Child, Command},
         time::{Duration, Instant},
     };
@@ -20,6 +23,7 @@ mod linux {
             connection::{Acceptance, ConnectionStore, Desired, Request as IntentRequest},
             endpoint::ControlEndpoint,
             enrollment::OwnerStore,
+            journal::{Error as JournalError, NetworkJournal},
         },
         unix,
     };
@@ -165,6 +169,47 @@ mod linux {
         }
         println!(
             "PASS durable root connection intent, repeat suppression, restart fencing and resync without network actions"
+        );
+        Ok(())
+    }
+    fn network_journal(lease: &RuntimeLease) -> Result<(), Failure> {
+        let mut journal = NetworkJournal::open(lease)?;
+        if journal.read(lease)?.is_some() {
+            return Err("private network journal was not initially empty".into());
+        }
+        let first = journal.replace(lease, 0, b"invented prepared network metadata")?;
+        if first.revision() != 1
+            || journal.replace(lease, 0, b"stale metadata") != Err(JournalError::Conflict)
+        {
+            return Err("native journal revision fencing differs".into());
+        }
+        let committed = journal.replace(lease, 1, b"invented committed network metadata")?;
+        drop(journal);
+        let mut reopened = NetworkJournal::open(lease)?;
+        if reopened.read(lease)? != Some(committed.clone()) {
+            return Err("native journal reopen differs".into());
+        }
+        reopened.resync(lease)?;
+        fs::write("/var/lib/warper/network.pending", b"WJ")?;
+        fs::set_permissions(
+            "/var/lib/warper/network.pending",
+            fs::Permissions::from_mode(0o600),
+        )?;
+        if reopened.read(lease) != Err(JournalError::RecoveryRequired) {
+            return Err("partial native journal did not block normal reads".into());
+        }
+        let token = reopened
+            .inspect_pending(lease)?
+            .ok_or("missing private journal pending token")?;
+        if token.staged_length() != 2 || token.committed() != Some(&committed) {
+            return Err("native journal recovery inspection differs".into());
+        }
+        reopened.discard_pending(lease, token)?;
+        if reopened.read(lease)? != Some(committed) {
+            return Err("native journal discard changed committed metadata".into());
+        }
+        println!(
+            "PASS durable root network journal revisions, reopen and partial discard without network actions"
         );
         Ok(())
     }
@@ -334,6 +379,7 @@ mod linux {
         }
         drop(old_owner);
         connection_intent(endpoint.runtime())?;
+        network_journal(endpoint.runtime())?;
         let reopened = OwnerStore::open(endpoint.runtime())?;
         if reopened.read(endpoint.runtime())?.revision() != 3 {
             return Err("protected owner snapshot did not persist".into());
