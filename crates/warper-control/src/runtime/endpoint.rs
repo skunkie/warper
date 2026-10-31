@@ -11,6 +11,7 @@ use std::{
     io,
     os::fd::{AsRawFd, OwnedFd},
     os::unix::net::UnixStream,
+    sync::Arc,
 };
 
 use rustix::{
@@ -86,13 +87,14 @@ pub struct ControlEndpoint {
     socket: Option<OwnedFd>,
     socket_mode: Option<u32>,
     intent: OwnedFd,
-    lease: RuntimeLease,
+    lease: Arc<RuntimeLease>,
 }
 
 impl ControlEndpoint {
     /// Publish a nonblocking listener only after durable intent and final mode.
     /// Existing objects are conflicts, including stale sockets after a crash.
-    pub fn bind(lease: RuntimeLease) -> Result<Self, Failure> {
+    pub fn bind(lease: impl Into<Arc<RuntimeLease>>) -> Result<Self, Failure> {
+        let lease = lease.into();
         lease.revalidate().map_err(Error::Runtime)?;
         match named(&lease.directory, SOCKET) {
             Ok(_) => return Err(Error::Conflict.into()),

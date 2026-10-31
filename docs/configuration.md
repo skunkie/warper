@@ -58,6 +58,11 @@ removes only the pinned, unchanged socket and intent while retaining the lease.
 Changed identity, owner, link count or mode fails cleanup and preserves evidence.
 Drop closes descriptors without unlinking. An accepted connection is separately
 owned and must be drained/joined by the future supervisor before explicit close.
+The endpoint accepts owned or `Arc<RuntimeLease>` ownership. The service can
+retain the same lease in networking/filesystem workers; retiring the listener
+releases only its reference. Instance flock remains held until the last worker
+reference drops. The supervisor must cancel/join those workers before reporting
+shutdown or allowing another instance to acquire ownership.
 Publication errors preserve the primary failure alongside cleanup failure.
 There is no automatic stale-endpoint recovery or service executable yet.
 

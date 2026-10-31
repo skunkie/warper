@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0015. Durable connection intent and revision-bound operation IDs
 
-- Status: accepted persistence boundary; native root and daemon integration pending.
+- Status: accepted persistence boundary with native root evidence; daemon integration pending.
 - Date: 2026-10-31
 - Related: ADR 0004, ADR 0009, contract section 6, configuration storage contract.
 
@@ -73,9 +73,9 @@ cargo llvm-cov --locked -p warper-control --all-features --html
 scripts/check.sh
 ```
 
-The owner-dispatched root fixture now exercises public connection persistence,
-restart fencing and partial pending discard in private state, but fresh native
-execution is still required. Retain raw logs and coverage review under
+The owner-dispatched root fixture exercises public connection persistence,
+restart fencing and partial pending discard in private state. Retain raw logs
+and coverage review under
 `target/evidence/phase-1/connection-intent/`. No new third-party dependency is
 introduced by this boundary.
 
@@ -83,3 +83,11 @@ This is neither an OS recovery journal nor a connected service. Authenticated
 handlers, approved managed material, boot/autoconnect policy, bounded result
 history, late completion fencing and journaled native application remain open.
 No application bytes are stored or replayed by intent persistence.
+
+The [owner-dispatched root gate](https://github.com/skunkie/warper/actions/runs/41196275017)
+passes at `ed834b5`: public root persistence, exact repeat suppression, reopened
+same-boot intent with a changed instance fence, explicit resync and partial
+pending discard. Existing owner/foreign-peer and actual kernel TUN gates also
+pass with independently preserved host state. Raw artifacts are retained under
+`target/evidence/phase-1/privileged-control-ci/run-41196275017/`. This closes the
+native persistence boundary, not authenticated daemon lifecycle acceptance.

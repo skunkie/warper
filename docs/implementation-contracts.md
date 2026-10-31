@@ -1748,3 +1748,14 @@ owners. There is no default connector, direct fallback or claim of network
 readiness. Ordinary client lifetime does not own these values. Native privilege,
 route/conflict verification, managed storage and journaled platform application
 must pass before a service publishes a usable capture route or connected state.
+
+### Shared runtime ownership during shutdown
+
+`ControlEndpoint::bind` accepts `Into<Arc<RuntimeLease>>`, retaining the same
+verified lease rather than reopening or duplicating the lock. Existing owned
+callers remain supported. A service worker can retain another reference while
+native work completes; endpoint retirement does not release its instance lock.
+Explicit service shutdown must join workers before dropping the final reference.
+A real flock/thread test closes the listener, observes acquisition contention,
+then joins/releases the worker and reacquires the unchanged persistent lock.
+All lease mutation checks and native namespace/credential admission still apply.

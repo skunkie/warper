@@ -511,7 +511,33 @@ mod endpoint_tests {
         fs,
         io::{Read, Write},
         os::unix::{fs::PermissionsExt, net::UnixStream},
+        sync::Arc,
     };
+
+    #[test]
+    fn worker_ownership_keeps_the_instance_locked_after_listener_retirement() {
+        let fixture = Fixture::new();
+        let lease = Arc::new(fixture.acquire().unwrap());
+        let endpoint = ControlEndpoint::bind(lease.clone()).unwrap();
+        let worker_lease = lease.clone();
+        let (release, finish) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            finish.recv().unwrap();
+            worker_lease.revalidate().unwrap();
+        });
+        drop(lease);
+        endpoint.close().unwrap();
+        let contention = fixture.acquire();
+        let remained_locked = matches!(contention, Err(super::Error::AlreadyRunning));
+        drop(contention);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(
+            remained_locked,
+            "listener retirement must not release worker ownership"
+        );
+        drop(fixture.acquire().unwrap());
+    }
 
     #[test]
     fn endpoint_authenticates_local_peers_and_retires_only_owned_state() {
