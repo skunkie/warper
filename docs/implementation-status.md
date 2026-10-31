@@ -16,7 +16,9 @@ CIDR policy, offline paths, bounded YAML/schema validation and the check-config
 CLI. Linux kernel peer checks and owner/root authorization are implemented as a
 control boundary with mandatory initial-user-namespace admission; protected
 enrollment, messaging, runtime preflight, protocol backends and a running control
-service remain unimplemented.
+service remain unimplemented. A fixed Linux runtime-directory lease now pins
+protected state and holds a persistent nonblocking lock; it is not yet
+integrated with a listener or network-instance lifecycle.
 
 ## Phase Ledger
 
@@ -25,7 +27,7 @@ service remain unimplemented.
 | Development infrastructure | Available | `scripts/check.sh`: licensing, actionlint with ShellCheck, composite validation, Python harness tests, Rust formatting/Clippy/rustdoc/tests/release and dependency policy |
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
-| 1: Headless Linux service slice | In progress | Static policy/configuration/CLI and Linux kernel peer checks have executable tests. Mandatory initial-user-namespace admission rejects real nested-root, counterfeit-procfs and same-procfs overmount cases (ADR 0008). No listener or enrollment writes exist. Evidence under `target/evidence/phase-1/`: `configuration-paths/`, `native-identity/`, `yaml-decoder/`, `schema-validation/`, `check-config-cli/`, `linux-peer-auth/`, `user-namespace-admission/`. Next: protected socket lifecycle/durable owner enrollment, bounded/versioned messaging, runtime preflight, Linux driver/journal and actual SOCKS5/TUN service lifecycle |
+| 1: Headless Linux service slice | In progress | Static policy/configuration/CLI and Linux kernel peer checks have executable tests. Mandatory initial-user-namespace admission rejects real nested-root, counterfeit-procfs and same-procfs overmount cases (ADR 0008). A fixed protected runtime-directory lease verifies metadata/identity and retains a persistent flock inode (ADR 0009), with controlled SIGKILL/reacquisition evidence. No listener or enrollment writes exist. Evidence under `target/evidence/phase-1/`: `configuration-paths/`, `native-identity/`, `yaml-decoder/`, `schema-validation/`, `check-config-cli/`, `linux-peer-auth/`, `user-namespace-admission/`, `runtime-ownership/`. Next: protected socket lifecycle/durable owner enrollment, bounded/versioned messaging, runtime preflight, Linux driver/journal and actual SOCKS5/TUN service lifecycle |
 | 2: Linux DNS and routing | Not started | Production DNS parsing/transport, complete service-binding dependency gates, response handoff, route leases, retained-state admission and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |

@@ -41,6 +41,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || unix::authenticate_client(&service, &policy, Access::Administer)
                     != Err(Error::UntrustedNamespace)
                 || unix::authenticate_service(&client) != Err(Error::UntrustedNamespace)
+                || !matches!(
+                    warper_control::runtime::RuntimeLease::acquire(),
+                    Err(warper_control::runtime::Error::Admission(
+                        Error::UntrustedNamespace
+                    ))
+                )
             {
                 return Err("namespace-local root bypassed admission".into());
             }

@@ -169,6 +169,22 @@ The Linux peer adapter is unavailable on macOS. UID-only checks must never
 substitute for the code-identity and mutual-authentication requirements in
 ADR 0005; until that native adapter exists, return UnsupportedIntegration.
 
+### Linux runtime ownership boundary
+
+`RuntimeLease` implements initial exclusive ownership of the fixed protected
+runtime directory and persistent `service.lock`, as specified in
+[configuration](configuration.md#linux-service-runtime-ownership) and ADR 0009.
+It requires initial-user-namespace UID 0; verifies directory/file metadata and
+names through pinned descriptors; acquires nonblocking flock; and preserves the
+lock inode when releasing ownership. Later mutations must first revalidate the
+lease. No arbitrary path or ordinary-user ownership override is exposed.
+
+The lock is advisory; administrators are trusted, and this does not establish
+mount/network namespace admission. It is not yet integrated into `warperd`.
+Protected listener creation, safe socket retirement, client endpoint checks,
+durable enrollment and journaled recovery remain open. Existing sockets are
+never removed by this ownership boundary.
+
 ### Control API and managed material
 
 The API must cover status/snapshots, paginated routes/flows/logs, subscriptions,

@@ -19,6 +19,29 @@ schema.
 Update it, its examples, and fixtures together when a justified decision changes
 the contract.
 
+### Linux service runtime ownership
+
+The initial Linux runtime ownership boundary uses fixed `/run/warper` and
+`service.lock`; neither YAML, CLI arguments nor environment variables can
+redirect them. Installation must provision the runtime directory as UID 0,
+mode 0755. Startup does not create or repair it. `/` and `/run` must be UID-0
+directories without group/other write permission; symlink components and a
+separate mount at `/run/warper` are rejected.
+
+Only an initial-user-namespace UID-0 process can acquire the runtime lease.
+It creates an absent `service.lock` exclusively with mode 0600, or opens an
+existing one without truncation or symlink following. Require an empty regular
+UID-0 file with mode 0600 and one hard link. Acquire exclusive nonblocking flock
+and verify the pinned directories and named lock still match. Lock contention,
+unsafe state and OS failures have distinct redacted typed errors. Do not unlink
+the lock on shutdown: closing the lease releases it, preserving one inode across
+restart. Revalidate ownership before later mutations; a changed path is an
+error, never permission to repair or remove foreign state.
+
+This is a library ownership boundary, not a service command, journal, recovery
+operation or active listener. Crash-stale sockets remain untouched. Packaging,
+protected listener lifecycle and durable owner enrollment are still required.
+
 ## 1. Parsing and Path Rules
 
 - Accept one UTF-8 YAML document containing a mapping. Reject unknown keys at every level, duplicate mapping keys, null values, custom tags, anchors/aliases, multiple documents, and wrong scalar types. A boolean must be a boolean; integer fields do not accept strings, floats, or booleans. Secrets and addresses are strings. An omitted optional value uses its documented default.

@@ -11,11 +11,8 @@ license.workspace = true
 publish.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix.workspace = true
-rustix = { workspace = true, features = ["fs"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 nix = { workspace = true, features = ["user"] }
+rustix = { workspace = true, features = ["fs"] }
 
 [lints]
 workspace = true

@@ -151,6 +151,16 @@ touch no host resolver or network state. Linux control now requires openat2
 resolution guards; missing support fails closed. Protected listeners/enrollment
 and complete control acceptance remain later gates.
 
+Runtime ownership tests run in the same control suite. Their private fixtures
+use temporary directories and the current real UID; production acquisition
+accepts only fixed `/run/warper` and initial-user-namespace UID 0. No test
+provisions live `/run`. Cases cover lock contention, persistent-inode reuse,
+SIGKILL/reaping of a child holder, symlink/mode/link-count/content rejection and
+changed named state. Child readiness has a five-second deadline and the parent
+kills/reaps it on failure. Public root acquisition and runtime submount
+rejection require separate disposable privileged evidence and remain unverified;
+the fixture is not a production rootless override. See ADR 0009.
+
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
 checkout credentials, sets timeouts, and cancels superseded branch runs.
