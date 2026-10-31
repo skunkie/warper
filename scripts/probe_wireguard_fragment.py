@@ -70,8 +70,6 @@ def run_child(binary, capture, kernel_peer=False):
                 if remaining <= 0:
                     raise RuntimeError("encrypted fragment fixture deadline exceeded")
                 events = selector.select(min(remaining, 0.1))
-                if not events and child.poll() is not None and not pipe_open:
-                    raise RuntimeError("encrypted fragment observations are incomplete")
                 for key, _ in events:
                     if key.data == "capture":
                         try:
@@ -91,8 +89,12 @@ def run_child(binary, capture, kernel_peer=False):
                             raise RuntimeError("encrypted fixture output capacity exceeded")
                         else:
                             output.extend(chunk)
-                if child.poll() is not None and not pipe_open and child.returncode != 0:
-                    raise RuntimeError(f"encrypted fixture failed with exit {child.returncode}")
+                code = child.poll()
+                if code is not None and not pipe_open:
+                    if code != 0:
+                        raise RuntimeError(f"encrypted fixture failed with exit {code}")
+                    if not events and len(completed) != 2:
+                        raise RuntimeError("encrypted fragment observations are incomplete")
         if child.returncode != 0:
             raise RuntimeError(f"encrypted fixture failed with exit {child.returncode}")
         lines = output.decode(errors="replace").splitlines()
