@@ -192,6 +192,51 @@ and uncertain-commit reporting. See the
 Client endpoint checks, pending recovery, request framing, live revocation and
 service integration remain open.
 
+### Initial control wire framing
+
+The shared Rust framing adapter uses a 20-byte big-endian header: `WRPC`, u16
+version 1, u16 kind, u32 body length, and nonzero u64 request ID. Unknown magic,
+version, kind, zero request IDs and invalid kind-specific lengths fail before
+body allocation. Bodies admit at most 1 MiB plus eight bytes of generation metadata; fixed
+commands have exact sizes.
+No raw path, shell or generic file command exists. Frame Debug is redacted.
+
+Kind values are Hello=1, Status=2, Connect=3, Disconnect=4, Enroll=5,
+InspectRecovery=6, InstallConfig=7 and OperationStatus=8. Replies are
+HelloReply=0x8001, StatusReply=0x8002, Accepted=0x8003,
+EnrollmentReply=0x8005, RecoveryReply=0x8006, ConfigReply=0x8007,
+OperationReply=0x8008 and ErrorReply=0xffff. The framing layer is not a handler:
+unsupported operations must still return a typed unsupported response.
+
+Hello/Status/InspectRecovery have empty bodies; HelloReply has a nonzero
+16-byte instance ID. Connect/Disconnect carry a nonzero 16-byte operation ID
+and u64 expected configuration generation. Enroll carries u64 expected owner
+revision, u32 presence and u32 UID using the enrollment record's rules.
+OperationStatus and Accepted carry a nonzero 16-byte operation ID. InstallConfig
+carries u64 expected configuration generation followed by 1..=1 MiB of managed
+input, never a request to read a privileged path.
+EnrollmentReply/ConfigReply carry nonzero u64 revisions. StatusReply is session-state
+u8 (0..5), u64 configuration generation, u64 owner revision and configuration
+presence u8 (0/1). RecoveryReply is a u16 bitset with only bits 0..2 defined.
+OperationReply carries operation ID, state u8 (0..4) and error code u16.
+ErrorReply is a nonzero error code u16. Codes are None=0, Unsupported=1,
+PermissionDenied=2, Malformed=3, Busy=4, Conflict=5, RecoveryRequired=6,
+Timeout=7 and Failed=8. Failed operation state 3 requires a nonzero code;
+other states require None. State names are finalized with the service handlers.
+
+Each async frame read/write uses one injected absolute deadline and cancellation
+receiver covering header, body and flush. Closed cancellation channels cancel.
+Malformed, cancelled, partial or timed-out streams must be closed, never resumed
+or replayed. Configured `max_control_message_bytes` counts the header and generation
+metadata too; `read_limited/write_limited` enforce that budget before body
+allocation/output. Offline-valid source can still exceed the encoded import
+budget and must be rejected explicitly. At most one admitted frame buffer per
+reader is allocated; global connection limits and total buffer accounting belong to service admission.
+Authenticate both endpoints before framing; require Hello before requests,
+correlate replies, reauthorize every request and reuse operation identity after
+an uncertain client result. The codec alone does not establish these session
+or service acceptance gates.
+
 ### Control API and managed material
 
 The API must cover status/snapshots, paginated routes/flows/logs, subscriptions,

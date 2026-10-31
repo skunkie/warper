@@ -177,6 +177,13 @@ and injected final directory-sync failure after actual rename. That failure
 must retain the new snapshot and report CommitUncertain. Positive public root
 enrollment, pending recovery and service revocation need separate evidence.
 
+Control framing tests use bounded Tokio duplex streams and a paused clock.
+They cover all kinds, maximum admitted configuration size, partial header/body
+and write deadlines, cancellation during a frame, closed cancellation channels,
+EOF, redaction and malformed header/body boundaries. Header-only invalid inputs
+must return the validation error before attempting a body read. These codec
+probes do not establish authenticated session order or implemented handlers.
+
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
 checkout credentials, sets timeouts, and cancels superseded branch runs.

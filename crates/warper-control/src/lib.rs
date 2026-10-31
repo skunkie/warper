@@ -16,6 +16,7 @@ pub mod namespace;
 pub mod runtime;
 #[cfg(unix)]
 pub mod unix;
+pub mod wire;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Access {
