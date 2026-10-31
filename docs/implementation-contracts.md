@@ -1866,3 +1866,27 @@ Synchronous filesystem waits need retained blocking workers and may outlive a
 caller deadline; the final runtime reference cannot be released before joining.
 The platform journal schema, boot/namespace/instance ownership and actual native
 mutation/recovery integration remain open until independently implemented.
+
+### Native journal owner context
+
+`linux::context::Context` retains the runtime lease and native network/PID
+namespace descriptors. Capture requires the real root runtime lease and native
+connection store; no path, namespace, process, boot or instance override is
+accepted. A verified procfs anchor supplies guarded namespace links and bounded
+current-process stat data. Follow only the already checked fixed namespace name,
+require nsfs/type/inode agreement and retain namespace handles. Check procfs PID
+against the current kernel PID and preserve the exact field-22 start ticks.
+Revalidation checks the current thread's scopes, process and boot before a
+future driver operation; a decoded record never becomes native authority.
+
+A fixed version-one 88-byte owner component records boot ID, network/PID
+namespace device/inode, service instance, PID and process start ticks. Decode
+rejects wrong length/version, noncanonical zero identities and reserved bytes;
+zero process start ticks remain valid. Serialization exposes native boot bytes
+without adding a public constructor for trusted `BootId`. Compare records as
+current owner, previous instance, conflicting owner, foreign boot or foreign
+namespace. Previous-instance classification permits inspection only; process
+liveness, object ownership marks, full journal schema and mutation/recovery
+policy remain required before cleanup or continuation. Debug/errors omit native
+record values. Capture/revalidation uses bounded synchronous procfs reads in
+retained native workers; no task, namespace mutation or network change is made.

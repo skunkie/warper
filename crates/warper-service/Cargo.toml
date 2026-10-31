@@ -25,13 +25,13 @@ netlink-packet-core.workspace = true
 netlink-packet-route.workspace = true
 netlink-sys.workspace = true
 nix.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process"] }
+warper-control = { path = "../warper-control" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tun-rs.workspace = true
-nix.workspace = true
+nix = { workspace = true, features = ["sched"] }
 rustix = { workspace = true, features = ["fs"] }
-warper-control = { path = "../warper-control" }
 
 [lints]
 workspace = true

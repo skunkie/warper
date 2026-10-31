@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0017. Protected bounded network journal storage
 
-- Status: accepted local storage boundary; native root and driver integration pending.
+- Status: accepted storage boundary with native root evidence; driver integration pending.
 - Date: 2026-10-31
 - Related: ADR 0009, ADR 0015, Phase 1 native driver and recovery contracts.
 
@@ -72,7 +72,9 @@ ignored copy. Raw source/validation artifacts belong under
 `target/evidence/phase-1/network-journal-storage/`.
 
 The owner-dispatched root fixture now exercises the public store and explicit
-partial recovery in private state. Fresh native execution remains required.
+partial recovery in private state. The
+[owner-dispatched gate](https://github.com/skunkie/warper/actions/runs/41213342279)
+passes at `44e889b` with independently preserved host state.
 The platform payload schema, boot/namespace/instance ownership, mutation ACKs,
 rollback/recovery application, service worker admission and the running daemon
 remain open. Reconsider if required bounded metadata cannot fit or filesystem

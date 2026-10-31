@@ -705,3 +705,10 @@ Filesystem work runs in retained blocking workers, outside application locks;
 kernel filesystem waits have no hard deadline. Workers retain runtime ownership
 until joined, including after a caller stops waiting. Driver intent/commit
 payloads, native ownership checks and recovery application remain separate gates.
+
+Native journal ownership uses a fixed 88-byte `WNOC` version-one component with
+boot, network/PID namespace, service instance and process-start identity. None
+of these identities is configurable or accepted from a client as native proof.
+The service pins namespace descriptors and retains the runtime lease until
+native resources retire. Stored identities permit classification/inspection;
+process liveness and full object ownership checks remain necessary for recovery.

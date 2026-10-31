@@ -47,6 +47,11 @@ impl BootId {
             .map_err(|e| Error::Io(e.kind()))?;
         parse_boot(&bytes)
     }
+    /// Serialize native boot evidence into protected platform metadata. Recorded
+    /// bytes cannot construct this native-only type or bypass namespace checks.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
 }
 impl fmt::Debug for BootId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

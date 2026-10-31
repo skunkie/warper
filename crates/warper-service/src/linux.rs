@@ -8,6 +8,7 @@ use nix::errno::Errno;
 use std::{fmt, io};
 
 pub mod change_monitor;
+pub mod context;
 pub mod link_lookup;
 mod netlink;
 pub mod route_lookup;

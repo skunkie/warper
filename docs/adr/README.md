@@ -29,6 +29,7 @@ need their own record.
 | [0015](0015-durable-connection-intent.md) | Accepted persistence boundary | Revision-bound durable connection intent with native root evidence |
 | [0016](0016-bounded-linux-route-lookups.md) | Accepted read-only boundary | Bounded native IPv4 TCP observations without physical-path authority |
 | [0017](0017-protected-network-journal-storage.md) | Accepted local storage boundary | Fixed bounded network snapshots with explicit pending/uncertain recovery |
+| [0018](0018-native-journal-owner-context.md) | Accepted read-only evidence boundary | Pinned native boot, namespaces, instance and process-start context |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or

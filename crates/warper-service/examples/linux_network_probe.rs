@@ -112,6 +112,52 @@ mod linux {
             }))
         }
     }
+    fn native_context() -> Result<warper_service::linux::context::Context, Failure> {
+        use warper_control::runtime::{RuntimeLease, connection::ConnectionStore};
+        use warper_service::linux::context::{Classification, Context, RecordedOwner};
+        let lease = Arc::new(RuntimeLease::acquire()?);
+        let connection = ConnectionStore::open(&lease)?;
+        let context = Arc::new(Context::capture(lease.clone(), &connection)?);
+        let recorded = RecordedOwner::decode(&context.recorded_owner().encode())?;
+        if context.classify(&recorded) != Classification::Current {
+            return Err("native owner component did not round trip".into());
+        }
+        let reopened = ConnectionStore::open(&lease)?;
+        let other = Context::capture(lease.clone(), &reopened)?;
+        if other.classify(&recorded) != Classification::PreviousInstance {
+            return Err("previous native instance became current".into());
+        }
+        drop(other);
+        drop(reopened);
+        drop(connection);
+        drop(lease);
+        let worker_context = context.clone();
+        let worker = std::thread::spawn(move || -> Result<(), Failure> {
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)?;
+            if worker_context.revalidate()
+                != Err(warper_service::linux::context::Error::ContextChanged)
+            {
+                return Err("changed thread network namespace retained native context".into());
+            }
+            Ok(())
+        });
+        worker
+            .join()
+            .map_err(|_| "native context worker panicked")??;
+        context.revalidate()?;
+        if !matches!(
+            RuntimeLease::acquire(),
+            Err(warper_control::runtime::Error::AlreadyRunning)
+        ) {
+            return Err("native context released runtime ownership early".into());
+        }
+        let context = Arc::try_unwrap(context)
+            .map_err(|_| "native context worker retained ownership after join")?;
+        println!(
+            "PASS native boot/process/namespace context, prior-instance fencing and joined foreign-thread rejection"
+        );
+        Ok(context)
+    }
     async fn peers() -> Result<JoinSet<Result<(), Failure>>, Failure> {
         let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let destination = target.local_addr()?;
@@ -326,6 +372,7 @@ mod linux {
     }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         isolated(mount, net)?;
+        let context = native_context()?;
         // Read-only production query in the fixture's private network namespace.
         // This observes a route; it does not authorize the loopback connector.
         let (query_owner, cancellation) = tokio::sync::watch::channel(false);
@@ -430,7 +477,7 @@ mod linux {
             Ok(())
         }.await;
         drop(foreign);
-        let cleanup = match nix::net::if_::if_nameindex() {
+        let mut cleanup = match nix::net::if_::if_nameindex() {
             Ok(interfaces)
                 if interfaces
                     .iter()
@@ -441,6 +488,13 @@ mod linux {
             Ok(_) => Vec::new(),
             Err(error) => vec![Box::new(error) as Failure],
         };
+        if let Err(error) = context.revalidate() {
+            cleanup.push(Box::new(error) as Failure);
+        }
+        drop(context);
+        if let Err(error) = warper_control::runtime::RuntimeLease::acquire() {
+            cleanup.push(Box::new(error) as Failure);
+        }
         preserve(result, cleanup)
     }
     #[cfg(test)]
