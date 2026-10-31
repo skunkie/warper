@@ -1816,3 +1816,25 @@ storage and retain the monitor until retirement. This is a notification sensor,
 not interface identity, a race-free route snapshot, socket binding, a routing
 exemption or a complete physical-path generation. Those integration gates stay
 open, alongside native mutation ACKs and persistent journal recovery.
+
+### Native link inspection
+
+`linux::link_lookup::lookup(Query, Request)` accepts a validated Linux interface
+name or a nonzero signed-range index and returns one correlated native link
+observation. It shares route lookup's private read-only transport, 128-byte
+request bound, fixed receive slice, strict kernel checking, sequence ownership,
+queue budget and total cancellation/deadline. The transport admits only
+GetRoute/GetLink requests; native mutation messages cannot pass this boundary.
+`linux::QueryError` is shared; `route_lookup::Error` remains its public alias.
+
+Retain the index, at most 15 ASCII name bytes, at most 255 alias bytes, nonzero
+MTU, layer type, flags and classified loopback/TUN/other kind. Reject missing,
+duplicate, zero, mismatched or oversized comparison fields. A TUN-kind link with
+Ethernet framing is unsupported, so a TAP is never admitted as a TUN. Other
+link kinds do not establish physical egress. Ignore unrelated metadata only
+within the shared datagram/parse bounds; Debug and errors omit native values.
+This is an observation for conflict/recovery comparisons, not owned generation
+identity or cleanup authority. A protected journal, boot/network-namespace
+identity and service ownership mark must establish ownership before mutation or
+recovery; a reused name or index is insufficient. Monitoring, physical binding
+and mutation acknowledgement requirements remain separate.

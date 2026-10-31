@@ -178,9 +178,17 @@ Evidence is retained under `target/evidence/phase-1/linux-route-lookup/`.
 The native change monitor subscribes to link/address/route/rule events with a
 bounded kernel queue and permanently invalidates on changes or uncertainty.
 Native subscription/owner-loss and bounded parser tests pass locally; actual
-private-namespace link-change acceptance is pending the next owner-dispatched
-run. Evidence is retained under `target/evidence/phase-1/linux-change-monitor/`.
+private-namespace link-change acceptance passes in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41210806096)
+at `07db97c`, including dropped pending waits and preserved host state. Evidence is retained under `target/evidence/phase-1/linux-change-monitor/`.
 It does not close physical socket binding, snapshot consistency or the driver.
+
+Native link inspection now shares the bounded read-only route transport and
+retains name/index/alias/MTU/flags/kind for future ownership comparisons. Native
+loopback name/index tests and malformed/mismatched metadata tests pass locally.
+Fresh isolated TUN inspection is pending owner-dispatched CI. This is not a
+journal ownership proof or production mutation driver. Evidence is retained
+under `target/evidence/phase-1/linux-link-lookup/`.
 
 ## Gate Evidence
 

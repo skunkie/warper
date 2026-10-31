@@ -82,5 +82,14 @@ The shared private socket constructor now also serves a bounded change sensor.
 It explicitly disables ENOBUFS suppression. A caller-owned subscription observes
 link/address/route/rule changes and permanently closes on the first event or
 uncertainty. This supplies no atomic snapshot, physical send authority or
-replacement generation. The contract defines ownership and bounds; actual
-private-namespace notification execution remains pending fresh native evidence.
+replacement generation. The contract defines ownership and bounds;
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41210806096)
+passes at `07db97c`, including quiet observation, dropped pending waits and
+actual private TUN link-change invalidation with preserved host state.
+
+The same bounded read-only transport now serves GetLink as well as GetRoute,
+with shared process-local sequence allocation and a mutation-message guard.
+Link observations bound retained comparison fields and distinguish TUN from
+TAP; they do not prove an owned generation. Native loopback name/index lookup
+passes locally. Fresh isolated TUN inspection remains pending; journaling,
+namespace identity, service ownership marks and native mutations remain open.

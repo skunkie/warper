@@ -5,68 +5,33 @@
 //! One bounded IPv4 TCP route lookup, without host mutation or cached authority.
 //! Every call owns its socket; cancellation/drop closes it without a detached task.
 
-use std::{
-    fmt,
-    future::{Future, poll_fn},
-    io,
-    net::{Ipv4Addr, SocketAddrV4},
-    num::NonZeroU32,
-    sync::atomic::{AtomicU32, Ordering},
-};
-
-use super::netlink::{self, MAX_DATAGRAM};
-use netlink_packet_core::{
-    NLM_F_MULTIPART, NLM_F_REQUEST, NetlinkBuffer, NetlinkMessage, NetlinkPayload,
-};
+pub use super::QueryError as Error;
+use super::netlink;
 use netlink_packet_route::{
     AddressFamily, RouteNetlinkMessage,
     route::{RouteAddress, RouteAttribute, RouteFlags, RouteMessage, RouteType},
 };
-use netlink_sys::{AsyncSocket, SocketAddr as NetlinkAddr};
-use nix::errno::Errno;
-use tokio::time::sleep_until;
+use std::{
+    fmt,
+    net::{Ipv4Addr, SocketAddrV4},
+    num::NonZeroU32,
+};
 use warper_core::transport::Request;
 
-const MAX_REQUEST: usize = 128;
+#[cfg(test)]
+use super::netlink::{MAX_DATAGRAM, MAX_REQUEST, bounded, socket_error};
+#[cfg(test)]
+use netlink_packet_core::{NLM_F_MULTIPART, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload};
+#[cfg(test)]
+use netlink_sys::SocketAddr as NetlinkAddr;
+#[cfg(test)]
+use nix::errno::Errno;
+#[cfg(test)]
+use std::io;
+
 // IPv4's rtmsg also reports RTCF_LOCAL from linux/in_route.h. This is not an
 // unknown link-health flag; accept it only together with the Local route kind.
 const RTCF_LOCAL: u32 = 0x80000000;
-// Port IDs can be reused after close. Never reuse a sequence within this process.
-static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Error {
-    InvalidInput,
-    ResourceLimit,
-    Cancelled,
-    Timeout,
-    Socket(Errno),
-    Io(io::ErrorKind),
-    UnexpectedSender,
-    InvalidReply,
-    Lost,
-    UnsupportedRoute,
-    Kernel(i32),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidInput => "InvalidConfig: invalid IPv4 TCP route query",
-            Self::ResourceLimit => "ResourceLimit: native route lookup capacity exhausted",
-            Self::Cancelled => "Cancelled: native route lookup cancelled",
-            Self::Timeout => "Timeout: native route lookup deadline expired",
-            Self::Socket(_) | Self::Io(_) => "NativeIo: route lookup failed",
-            Self::UnexpectedSender => "NativeProtocol: route reply is not from the kernel",
-            Self::InvalidReply => "NativeProtocol: invalid or uncorrelated route reply",
-            Self::Lost => "NativeUncertain: route reply lost or truncated",
-            Self::UnsupportedRoute => "UnsupportedIntegration: route lookup cannot be represented",
-            Self::Kernel(_) => "NativeRejected: kernel rejected route lookup",
-        })
-    }
-}
-impl std::error::Error for Error {}
-
 /// The tuple must describe the prospective service socket, including its actual
 /// source port when available. UID is taken from this process, never the caller.
 #[derive(Clone, Copy)]
@@ -101,48 +66,14 @@ impl fmt::Debug for Observation {
 /// No process, network mutation, name resolution, subscription or background task
 /// is created. The caller must bound concurrent lookups and retain their futures.
 pub async fn lookup(query: Query, request: Request) -> Result<Observation, Error> {
-    bounded(request, exchange(query)).await
-}
-
-async fn bounded<T>(
-    mut request: Request,
-    operation: impl Future<Output = Result<T, Error>>,
-) -> Result<T, Error> {
-    tokio::select! { biased;
-        _ = request.cancellation.wait_for(|cancelled| *cancelled) => Err(Error::Cancelled),
-        () = sleep_until(request.deadline) => Err(Error::Timeout),
-        result = operation => result,
-    }
-}
-
-async fn exchange(query: Query) -> Result<Observation, Error> {
-    validate(query)?;
-    let sequence = NEXT_SEQUENCE
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| Error::ResourceLimit)?;
-    let (socket, port) = netlink::socket(0).map_err(|error| match error {
-        netlink::Error::Io(error) => socket_error(error),
-        netlink::Error::ResourceLimit => Error::ResourceLimit,
-        netlink::Error::InvalidSocket => Error::InvalidReply,
-    })?;
-    let packet = request_packet(query, sequence, port)?;
-    let length = poll_fn(|context| socket.poll_send_to(context, &packet, &NetlinkAddr::new(0, 0)))
-        .await
-        .map_err(socket_error)?;
-    if length != packet.len() {
-        return Err(Error::InvalidReply);
-    }
-    // A fixed slice cannot grow through BufMut. The extra byte makes every
-    // oversized/truncated datagram fail closed, even if its prefix is valid.
-    let mut buffer = [0; MAX_DATAGRAM + 1];
-    let mut remaining = &mut buffer[..];
-    let sender = poll_fn(|context| socket.poll_recv_from(context, &mut remaining))
-        .await
-        .map_err(socket_error)?;
-    let length = MAX_DATAGRAM + 1 - remaining.len();
-    decode(&buffer[..length], Some(sender), sequence, port, query)
+    netlink::bounded(request, async {
+        validate(query)?;
+        match netlink::exchange(RouteNetlinkMessage::GetRoute(request_route(query))).await? {
+            RouteNetlinkMessage::NewRoute(route) => observation(route, query),
+            _ => Err(Error::InvalidReply),
+        }
+    })
+    .await
 }
 
 fn validate(query: Query) -> Result<(), Error> {
@@ -160,7 +91,7 @@ fn validate(query: Query) -> Result<(), Error> {
     Ok(())
 }
 
-fn request_packet(query: Query, sequence: u32, port: u32) -> Result<Vec<u8>, Error> {
+fn request_route(query: Query) -> RouteMessage {
     let mut route = RouteMessage::default();
     route.header.address_family = AddressFamily::Inet;
     route.header.destination_prefix_length = 32;
@@ -181,27 +112,19 @@ fn request_packet(query: Query, sequence: u32, port: u32) -> Result<Vec<u8>, Err
     if let Some(interface) = query.interface {
         route.attributes.push(RouteAttribute::Oif(interface.get()));
     }
-    let mut packet = NetlinkMessage::from(RouteNetlinkMessage::GetRoute(route));
-    packet.header.flags = NLM_F_REQUEST;
-    packet.header.sequence_number = sequence;
-    packet.header.port_number = port;
-    packet.finalize();
-    if packet.buffer_len() > MAX_REQUEST {
-        return Err(Error::ResourceLimit);
-    }
-    let mut bytes = vec![0; packet.buffer_len()];
-    packet.serialize(&mut bytes);
-    Ok(bytes)
+    route
 }
 
-fn socket_error(error: io::Error) -> Error {
-    match error.raw_os_error() {
-        Some(code) if code == Errno::ENOBUFS as i32 => Error::Lost,
-        Some(code) => Error::Socket(Errno::from_raw(code)),
-        None => Error::Io(error.kind()),
-    }
+#[cfg(test)]
+fn request_packet(query: Query, sequence: u32, port: u32) -> Result<Vec<u8>, Error> {
+    netlink::request_packet(
+        RouteNetlinkMessage::GetRoute(request_route(query)),
+        sequence,
+        port,
+    )
 }
 
+#[cfg(test)]
 fn decode(
     bytes: &[u8],
     sender: Option<NetlinkAddr>,
@@ -209,35 +132,8 @@ fn decode(
     port: u32,
     query: Query,
 ) -> Result<Observation, Error> {
-    if sender.is_none_or(|sender| sender.port_number() != 0 || sender.multicast_groups() != 0) {
-        return Err(Error::UnexpectedSender);
-    }
-    if bytes.len() > MAX_DATAGRAM {
-        return Err(Error::Lost);
-    }
-    let buffer = NetlinkBuffer::new_checked(bytes).map_err(|_| Error::InvalidReply)?;
-    // A unicast GETROUTE reply must contain exactly one complete message. Do not
-    // accept a valid prefix while ignoring another message or untrusted tail.
-    if buffer.length() as usize != bytes.len() {
-        return Err(Error::InvalidReply);
-    }
-    let message = NetlinkMessage::<RouteNetlinkMessage>::deserialize(bytes)
-        .map_err(|_| Error::InvalidReply)?;
-    if message.header.sequence_number != sequence
-        || message.header.port_number != port
-        || message.header.flags & NLM_F_MULTIPART != 0
-    {
-        return Err(Error::InvalidReply);
-    }
-    match message.payload {
-        NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewRoute(route)) => {
-            observation(route, query)
-        }
-        NetlinkPayload::Error(error) => match error.raw_code() {
-            code if code < 0 && code != i32::MIN => Err(Error::Kernel(-code)),
-            _ => Err(Error::InvalidReply),
-        },
-        NetlinkPayload::Overrun(_) => Err(Error::Lost),
+    match netlink::decode(bytes, sender, sequence, port)? {
+        RouteNetlinkMessage::NewRoute(route) => observation(route, query),
         _ => Err(Error::InvalidReply),
     }
 }

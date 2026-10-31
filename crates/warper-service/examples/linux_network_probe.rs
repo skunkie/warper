@@ -84,6 +84,19 @@ mod linux {
         }
         Ok(output.stdout)
     }
+    async fn inspect_link(
+        name: &str,
+    ) -> Result<warper_service::linux::link_lookup::Observation, Failure> {
+        let (_owner, cancellation) = tokio::sync::watch::channel(false);
+        Ok(warper_service::linux::link_lookup::lookup(
+            warper_service::linux::link_lookup::Query::Name(name),
+            Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation,
+            },
+        )
+        .await?)
+    }
     struct LocalConnector(SocketAddr);
     impl EndpointConnector for LocalConnector {
         fn connect_tcp(&self, endpoint: SocketAddr, request: Request) -> OpenTcp<'_> {
@@ -371,6 +384,9 @@ mod linux {
         println!("PASS native link change permanently invalidates bounded monitor");
         let foreign_name = foreign.name()?;
         let result=async {
+            let foreign_identity=inspect_link(&foreign_name).await?;
+            if foreign_identity.kind!=warper_service::linux::link_lookup::Kind::Tun
+                || foreign_identity.mtu.get()!=1400 {return Err("foreign fixture TUN inspection differs".into());}
             let before=ip(&["-j","link","show","dev",&foreign_name])?;
             let native=DeviceBuilder::new().mtu(MTU as u16).enable(false).build_sync()?;
             let fresh=native.name()?;
@@ -378,6 +394,11 @@ mod linux {
                 || before!=ip(&["-j","link","show","dev",&foreign_name])? {return Err("TUN rename collision changed foreign interface".into());}
             native.set_name(NAME)?;
             if fresh==foreign_name || native.mtu()?!=MTU as u16 {return Err("fresh TUN identity/MTU differs".into());}
+            let owned=inspect_link(NAME).await?;
+            if owned.kind!=warper_service::linux::link_lookup::Kind::Tun
+                || owned.mtu.get()!=MTU as u32 || owned.index==foreign_identity.index
+                || inspect_link(&foreign_name).await?!=foreign_identity {return Err("native TUN identity inspection differs".into());}
+            println!("PASS native TUN name/index/MTU inspection and foreign identity preservation");
             let tun=Arc::new(AsyncDevice::new(native)?);
             ip(&["address","add","198.18.0.1/32","dev",NAME])?;
             tun.enabled(true)?;
