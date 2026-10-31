@@ -112,6 +112,22 @@ mod linux {
             }))
         }
     }
+    fn index_exists(index: u32) -> Result<bool, Failure> {
+        use rustix::net::{
+            AddressFamily, SocketFlags, SocketType, netdevice::index_to_name_inlined, socket_with,
+        };
+        let socket = socket_with(
+            AddressFamily::INET,
+            SocketType::DGRAM,
+            SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+            None,
+        )?;
+        match index_to_name_inlined(socket, index) {
+            Ok(_) => Ok(true),
+            Err(rustix::io::Errno::NODEV | rustix::io::Errno::NXIO) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
     fn native_context() -> Result<
         (
             warper_service::linux::context::Context,
@@ -599,10 +615,7 @@ mod linux {
                 return Err("pending storage did not block native rename".into());
             }
             if !matches!(owner.close(),Err(failure) if failure.primary==TunError::Storage(JournalError::RecoveryRequired))
-                || !matches!(
-                    nix::net::if_::if_indextoname(index),
-                    Err(nix::errno::Errno::ENODEV | nix::errno::Errno::ENXIO)
-                )
+                || index_exists(index)?
             {
                 return Err(
                     "TUN cleanup did not preserve storage failure and close its descriptor".into(),
@@ -628,13 +641,12 @@ mod linux {
             owner.allocate()?;
             let index = owner.index().ok_or("abandoned TUN lacked an index")?;
             drop(owner);
-            if !matches!(
-                nix::net::if_::if_indextoname(index),
-                Err(nix::errno::Errno::ENODEV | nix::errno::Errno::ENXIO)
-            ) || !matches!(
-                Owner::prepare(context.clone(), None, MTU as u16),
-                Err(TunError::RecoveryRequired)
-            ) {
+            if index_exists(index)?
+                || !matches!(
+                    Owner::prepare(context.clone(), None, MTU as u16),
+                    Err(TunError::RecoveryRequired)
+                )
+            {
                 return Err("dropped TUN did not close conservatively behind recovery".into());
             }
             println!(

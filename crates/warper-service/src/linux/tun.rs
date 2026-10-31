@@ -6,10 +6,7 @@
 //! Call only in retained native workers; this does not publish routes or traffic.
 
 use super::context::{Context, RecordedOwner};
-use nix::{
-    errno::Errno,
-    net::if_::{if_indextoname, if_nametoindex},
-};
+use nix::{errno::Errno, net::if_::if_nametoindex};
 use std::{fmt, io, sync::Arc};
 use tun_rs::{DeviceBuilder, SyncDevice};
 use warper_control::runtime::journal::{Error as StorageError, NetworkJournal};
@@ -246,11 +243,7 @@ impl Owner {
             .map_err(Error::Context)
             .and_then(|()| {
                 if let Some(identity) = &self.identity {
-                    match if_indextoname(identity.index) {
-                        Err(Errno::ENODEV | Errno::ENXIO) => {}
-                        Ok(_) => return Err(Error::CleanupUncertain),
-                        Err(error) => return Err(native_error(error.into())),
-                    }
+                    ensure_index_absent(identity.index)?;
                 }
                 Ok(())
             })
@@ -342,10 +335,43 @@ fn identity(device: &SyncDevice) -> Result<Identity, Error> {
     }
     Ok(Identity { name, index })
 }
+fn ensure_index_absent(index: u32) -> Result<(), Error> {
+    use rustix::net::{
+        AddressFamily, SocketFlags, SocketType, netdevice::index_to_name_inlined, socket_with,
+    };
+    let socket = socket_with(
+        AddressFamily::INET,
+        SocketType::DGRAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(|error| native_error(error.into()))?;
+    match index_to_name_inlined(socket, index) {
+        Err(rustix::io::Errno::NODEV | rustix::io::Errno::NXIO) => Ok(()),
+        Ok(_) => Err(Error::CleanupUncertain),
+        Err(error) => Err(native_error(error.into())),
+    }
+}
+
 fn native_error(error: io::Error) -> Error {
     if error.kind() == io::ErrorKind::AlreadyExists {
         Error::Conflict
     } else {
         Error::Io(error.kind())
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+    #[test]
+    fn missing_interface_index_is_not_reported_as_existing() {
+        assert_eq!(
+            ensure_index_absent(0),
+            Ok(()),
+            "Linux reserves index zero; absence must reach the retirement check"
+        );
+        let loopback = if_nametoindex("lo").unwrap();
+        assert_eq!(ensure_index_absent(loopback), Err(Error::CleanupUncertain));
     }
 }
