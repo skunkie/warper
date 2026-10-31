@@ -47,6 +47,9 @@ async fn long_idle_admission_uses_the_wake_clock_and_shutdown_closes_retained_st
     assert_eq!(report.tcp.accepted, 1);
     assert_eq!(report.tcp.timed_out, 0);
     assert_eq!(report.retained_streams, 1);
+    assert!(!channels.publication.is_published());
+    assert!(channels.publication.is_quiescent());
+    assert_eq!(channels.publication.retained_flows(), 1);
     assert!(channels.packets.recv().await.is_none());
     let mut byte = [0; 1];
     assert_eq!(
@@ -54,6 +57,7 @@ async fn long_idle_admission_uses_the_wake_clock_and_shutdown_closes_retained_st
         std::io::ErrorKind::Interrupted
     );
     drop(flow);
+    assert_eq!(channels.publication.retained_flows(), 0);
 }
 
 #[tokio::test]
@@ -116,6 +120,7 @@ async fn lost_input_output_acceptance_or_shutdown_owners_surface_failures() {
             packets,
             tcp,
             admission: _,
+            publication,
             shutdown,
         } = channels;
         let mut ingress = Some(ingress);
@@ -123,13 +128,19 @@ async fn lost_input_output_acceptance_or_shutdown_owners_surface_failures() {
         let mut tcp = Some(tcp);
         let mut shutdown = Some(shutdown);
         match expected {
-            Error::IngressClosed => drop(ingress.take()),
+            Error::IngressClosed => {
+                drop(ingress.take());
+                assert!(!publication.is_published());
+            }
             Error::EgressClosed => drop(packets.take()),
             Error::ConsumerClosed => drop(tcp.take()),
             Error::ShutdownOwnerLost => drop(shutdown.take()),
             _ => unreachable!(),
         }
-        let failure = runtime.run().await.unwrap_err();
+        let failure = tokio::time::timeout(Duration::from_secs(1), runtime.run())
+            .await
+            .expect("a metadata observer must not hide required owner loss")
+            .unwrap_err();
         assert_eq!(failure.cause, expected);
         drop((ingress, packets, tcp, shutdown));
     }
@@ -309,4 +320,30 @@ async fn runtime_loss_surfaces_failed_quiescence_and_closes_future_admission() {
         channels.admission.quiesce(),
         Err(Error::ControlClosed)
     ));
+}
+
+#[tokio::test]
+async fn publications_observe_quiescence_and_distinguish_equal_policy_runtimes() {
+    let (runtime, channels) = create(8);
+    let (other, other_channels) = create(8);
+    let publication = channels.publication.clone();
+    assert!(publication.same_runtime(&channels.publication));
+    assert!(!publication.same_runtime(&other_channels.publication));
+    assert_eq!(publication.entries(), other_channels.publication.entries());
+    assert!(publication.is_published());
+    assert!(!publication.is_quiescent());
+    assert_eq!(publication.retained_flows(), 0);
+    let (owner, _) = tokio::sync::watch::channel(false);
+    let mut receipt = channels.admission.quiesce().unwrap();
+    let task = tokio::spawn(runtime.run());
+    receipt.wait(observation(&owner)).await.unwrap();
+    assert!(publication.is_published());
+    assert!(publication.is_quiescent());
+    channels.shutdown.send(()).unwrap();
+    task.await.unwrap().unwrap();
+    assert!(!publication.is_published());
+    assert!(publication.is_quiescent());
+    drop(other);
+    assert!(!other_channels.publication.is_published());
+    assert!(other_channels.publication.is_quiescent());
 }

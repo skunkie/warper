@@ -282,6 +282,15 @@ at `c077749`, with independently preserved host state. Evidence is under `target
 This is an admission barrier, not completed route withdrawal, response-grace
 accounting or daemon shutdown/recovery.
 
+The runtime now exposes its allocated capture policy and retained-flow lifetime
+observation through a non-forgeable read-only reference. Weak ingress ownership
+preserves required input-owner loss; quiescence and retained counts remain
+observable after runtime stop and until application handles drop. Local
+controlled lifecycle checks pass. Evidence is under
+`target/evidence/phase-1/capture-policy-publication/`. This is an observation
+boundary, not task/network readiness or native route authority; capture route
+publication, drain/grace integration and recovery remain open.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,

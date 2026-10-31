@@ -2129,3 +2129,26 @@ retain route/response grace references, remove acknowledged owned capture state,
 then stop/join packet and stack tasks. Counts in one acknowledgement alone do
 not prove those barriers. One fixed command and completion plus their retained
 reservation/waker metadata are bounded separately from packet payload capacity.
+
+### Published capture policy and lifetime observation
+
+A host runtime publishes a read-only reference to its allocated immutable
+prefix/backend mapping, ingress channel, quiescence state and shared flow
+lifetime accounting. Only runtime construction creates it; native drivers may
+inspect canonical entries and compare runtime identity, but cannot construct
+it from serialized records or modify its counters. It proves allocated handler
+publication, not that a task has been scheduled or that networking is ready;
+the supervisor must retain/start packet and runtime owners before capture.
+
+The reference holds only a weak ingress sender, so metadata cannot keep the
+packet-input owner alive. Publication ends when the runtime stops, the last
+ingress producer disappears or its receiver closes.
+Quiescence is observed with acquire/release ordering after admission stops.
+Retained flow count includes driver, pending/queued and application stream
+ownership, and remains observable after runtime cancellation. Native retirement
+requires quiescence and zero retained references; zero alone is not a barrier
+while new admission is possible. The reference cannot remove OS state or bypass
+response grace, packet drain or verified native ownership. Its private runtime
+identity distinguishes two runtimes using the same policy. Payload queues stay
+unchanged;
+its fixed references/counters are separately bounded metadata.

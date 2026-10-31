@@ -91,3 +91,15 @@ Real kernel rejection after acknowledgement passes in
 [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41241770521)
 at `c077749`, with independently preserved host state. Route/reference retirement
 and complete service shutdown remain separate integration gates.
+
+## Capture-policy lifetime observation
+
+Runtime construction now exposes its canonical immutable mapping and shared
+flow lifetime/quiescence observation to the service. Its ingress sender is weak,
+so retaining metadata cannot mask loss of the real packet-input owner. Its
+private runtime identity distinguishes equal policies in different runtimes.
+Counts remain available after runtime cancellation until the final application
+handle releases its flow. Controlled lifecycle tests verify these properties.
+This is neither scheduled-task readiness nor permission to remove kernel state;
+native route owners and the supervising service must still enforce publication,
+quiescence, drain, response grace and retirement order.

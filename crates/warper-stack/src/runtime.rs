@@ -24,7 +24,9 @@ use tokio::{
 use warper_core::routing::Policy;
 
 mod admission;
+mod publication;
 pub use admission::{AdmissionControl, Quiescence, Snapshot as AdmissionSnapshot};
+pub use publication::Publication;
 
 const OUTPUT_BATCH: usize = 8;
 const MAX_QUEUE: usize = 64;
@@ -101,6 +103,7 @@ pub struct Channels {
     pub packets: Egress,
     pub tcp: mpsc::Receiver<AcceptedFlow>,
     pub admission: AdmissionControl,
+    pub publication: Publication,
     pub shutdown: oneshot::Sender<()>,
 }
 pub struct Egress {
@@ -146,6 +149,7 @@ pub struct Runtime {
     shutdown: oneshot::Receiver<()>,
     wake: Arc<ApplicationWake>,
     stopped: Arc<AtomicBool>,
+    quiescent: Arc<AtomicBool>,
     buffer_capacity: usize,
     report: Report,
 }
@@ -157,12 +161,21 @@ impl Runtime {
         seed: Seed,
     ) -> Result<(Self, Channels), Error> {
         let buffer_capacity = Self::required_buffer_capacity(limits, capacity)?;
-        let (host, tcp) = HostAdapter::new(limits, policy, seed).map_err(Error::Host)?;
+        let (host, tcp) = HostAdapter::new(limits, policy.clone(), seed).map_err(Error::Host)?;
         let (input, receiver) = mpsc::channel(capacity);
         let (output, packets) = mpsc::channel(capacity);
         let (admission, commands) = AdmissionControl::new();
         let (shutdown, stopping) = oneshot::channel();
         let stopped = Arc::new(AtomicBool::new(false));
+        let quiescent = Arc::new(AtomicBool::new(false));
+        let publication = Publication::new(
+            policy,
+            input.clone(),
+            host.lifetime_pool(),
+            limits.flows,
+            quiescent.clone(),
+            stopped.clone(),
+        );
         Ok((
             Self {
                 host,
@@ -173,6 +186,7 @@ impl Runtime {
                 shutdown: stopping,
                 wake: Arc::new(ApplicationWake(Notify::new())),
                 stopped: stopped.clone(),
+                quiescent,
                 buffer_capacity,
                 report: Report::default(),
             },
@@ -184,6 +198,7 @@ impl Runtime {
                 },
                 tcp,
                 admission,
+                publication,
                 shutdown,
             },
         ))
@@ -302,6 +317,7 @@ impl Runtime {
     }
     fn apply_admission(&mut self, command: admission::Command) -> Result<(), Error> {
         self.host.quiesce().map_err(Error::Host)?;
+        self.quiescent.store(true, Ordering::Release);
         command.complete(AdmissionSnapshot {
             active_flows: self.host.active_flows(),
             retained_streams: self.host.retained_flows(),

@@ -474,6 +474,10 @@ impl HostAdapter {
 
     /// Payload-buffer reservation; packet I/O channels and relay buffers are
     /// separately charged by the service. Allocator/socket metadata is additional.
+    pub(crate) fn lifetime_pool(&self) -> Arc<Semaphore> {
+        self.lifetimes.clone()
+    }
+
     pub fn buffer_capacity(&self) -> usize {
         self.limits.flows * BYTE_CAPACITY * 4 + crate::device::PACKET_CAPACITY * MTU * 2
     }
