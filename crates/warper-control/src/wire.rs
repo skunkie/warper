@@ -254,6 +254,19 @@ impl fmt::Debug for Frame {
     }
 }
 
+/// Construct an operation identity permanently bound to its expected desired
+/// revision. The client supplies a fresh nonzero eight-byte nonce for each new
+/// command; retry preserves the entire identity and original request fields.
+pub fn operation_id(expected_revision: u64, nonce: [u8; 8]) -> Result<[u8; 16], Error> {
+    if nonce.iter().all(|byte| *byte == 0) {
+        return Err(Error::Malformed);
+    }
+    let mut operation = [0; 16];
+    operation[..8].copy_from_slice(&expected_revision.to_be_bytes());
+    operation[8..].copy_from_slice(&nonce);
+    Ok(operation)
+}
+
 fn encode_header(kind: Kind, request_id: u64, length: usize) -> Result<[u8; HEADER_LEN], Error> {
     let length = u32::try_from(length).map_err(|_| Error::InvalidLength)?;
     let mut bytes = [0; HEADER_LEN];
@@ -288,12 +301,11 @@ fn parse_header(bytes: &[u8; HEADER_LEN]) -> Result<(Kind, u64, usize), Error> {
 fn check_body(kind: Kind, body: &[u8]) -> Result<(), Error> {
     let nonzero = |bytes: &[u8]| bytes.iter().any(|v| *v != 0);
     let valid = match kind {
-        Kind::HelloReply
-        | Kind::Accepted
-        | Kind::OperationStatus
-        | Kind::EnrollmentReply
-        | Kind::ConfigReply => nonzero(body),
-        Kind::Connect | Kind::Disconnect => nonzero(&body[..16]) && nonzero(&body[32..48]),
+        Kind::HelloReply | Kind::EnrollmentReply | Kind::ConfigReply => nonzero(body),
+        Kind::Accepted | Kind::OperationStatus => nonzero(&body[8..16]),
+        Kind::Connect | Kind::Disconnect => {
+            nonzero(&body[8..16]) && body[..8] == body[24..32] && nonzero(&body[32..48])
+        }
         Kind::Enroll => {
             let present = u32::from_be_bytes(body[8..12].try_into().map_err(|_| Error::Malformed)?);
             let uid = u32::from_be_bytes(body[12..].try_into().map_err(|_| Error::Malformed)?);
@@ -303,7 +315,7 @@ fn check_body(kind: Kind, body: &[u8]) -> Result<(), Error> {
         Kind::RecoveryReply => u16::from_be_bytes([body[0], body[1]]) & !7 == 0,
         Kind::OperationReply => {
             let code = Code::parse(u16::from_be_bytes([body[17], body[18]]))?;
-            nonzero(&body[..16]) && body[16] <= 4 && ((body[16] == 3) == (code != Code::None))
+            nonzero(&body[8..16]) && body[16] <= 4 && ((body[16] == 3) == (code != Code::None))
         }
         Kind::ErrorReply => Code::parse(u16::from_be_bytes([body[0], body[1]]))? != Code::None,
         _ => true,
@@ -437,10 +449,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn every_message_kind_round_trips_through_bounded_partial_stream_io() {
         let mut operation = vec![0; 48];
-        operation[0] = 1;
+        operation[8] = 1;
         operation[32] = 2;
         let mut operation_reply = vec![0; 19];
-        operation_reply[0] = 1;
+        operation_reply[8] = 1;
         let samples = [
             (Kind::Hello, vec![]),
             (Kind::Status, vec![]),
@@ -480,7 +492,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn lifecycle_fences_use_v2_and_legacy_layouts_fail_before_body_reads() {
-        let mut body = vec![0x11; 16];
+        assert_eq!(operation_id(0, [0; 8]), Err(Error::Malformed));
+        let mut body = operation_id(13, [0x11; 8]).unwrap().to_vec();
         body.extend_from_slice(&7u64.to_be_bytes());
         body.extend_from_slice(&13u64.to_be_bytes());
         body.extend_from_slice(&[0x22; 16]);
@@ -498,7 +511,8 @@ mod tests {
                 .unwrap();
             assert_eq!(&bytes[..6], b"WRPC\x00\x02");
             assert_eq!(&bytes[8..12], &48u32.to_be_bytes());
-            assert_eq!(&bytes[20..36], &[0x11; 16]);
+            assert_eq!(&bytes[20..28], &13u64.to_be_bytes());
+            assert_eq!(&bytes[28..36], &[0x11; 8]);
             assert_eq!(&bytes[36..44], &7u64.to_be_bytes());
             assert_eq!(&bytes[44..52], &13u64.to_be_bytes());
             assert_eq!(&bytes[52..68], &[0x22; 16]);
@@ -533,6 +547,21 @@ mod tests {
             Frame::new(Kind::Connect, 9, body),
             Err(Error::Malformed)
         ));
+        let mut refreshed = operation_id(0, [1; 8]).unwrap().to_vec();
+        refreshed.extend_from_slice(&7u64.to_be_bytes());
+        refreshed.extend_from_slice(&2u64.to_be_bytes());
+        refreshed.extend_from_slice(&[2; 16]);
+        assert!(matches!(
+            Frame::new(Kind::Connect, 9, refreshed),
+            Err(Error::Malformed)
+        ));
+        let mut invalid_nonce = vec![0; 16];
+        invalid_nonce[0] = 1;
+        assert!(matches!(
+            Frame::new(Kind::OperationStatus, 9, invalid_nonce.clone()),
+            Err(Error::Malformed)
+        ));
+        assert!(Frame::new(Kind::HelloReply, 9, invalid_nonce).is_ok());
     }
 
     #[tokio::test(start_paused = true)]

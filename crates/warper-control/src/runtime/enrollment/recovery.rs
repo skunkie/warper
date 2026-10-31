@@ -66,7 +66,7 @@ impl OwnerStore {
             .transpose()
             .map_err(os_error)?;
         Ok(Some(PendingInspection {
-            directory: fstat(&self.directory).map_err(os_error)?,
+            directory: fstat(&self.state.directory).map_err(os_error)?,
             committed,
             owner_pin,
             owner_metadata,
@@ -86,7 +86,7 @@ impl OwnerStore {
         self.verify()?;
         require_same(
             &inspection.directory,
-            &fstat(&self.directory).map_err(os_error)?,
+            &fstat(&self.state.directory).map_err(os_error)?,
         )
         .map_err(|_| Error::UnsafeState)?;
         let (committed, owner_pin) = self.load()?;
@@ -122,7 +122,7 @@ impl OwnerStore {
         }
         // Root is trusted. Enrollment and recovery must be serialized by the
         // service; an administrator racing this final check remains outside it.
-        unlinkat(&self.directory, PENDING, AtFlags::empty()).map_err(os_error)?;
+        unlinkat(&self.state.directory, PENDING, AtFlags::empty()).map_err(os_error)?;
         commit_sync(self).map_err(|error| match error {
             Error::Io(kind) => Error::CommitUncertain(kind),
             other => other,
@@ -132,7 +132,7 @@ impl OwnerStore {
 
     fn pending_snapshot(&self) -> Result<Option<(File, Vec<u8>, Stat)>, Error> {
         let pin = match openat2(
-            &self.directory,
+            &self.state.directory,
             PENDING,
             OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
@@ -146,9 +146,9 @@ impl OwnerStore {
         if metadata.st_size < 0 || metadata.st_size as u64 > RECORD_LEN as u64 {
             return Err(Error::UnsafeState);
         }
-        check_file(&metadata, self.owner, metadata.st_size as u64)?;
+        check_file(&metadata, self.state.owner, metadata.st_size as u64)?;
         let fd = openat2(
-            &self.directory,
+            &self.state.directory,
             PENDING,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
@@ -168,7 +168,7 @@ impl OwnerStore {
             || !unchanged(&metadata, &fstat(&file).map_err(os_error)?)
             || !unchanged(
                 &metadata,
-                &named(&self.directory, PENDING).map_err(Error::Runtime)?,
+                &named(&self.state.directory, PENDING).map_err(Error::Runtime)?,
             )
         {
             return Err(Error::UnsafeState);

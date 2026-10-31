@@ -373,5 +373,17 @@ because their IDs are absent from memory. Reusing an operation ID can retrieve
 its retained result, but an expired result may require a fresh status snapshot
 and an explicit new command. Client wait cancellation still does not cancel an
 accepted operation. These rules require durable intent and handler enforcement;
-the codec only validates and carries the fields. Persistent intent, bounded
-history and authenticated operation handlers remain open implementation gates.
+the codec only validates and carries the fields. The Linux ConnectionStore now
+persists accepted intent with native boot/instance identity, revision checks,
+repeat suppression and explicit uncertainty recovery. It does not implement an
+authenticated handler or network action. Bounded operation-result history,
+managed configuration, boot policy and handler enforcement remain open gates.
+
+Operation IDs bind their first eight big-endian bytes to the original expected
+desired-state revision and use a fresh nonzero eight-byte nonce as the suffix.
+Retry never changes either part or the original fields. Refreshing revision
+fields while retaining an old ID is rejected even after result eviction. The
+shared `wire::operation_id` constructor and codec validate this format, and the
+connection store independently enforces it before mutation. The persisted ID
+prefix must equal the stored revision minus one. This bounds replay protection
+without retaining an unlimited set of historical opaque UUIDs.

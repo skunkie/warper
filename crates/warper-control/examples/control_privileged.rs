@@ -15,7 +15,12 @@ mod linux {
     };
     use warper_control::{
         Access, Error, Role, namespace,
-        runtime::{RuntimeLease, endpoint::ControlEndpoint, enrollment::OwnerStore},
+        runtime::{
+            RuntimeLease,
+            connection::{Acceptance, ConnectionStore, Desired, Request as IntentRequest},
+            endpoint::ControlEndpoint,
+            enrollment::OwnerStore,
+        },
         unix,
     };
     type Failure = Box<dyn std::error::Error>;
@@ -100,6 +105,70 @@ mod linux {
         }
         Ok(())
     }
+    fn connection_intent(lease: &RuntimeLease) -> Result<(), Failure> {
+        let mut store = ConnectionStore::open(lease)?;
+        if store.read(lease)?.is_some() {
+            return Err("intent fixture must begin empty".into());
+        }
+        let mut connect_operation = [1; 16];
+        connect_operation[..8].copy_from_slice(&0u64.to_be_bytes());
+        let connect = IntentRequest {
+            operation: connect_operation,
+            expected_configuration: 7,
+            expected_revision: 0,
+            expected_instance: store.instance_id(),
+            desired: Desired::Up,
+        };
+        if !matches!(store.accept(lease, 7, connect)?, Acceptance::Accepted(snapshot) if snapshot.revision()==1)
+            || !matches!(store.accept(lease, 7, connect)?, Acceptance::AlreadyAccepted(snapshot) if snapshot.revision()==1)
+        {
+            return Err("durable intent acceptance/repeat differs".into());
+        }
+        let mut disconnect_operation = [2; 16];
+        disconnect_operation[..8].copy_from_slice(&1u64.to_be_bytes());
+        let disconnect = IntentRequest {
+            operation: disconnect_operation,
+            expected_revision: 1,
+            desired: Desired::Down,
+            ..connect
+        };
+        store.accept(lease, 7, disconnect)?;
+        drop(store);
+        let mut reopened = ConnectionStore::open(lease)?;
+        let record = reopened.read(lease)?.ok_or("durable intent disappeared")?;
+        if record.revision() != 2
+            || record.desired() != Desired::Down
+            || !record.same_boot(&reopened.boot_id())
+            || reopened.instance_id() == connect.expected_instance
+            || !matches!(reopened.accept(lease, 7, connect), Err(failure) if failure.primary==warper_control::runtime::connection::Error::Conflict)
+        {
+            return Err("durable intent restart fence or preservation differs".into());
+        }
+        reopened.resync(lease)?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::write("/var/lib/warper/connection.pending", b"partial")?;
+        fs::set_permissions(
+            "/var/lib/warper/connection.pending",
+            fs::Permissions::from_mode(0o600),
+        )?;
+        let inspection = reopened
+            .inspect_pending(lease)?
+            .ok_or("pending intent was not inspected")?;
+        if inspection.pending_len() != 7
+            || inspection.committed().map(|record| record.revision()) != Some(2)
+        {
+            return Err("pending intent inspection differs".into());
+        }
+        reopened.discard_pending(lease, inspection)?;
+        if reopened.read(lease)?.map(|record| record.desired()) != Some(Desired::Down) {
+            return Err("pending intent discard changed committed desired state".into());
+        }
+        println!(
+            "PASS durable root connection intent, repeat suppression, restart fencing and resync without network actions"
+        );
+        Ok(())
+    }
+
     fn configure(stream: &UnixStream) -> Result<(), Failure> {
         stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -264,6 +333,7 @@ mod linux {
             return Err("partial enrollment recovery did not preserve committed revision".into());
         }
         drop(old_owner);
+        connection_intent(endpoint.runtime())?;
         let reopened = OwnerStore::open(endpoint.runtime())?;
         if reopened.read(endpoint.runtime())?.revision() != 3 {
             return Err("protected owner snapshot did not persist".into());

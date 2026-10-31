@@ -124,6 +124,67 @@ performs no cleanup. These synchronous operations have no hard filesystem wall
 bound. The future service serializes enrollment/recovery and revokes sessions
 when committed owner policy changes; no recovery CLI/API handler exists yet.
 
+### Linux connection intent storage
+
+The service persists accepted connection intent in fixed root-owned mode-0600,
+single-link `/var/lib/warper/connection`, using the same protected directory
+checks as enrollment. `connection.pending` is exclusive durable staging; an
+existing pending object blocks reads/acceptance and requires inspection. Missing
+state is revision zero. Invalid, unsafe or changed state is never reset to zero.
+No YAML path, generic file operation or ordinary-user ownership override exists.
+
+A stored record is exactly 80 bytes: `WCIN`, big-endian u32 version 1, nonzero
+u64 desired revision, 16-byte boot ID, 16-byte accepting service instance ID,
+16-byte operation ID, u64 configuration generation, desired state u8 (0 down,
+1 up), and seven zero reserved bytes. All IDs are nonzero. Up requires a nonzero
+configuration generation. No source YAML, credentials or packet payloads are
+stored. Native boot identity comes from bounded verified procfs reads; service
+instance IDs use native nonblocking entropy without configured values/fallback.
+
+`ConnectionStore` is root service persistence, not an authenticated RPC handler.
+The retained runtime lease is revalidated for every operation. The service must
+first refresh enrollment and authorize each command. Supply the current
+approved configuration generation independently of the decoded request.
+Acceptance checks that generation, expected service instance and desired
+revision; exact repeats of the last
+operation retain the same command/configuration/previous revision and return
+AlreadyAccepted without rewriting. Conflicting ID reuse and stale revisions are
+rejected. Increment the desired revision, exclusively stage/sync a complete
+snapshot and directory, revalidate prior identity/content, atomically rename,
+and sync before returning Accepted. Post-rename sync failure is CommitUncertain,
+never permission to apply OS changes or replay; preserve primary/cleanup errors.
+The live store blocks further acceptance after uncertainty. Explicit `inspect`
+reports the unchanged record, and `resync` makes that file/directory durable
+without accepting or applying another operation. A changed/deleted previously
+observed snapshot fails closed instead of becoming revision zero.
+
+Administrative pending inspection/discard pins at most an 80-byte staged file
+and the committed snapshot. It exposes only length/current intent and consumes
+an opaque token after revalidating runtime/store/current/pending identity,
+timestamps and bytes. Never promote the unpublished request. Abandonment or
+mismatch preserves all state. Post-unlink sync uncertainty blocks acceptance
+until explicit resync; authentication/inspection admission belongs to the
+service. No serialized path or descriptor override is provided.
+
+Operation IDs bind their first eight big-endian bytes to the original expected
+desired-state revision and use a fresh nonzero eight-byte nonce as the suffix.
+Retry never changes either part or the original fields. Refreshing revision
+fields while retaining an old ID is rejected even after result eviction. The
+shared `wire::operation_id` constructor and codec validate this format, and the
+connection store independently enforces it before mutation. The persisted ID
+prefix must equal the stored revision minus one. This bounds replay protection
+without retaining an unlimited set of historical opaque UUIDs.
+
+The store retains only the last acceptance; the service separately bounds
+operation results. An evicted older command cannot run again because its
+expected revision is stale, and a service restart changes the instance fence.
+Stored intent survives same-boot service restarts; fresh-boot autoconnect policy
+must be approved and persisted before acting. This snapshot is not observed
+network readiness or the OS recovery journal. Service handlers, boot policy,
+managed configuration and journaled network application remain independent
+gates. Filesystem operations are synchronous with no hard
+kernel wait bound and must run under retained service worker ownership.
+
 ### Initial Linux service preparation
 
 Offline schema acceptance is broader than the initial running capability.

@@ -4,10 +4,13 @@
 
 //! Fixed protected owner snapshots with bounded reads and atomic publication.
 
-use super::{RuntimeLease, named, require_same, validate_directory};
+use super::{
+    RuntimeLease, named, require_same,
+    state::{self, StateDirectory},
+};
 use crate::{Access, OwnerPolicy};
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, ResolveFlags, Stat, fstat, open, openat2, renameat, unlinkat,
+    AtFlags, FileType, Mode, OFlags, ResolveFlags, Stat, fstat, openat2, renameat, unlinkat,
 };
 use std::{
     fmt,
@@ -58,6 +61,15 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl From<state::Error> for Error {
+    fn from(error: state::Error) -> Self {
+        match error {
+            state::Error::Runtime(error) => Self::Runtime(error),
+            state::Error::UnsafeState => Self::UnsafeState,
+            state::Error::Io(kind) => Self::Io(kind),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Failure {
@@ -112,25 +124,13 @@ impl fmt::Debug for Enrollment {
 /// }
 /// ```
 pub struct OwnerStore {
-    anchor: OwnedFd,
-    var: OwnedFd,
-    lib: OwnedFd,
-    directory: OwnedFd,
-    owner: u32,
+    state: StateDirectory,
 }
 impl OwnerStore {
     pub fn open(lease: &RuntimeLease) -> Result<Self, Error> {
-        lease.revalidate().map_err(Error::Runtime)?;
-        if !nix::unistd::geteuid().is_root() {
-            return Err(Error::Runtime(super::Error::PrivilegeRequired));
-        }
-        let anchor = open(
-            "/",
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(os_error)?;
-        Self::open_at(anchor, 0)
+        Ok(Self {
+            state: StateDirectory::open(lease).map_err(Error::from)?,
+        })
     }
 
     pub fn read(&self, lease: &RuntimeLease) -> Result<Enrollment, Error> {
@@ -153,20 +153,10 @@ impl OwnerStore {
         self.replace(lease, expected_revision, owner)
     }
 
+    #[cfg(test)]
     fn open_at(anchor: OwnedFd, owner: u32) -> Result<Self, Error> {
-        check_directory(&fstat(&anchor).map_err(os_error)?, owner, false)?;
-        let var = directory(&anchor, "var", false)?;
-        check_directory(&fstat(&var).map_err(os_error)?, owner, false)?;
-        let lib = directory(&var, "lib", false)?;
-        check_directory(&fstat(&lib).map_err(os_error)?, owner, false)?;
-        let directory = directory(&lib, "warper", true)?;
-        check_directory(&fstat(&directory).map_err(os_error)?, owner, true)?;
         Ok(Self {
-            anchor,
-            var,
-            lib,
-            directory,
-            owner,
+            state: StateDirectory::open_at(anchor, owner).map_err(Error::from)?,
         })
     }
 
@@ -204,7 +194,7 @@ impl OwnerStore {
                 .ok_or(Error::RevisionExhausted)?,
         };
         let fd = openat2(
-            &self.directory,
+            &self.state.directory,
             PENDING,
             OFlags::RDWR
                 | OFlags::CREATE
@@ -225,7 +215,7 @@ impl OwnerStore {
         let mut pending = File::from(fd);
         let mut published = false;
         let result = (|| {
-            check_file(&fstat(&pending).map_err(os_error)?, self.owner, 0)?;
+            check_file(&fstat(&pending).map_err(os_error)?, self.state.owner, 0)?;
             pending
                 .write_all(&encode(after))
                 .map_err(|e| Error::Io(e.kind()))?;
@@ -246,7 +236,8 @@ impl OwnerStore {
                 _ => return Err(Error::UnsafeState),
             }
             self.verify_pending(&pending, Some(RECORD_LEN as u64))?;
-            renameat(&self.directory, PENDING, &self.directory, OWNER).map_err(os_error)?;
+            renameat(&self.state.directory, PENDING, &self.state.directory, OWNER)
+                .map_err(os_error)?;
             published = true;
             commit_sync(self).map_err(|e| match e {
                 Error::Io(kind) => Error::CommitUncertain(kind),
@@ -268,22 +259,11 @@ impl OwnerStore {
     }
 
     fn verify(&self) -> Result<(), Error> {
-        check_directory(&fstat(&self.anchor).map_err(os_error)?, self.owner, false)?;
-        for (parent, name, fd, protected) in [
-            (&self.anchor, "var", &self.var, false),
-            (&self.var, "lib", &self.lib, false),
-            (&self.lib, "warper", &self.directory, true),
-        ] {
-            let metadata = fstat(fd).map_err(os_error)?;
-            check_directory(&metadata, self.owner, protected)?;
-            require_same(&metadata, &named(parent, name).map_err(Error::Runtime)?)
-                .map_err(|_| Error::UnsafeState)?;
-        }
-        Ok(())
+        self.state.verify().map_err(Error::from)
     }
 
     fn require_no_pending(&self) -> Result<(), Error> {
-        match named(&self.directory, PENDING) {
+        match named(&self.state.directory, PENDING) {
             Err(super::Error::Io(io::ErrorKind::NotFound)) => Ok(()),
             Ok(_) => Err(Error::RecoveryRequired),
             Err(error) => Err(Error::Runtime(error)),
@@ -292,7 +272,7 @@ impl OwnerStore {
 
     fn load(&self) -> Result<(Enrollment, Option<OwnedFd>), Error> {
         let pin = match openat2(
-            &self.directory,
+            &self.state.directory,
             OWNER,
             OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
@@ -311,9 +291,9 @@ impl OwnerStore {
             Err(error) => return Err(os_error(error)),
         };
         let metadata = fstat(&pin).map_err(os_error)?;
-        check_file(&metadata, self.owner, RECORD_LEN as u64)?;
+        check_file(&metadata, self.state.owner, RECORD_LEN as u64)?;
         let fd = openat2(
-            &self.directory,
+            &self.state.directory,
             OWNER,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
@@ -329,7 +309,7 @@ impl OwnerStore {
         let record = decode(&bytes)?;
         require_same(
             &metadata,
-            &named(&self.directory, OWNER).map_err(Error::Runtime)?,
+            &named(&self.state.directory, OWNER).map_err(Error::Runtime)?,
         )
         .map_err(|_| Error::UnsafeState)?;
         Ok((record, Some(pin)))
@@ -339,12 +319,12 @@ impl OwnerStore {
         let metadata = fstat(file).map_err(os_error)?;
         check_file(
             &metadata,
-            self.owner,
+            self.state.owner,
             size.unwrap_or(metadata.st_size as u64),
         )?;
         require_same(
             &metadata,
-            &named(&self.directory, PENDING).map_err(Error::Runtime)?,
+            &named(&self.state.directory, PENDING).map_err(Error::Runtime)?,
         )
         .map_err(|_| Error::UnsafeState)
     }
@@ -353,13 +333,13 @@ impl OwnerStore {
         lease.revalidate().map_err(Error::Runtime)?;
         self.verify()?;
         self.verify_pending(file, None)?;
-        unlinkat(&self.directory, PENDING, AtFlags::empty()).map_err(os_error)?;
+        unlinkat(&self.state.directory, PENDING, AtFlags::empty()).map_err(os_error)?;
         self.sync()
     }
 
     fn sync(&self) -> Result<(), Error> {
         let fd = openat2(
-            &self.directory,
+            &self.state.directory,
             ".",
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
@@ -375,27 +355,6 @@ impl fmt::Debug for OwnerStore {
     }
 }
 
-fn directory(parent: &OwnedFd, name: &str, same_mount: bool) -> Result<OwnedFd, Error> {
-    let mut resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
-    if same_mount {
-        resolve |= ResolveFlags::NO_XDEV;
-    }
-    openat2(
-        parent,
-        name,
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-        resolve,
-    )
-    .map_err(os_error)
-}
-fn check_directory(metadata: &Stat, owner: u32, protected: bool) -> Result<(), Error> {
-    validate_directory(metadata, owner, false).map_err(|_| Error::UnsafeState)?;
-    if protected && metadata.st_mode & 0o7777 != 0o700 {
-        return Err(Error::UnsafeState);
-    }
-    Ok(())
-}
 fn check_file(metadata: &Stat, owner: u32, size: u64) -> Result<(), Error> {
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
         || metadata.st_uid != owner
@@ -445,6 +404,7 @@ fn decode(bytes: &[u8]) -> Result<Enrollment, Error> {
 mod tests {
     use super::*;
     use crate::runtime::tests::Fixture;
+    use rustix::fs::open;
     use std::{
         fs,
         os::unix::fs::{PermissionsExt, symlink},
