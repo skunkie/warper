@@ -137,6 +137,14 @@ preserved; artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41188500176/`. Recovery CLI/API
 handlers and live service policy revocation remain integration work.
 
+The [prepared-adapter native CI gate](https://github.com/skunkie/warper/actions/runs/41190166009)
+passes at `a930d88` on Linux x86_64/aarch64 and macOS aarch64 workspace checks,
+including the existing privileged control/recovery fixture. This does not run
+native TUN operations. ADR 0014 adds a development-only candidate TUN API probe
+for the next owner-dispatched run; positive native creation/collision/I/O/drop
+evidence remains pending. Production journaled Linux driver and service gates
+remain open.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,

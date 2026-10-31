@@ -20,5 +20,11 @@ warper-stack = { path = "../warper-stack" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "test-util"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tun-rs.workspace = true
+nix.workspace = true
+rustix = { workspace = true, features = ["fs"] }
+warper-control = { path = "../warper-control" }
+
 [lints]
 workspace = true

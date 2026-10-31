@@ -187,7 +187,9 @@ jobs:
         with:
           build-warnings: warn
       - name: Build the actual privileged control probe
-        run: cargo build --locked -p warper-control --example control_privileged
+        run: |
+          cargo build --locked -p warper-control --example control_privileged
+          cargo build --locked -p warper-service --example linux_network_probe
       - name: Exercise protected root state and real kernel peers in isolation
         shell: bash
         run: |
@@ -196,6 +198,14 @@ jobs:
             --probe "$PWD/target/debug/examples/control_privileged" \
             --evidence "$PWD/target/evidence/phase-1/privileged-control" \
             2>&1 | tee target/evidence/phase-1/privileged-control/controller.log
+      - name: Exercise the candidate TUN API with actual kernel TCP in isolation
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control/tun-api
+          sudo -n -- python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/linux_network_probe" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control/tun-api" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/tun-api/controller.log
       - name: Retain privileged gate evidence even on failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

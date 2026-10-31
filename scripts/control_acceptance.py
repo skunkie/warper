@@ -19,6 +19,7 @@ import selectors
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -104,7 +105,13 @@ def snapshot():
             value.pop("cache", None)
         routes.append(values)
     resolver = Path("/etc/resolv.conf").read_bytes()
-    return {"links": links, "routes": routes,
+    try:
+        device = Path("/dev/net/tun").lstat()
+        tun_device = {"device": device.st_dev, "inode": device.st_ino,
+                      "mode": device.st_mode, "uid": device.st_uid, "rdev": device.st_rdev}
+    except FileNotFoundError:
+        tun_device = None
+    return {"links": links, "routes": routes, "tun_device": tun_device,
             "resolver_sha256": hashlib.sha256(resolver).hexdigest()}
 
 
@@ -223,6 +230,17 @@ def bus_health(address):
                    capture_output=True, timeout=2)
 
 
+def create_device_nodes(root):
+    """Called only after mounting a private tmpfs /dev inside private namespaces."""
+    (root / "net").mkdir(mode=0o755)
+    for name, major, minor, mode in (("null", 1, 3, 0o666), ("zero", 1, 5, 0o666),
+                                     ("random", 1, 8, 0o666), ("urandom", 1, 9, 0o666),
+                                     ("net/tun", 10, 200, 0o600)):
+        path = root / name
+        os.mknod(path, stat.S_IFCHR | mode, os.makedev(major, minor))
+        path.chmod(mode)
+
+
 def inner(args):
     require_private_namespace("mnt", args.mount_fd)
     require_private_namespace("net", args.net_fd)
@@ -230,8 +248,9 @@ def inner(args):
     mount = tool("mount")
     command([mount, "--make-rprivate", "/"])
     # Entire /run and state parent are private: no host bus/resolver/owner paths.
-    for path in ("/run", "/var/lib", "/etc"):
+    for path in ("/run", "/var/lib", "/etc", "/dev"):
         command([mount, "-t", "tmpfs", "-o", "mode=755", "warper-fixture", path])
+    create_device_nodes(Path("/dev"))
     command([mount, "-t", "proc", "proc", "/proc"])
     Path("/run/warper").mkdir(mode=0o755)
     Path("/run/dbus").mkdir(mode=0o755)
@@ -258,6 +277,7 @@ def inner(args):
             resolver_health()
             command(["/run/warper/peer-probe", "--exercise", str(args.mount_fd), str(args.net_fd)],
                     pass_fds=(args.mount_fd, args.net_fd),
+                    timeout=20,
                     env=dict(os.environ, DBUS_SYSTEM_BUS_ADDRESS="unix:path=/run/dbus/system_bus_socket"))
             resolver_health()
         print("PASS dedicated resolver/bus health and joined resolver worker", flush=True)
@@ -290,7 +310,7 @@ def run_outer(args, evidence_fd):
     primary = None
     result = {"probe_sha256": hashlib.sha256(probe.read_bytes()).hexdigest(),
               "revision": command(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
-              "isolation": "private mount/network/PID namespaces, initial user namespace, private /run /var/lib /etc /proc, dedicated resolver and bus"}
+              "isolation": "private mount/network/PID namespaces, initial user namespace, private /run /var/lib /etc /proc /dev, dedicated resolver and bus"}
     try:
         command([str(probe), "--require-initial-root"])
         mount_fd = os.open("/proc/thread-self/ns/mnt", os.O_RDONLY | os.O_CLOEXEC)

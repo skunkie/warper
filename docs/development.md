@@ -673,6 +673,24 @@ decision consequences in documentation. Keep per-run validation history in
 CI logs and commit messages. The [phase ledger](implementation-status.md) records which
 gates remain open and where their evidence is produced.
 
+### Candidate native Linux TUN API
+
+ADR 0014 describes the development-only `linux_network_probe` example. Build it
+with `cargo build --locked -p warper-service --example linux_network_probe` and
+run only through `scripts/control_acceptance.py` on a disposable root VM. The
+harness supplies private device nodes as well as private mount/network/PID,
+state, resolver and bus ownership. The owner-dispatched privileged CI job runs
+both the control boundary and this candidate API probe. Ordinary PR/push CI
+never starts the root job.
+
+The probe sends actual kernel TCP through the production host, SOCKS5 and relay
+adapters, checks a retained foreign TUN/name collision and last-owner cleanup,
+and independently joins its workers. A controlled proxy verifies the invented
+numeric destination before mapping it to its loopback target. This does not
+establish journaled production OS changes, physical interface protection or a
+running control service. The published gate remains open until its artifact
+reports successful native execution and independent host-state preservation.
+
 ## Release readiness
 
 When real `client/` code is introduced, pin the package manager and lockfile,

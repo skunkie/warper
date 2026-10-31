@@ -11,6 +11,7 @@ import io
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import time
 import sys
@@ -23,6 +24,31 @@ import control_acceptance as fixture
 
 
 class ControlAcceptanceTests(unittest.TestCase):
+    def test_private_device_nodes_stay_under_the_mounted_fixture_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(fixture.os, "mknod") as mknod, \
+                    mock.patch.object(fixture.Path, "chmod") as chmod:
+                fixture.create_device_nodes(root)
+            expected = [("null", 1, 3, 0o666), ("zero", 1, 5, 0o666),
+                        ("random", 1, 8, 0o666), ("urandom", 1, 9, 0o666),
+                        ("net/tun", 10, 200, 0o600)]
+            self.assertEqual(mknod.call_args_list, [
+                mock.call(root / name, stat.S_IFCHR | mode, os.makedev(major, minor))
+                for name, major, minor, mode in expected])
+            self.assertEqual(chmod.call_args_list, [mock.call(mode) for *_, mode in expected])
+            self.assertTrue((root / "net").is_dir())
+
+    def test_existing_device_parent_is_preserved_instead_of_repaired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "net").symlink_to("invented-foreign-location")
+            with mock.patch.object(fixture.os, "mknod") as mknod:
+                with self.assertRaises(FileExistsError):
+                    fixture.create_device_nodes(root)
+            mknod.assert_not_called()
+            self.assertEqual(os.readlink(root / "net"), "invented-foreign-location")
+
     def test_resolver_fixture_bounds_questions_and_returns_only_local_nxdomain(self):
         response = fixture.dns_response(fixture.QUERY)
         self.assertEqual(response[:2], b"\x12\x34")
