@@ -246,9 +246,10 @@ routes, endpoint exemptions, packet supervision and full recovery remain open.
 The initial native packet port now shares only the original journaled descriptor
 and retains runtime context. It bounds one read/write per direction and MTU,
 returns typed failures and blocks explicit retirement while packet work survives.
-Local cancellation/admission and boundary tests pass; actual journaled-owner
-packet traffic/retirement remain unverified pending disposable CI. Evidence is
-under `target/evidence/phase-1/owned-tun-packet-port/`. The fixture's capture route
+Local cancellation/admission and boundary tests pass. Actual journaled-owner
+TCP packet traffic/retirement and surviving-port runtime ownership pass in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41234617793)
+at `feaa91a`, with independently preserved host state. Evidence is under `target/evidence/phase-1/owned-tun-packet-port/`. The fixture's capture route
 and loopback connector still do not establish production route ownership or
 verified physical egress; daemon supervision/recovery remain open.
 

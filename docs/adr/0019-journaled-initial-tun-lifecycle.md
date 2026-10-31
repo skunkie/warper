@@ -109,5 +109,9 @@ and exposes no reconfiguration or raw descriptor. Explicit close rejects a live
 port before journal mutation. Async packet operations bound framing and direction
 admission and release reservations when their wait is dropped. The supervisor
 must join/drop packet work before retiring the owner. This adds no capture-route
-or physical-path authority. Genuine journaled-owner packet traffic and retirement
-remain unverified pending disposable CI.
+or physical-path authority. Genuine journaled-owner TCP packet traffic, explicit
+retirement and a surviving port's device/runtime lifetime pass in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41234617793)
+at `feaa91a`, with independently preserved host state. The capture route and
+loopback connector are still fixture-owned; production route/physical-path and
+daemon supervision gates remain open.
