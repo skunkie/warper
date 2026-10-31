@@ -4,4 +4,5 @@
 
 //! Owned networking tasks; the daemon/control/platform composition is pending.
 
+pub mod preflight;
 pub mod relay;

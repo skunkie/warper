@@ -45,9 +45,10 @@ path. Networking tasks remain owned by the service after any client exits.
 ## Consequences and evidence
 
 Core does not depend on the service or backend implementations. The service
-library currently depends only on core and Tokio; real SOCKS5 is an integration
-test dependency until daemon composition needs it. No placeholder executable,
-connected state, physical connector or TUN driver is introduced here.
+library composes core, configuration, SOCKS5 and host-stack adapters with Tokio.
+Pure preparation enforces the narrow current capability and aggregate payload
+budget before allocation; it supplies no default physical connector. No
+placeholder executable, connected state or TUN driver is introduced here.
 
 Controlled duplex tests cover setup enforcement, FIN/bytes, capacity, duplicate
 IDs, unsupported families, idle renewal, absolute expiry, partial I/O failure,

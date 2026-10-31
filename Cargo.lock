@@ -1461,7 +1461,9 @@ version = "0.0.0"
 dependencies = [
  "tokio",
  "warper-backends",
+ "warper-config",
  "warper-core",
+ "warper-stack",
 ]
 
 [[package]]

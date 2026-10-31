@@ -1713,3 +1713,37 @@ aggregate counters and any shutdown deadline/clock error. Expected cancellation
 is counted separately. Thus explicit teardown preserves an initial operational
 failure even when workers finish while shutdown is joining them; bounded reports
 do not silently replace errors with successful cleanup.
+
+## 30. Pure service preparation and adapter allocation
+
+`warper-service::preflight::Plan::prepare(&Config, Platform)` validates the
+initial Linux static IPv4 SOCKS5/TCP capability before external changes. No
+filesystem reads, name resolution, socket opens, entropy initialization, task
+spawns or connected-state publication occur. Unsupported protocol, DNS,
+routing, family, MTU and hostname requirements return typed redacted errors.
+File-valued credentials require prior protected import; no privileged YAML path
+is opened. The canonical initial capability and diagnostics are specified in
+configuration.md. Malformed relevant mutable snapshot values fail preparation.
+
+At most 64 unique nonzero backend registry IDs are retained, with consistent
+static route ownership. Effective flow slots are the lesser of the configured
+admission ceiling and the host adapter's sixteen slots. This is exposed in the
+plan; defaults remain unchanged. Preserve deterministic core longest-prefix
+selection. Validate host and relay durations/limits before buffer reservation.
+
+Reserve host/runtime payloads with channel capacity 64, two relay copy buffers
+per effective flow, TUN reader/output buffers, conservative per-flow protocol
+setup buffers and copied credential bytes against the aggregate data-plane
+buffer budget. Compute with checked arithmetic and reject one-byte shortages;
+copy credentials only after the budget fits. Policy/registry/task/allocator
+metadata, protected source material and kernel socket buffers have separate
+owners. Native physical socket budget enforcement remains an open gate.
+
+`Plan::instantiate(Seed, Arc<dyn EndpointConnector>)` consumes the admitted
+snapshot and allocates real SOCKS5 backends, host runtime/channels and retained
+relay owners. No worker is spawned or backend opened during allocation. The
+service supplies verified physical protection and retains/joins the resulting
+owners. There is no default connector, direct fallback or claim of network
+readiness. Ordinary client lifetime does not own these values. Native privilege,
+route/conflict verification, managed storage and journaled platform application
+must pass before a service publishes a usable capture route or connected state.

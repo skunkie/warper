@@ -124,6 +124,37 @@ performs no cleanup. These synchronous operations have no hard filesystem wall
 bound. The future service serializes enrollment/recovery and revokes sessions
 when committed owner policy changes; no recovery CLI/API handler exists yet.
 
+### Initial Linux service preparation
+
+Offline schema acceptance is broader than the initial running capability.
+`warper-service::preflight::Plan::prepare` performs pure preparation before any
+filesystem, network or privilege mutation. It currently admits static IPv4
+SOCKS5/TCP only, MTU 1280, numeric IPv4 endpoints and inline/no authentication.
+DNS fields, dynamic/mixed routing, captured IPv6, SSH/WireGuard and endpoint
+hostnames return typed unsupported capability. File-valued credentials require
+ordinary-client import into protected managed material first; preparation never
+opens a path from imported YAML. Non-Linux preparation is unsupported.
+
+The host adapter imposes an additional sixteen-flow ceiling. Effective capacity
+is `min(limits.max_tcp_flows, 16)` and is exposed by the plan; configured maxima
+are admission ceilings, not guaranteed reservations. At most 64 backend entries
+are prepared, with exactly one immutable core registry ID per entry. Static
+routes retain deterministic longest-prefix selection. Preparation rejects
+invalid mutated snapshots and configuration/credential values without logging
+them; it does not silently ignore unsupported fields.
+
+Before returning a plan, reserve conservative payload capacity for the host
+runtime (packet channels of capacity 64), relay buffers, one 1281-byte TUN input
+buffer and one 1280-byte pending output, per-flow SOCKS5 setup buffers (792
+bytes), and copied credential bytes. Their checked sum must fit
+`limits.max_buffered_bytes_total`. Route/registry/task/allocator metadata,
+protected configuration and kernel socket buffers are separate bounded owners;
+physical connector/kernel socket reservations remain a later preflight gate.
+Setup/idle/age/shutdown durations must fit the production adapters' bounds.
+A prepared plan is not OS approval, verified physical egress or network readiness.
+Managed configuration, endpoint exemptions, native privilege/conflict checks and
+journaled platform application remain required before a session can connect.
+
 ## 1. Parsing and Path Rules
 
 - Accept one UTF-8 YAML document containing a mapping. Reject unknown keys at every level, duplicate mapping keys, null values, custom tags, anchors/aliases, multiple documents, and wrong scalar types. A boolean must be a boolean; integer fields do not accept strings, floats, or booleans. Secrets and addresses are strings. An omitted optional value uses its documented default.

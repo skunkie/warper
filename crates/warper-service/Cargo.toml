@@ -13,10 +13,12 @@ publish.workspace = true
 [dependencies]
 tokio.workspace = true
 warper-core = { path = "../warper-core" }
+warper-config = { path = "../warper-config" }
+warper-backends = { path = "../warper-backends" }
+warper-stack = { path = "../warper-stack" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "test-util"] }
-warper-backends = { path = "../warper-backends" }
 
 [lints]
 workspace = true
