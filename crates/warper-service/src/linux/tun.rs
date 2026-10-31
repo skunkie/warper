@@ -7,11 +7,14 @@
 
 use super::context::{Context, RecordedOwner};
 use nix::{errno::Errno, net::if_::if_nametoindex};
-use std::{fmt, io, sync::Arc};
+use std::{fmt, io, net::Ipv4Addr, sync::Arc};
 use tun_rs::{DeviceBuilder, SyncDevice};
 use warper_control::runtime::journal::{Error as StorageError, NetworkJournal};
+use warper_core::transport::Request;
 
+mod address;
 mod node;
+pub use address::{Cause as AddressCause, Delivery as AddressDelivery, Failure as AddressFailure};
 mod record;
 pub use record::Stage;
 use record::{Identity, Record};
@@ -22,6 +25,8 @@ pub enum Error {
     Context(super::context::Error),
     Storage(StorageError),
     InvalidInput,
+    InvalidAddress,
+    Address(AddressFailure),
     UnsupportedMtu,
     DeviceUnavailable,
     DeviceInspection(io::ErrorKind),
@@ -37,6 +42,8 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::Context(_) => "SystemConfiguration: TUN owner context failed",
             Self::Storage(_) => "SystemConfiguration: TUN journal operation failed",
+            Self::InvalidAddress => "InvalidConfig: invalid initial TUN IPv4 address",
+            Self::Address(_) => "SystemConfiguration: native TUN address transaction failed",
             Self::InvalidInput => "InvalidConfig: invalid TUN interface name",
             Self::UnsupportedMtu => "UnsupportedCapability: initial TUN MTU must be 1280",
             Self::DeviceUnavailable => {
@@ -121,6 +128,7 @@ impl Owner {
             stage: Stage::Prepared,
             requested: name.map(str::to_owned),
             identity: None,
+            address: None,
         };
         let revision = journal
             .replace(context.runtime(), revision, &record.encode())
@@ -211,6 +219,69 @@ impl Owner {
             record.identity = Some(renamed);
             self.save(record)?;
             Ok(NameOutcome::Renamed)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    /// Assign exactly one /32 while down. No connected prefix route or UP
+    /// publication is authorized by this operation. Run in a retained worker.
+    pub fn assign_ipv4(&mut self, value: Ipv4Addr, request: Request) -> Result<(), Error> {
+        if !record::valid_address(value) {
+            return Err(Error::InvalidAddress);
+        }
+        if !matches!(
+            self.record.stage,
+            Stage::Allocated | Stage::Named | Stage::Addressed
+        ) {
+            return Err(Error::InvalidState);
+        }
+        if self
+            .record
+            .address
+            .is_some_and(|previous| previous != value)
+        {
+            return Err(Error::InvalidState);
+        }
+        let wait = address::Wait::new(request).map_err(|cause| {
+            Error::Address(AddressFailure {
+                delivery: AddressDelivery::NotSent,
+                cause,
+            })
+        })?;
+        self.ready()?;
+        self.verify_device()?;
+        let index = self.identity.as_ref().ok_or(Error::InvalidState)?.index;
+        let before = address::inspect(index, value, &wait).map_err(Error::Address)?;
+        if self.record.stage == Stage::Addressed {
+            return if before.matches == 1 && before.owned_exact == 1 {
+                Ok(())
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        if before.matches != 0 {
+            return Err(Error::Conflict);
+        }
+        let mut intent = self.record.clone();
+        intent.stage = Stage::Addressing;
+        intent.address = Some(value);
+        self.save(intent)?;
+        let result = (|| {
+            self.context.revalidate().map_err(Error::Context)?;
+            self.verify_device()?;
+            address::add(index, value, &wait).map_err(Error::Address)?;
+            let after = address::inspect(index, value, &wait).map_err(|mut failure| {
+                failure.delivery = AddressDelivery::Uncertain;
+                Error::Address(failure)
+            })?;
+            if after.matches != 1 || after.owned_exact != 1 {
+                return Err(Error::Conflict);
+            }
+            let mut committed = self.record.clone();
+            committed.stage = Stage::Addressed;
+            self.save(committed)
         })();
         if result.is_err() {
             self.failed = true;

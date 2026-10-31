@@ -1950,3 +1950,33 @@ joins/drains before dropping runtime ownership. Drop cannot asynchronously stop
 or join a blocking syscall and is not a clean-shutdown operation. Kernel waits
 may outlive a caller deadline; service worker admission and driver/application
 integration remain separate gates.
+
+### Initial owned IPv4 address transaction
+
+The TUN owner may assign one unicast non-loopback IPv4 address with /32 and
+IFA_F_NOPREFIXROUTE while remaining down. Validate the owned descriptor/context
+and take a bounded IPv4 address snapshot before journaling Addressing intent.
+Reject an address already assigned anywhere in the namespace. Send one exclusive
+RTM_NEWADDR request only after durable intent and renewed ownership validation.
+Require a correlated kernel ACK containing the original request header, then
+verify the exact /32/local/no-prefix-route address in a fresh bounded snapshot
+before committing Addressed. Same-address repetition verifies ownership without
+sending another mutation; other address changes are unsupported by this slice.
+
+A native-worker netlink socket bounds request/datagram/kernel queues, total wait
+and cancellation checks. Dump inspection retains no address history and caps
+messages/datagrams; interrupted/lost/truncated/ambiguous replies fail closed.
+Only a kernel unicast sender, matching port/sequence and exact original header
+can acknowledge mutation. Missing ACK after successful send is uncertain, never
+permission to resend. Report not-sent, rejected or potentially-applied delivery
+separately from timeout/cancellation/protocol/kernel errors. No address is
+removed by number: rollback closes the originally owned TUN descriptor and
+verifies retirement, preserving initial and cleanup failures.
+
+WTUN version two uses the same 160-byte envelope and records the address and
+Addressing/Addressed stages. Version-one Retired records remain admissible for
+fresh preparation; active version-one state still requires recovery. Unknown
+versions and malformed state/address combinations are preserved. Kernel dumps
+are observations under the service's serialized native owner; changes by other
+privileged network managers can invalidate them. Global live path monitoring,
+interface UP, capture routes, exemptions and full recovery remain open gates.

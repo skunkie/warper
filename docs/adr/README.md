@@ -45,3 +45,4 @@ reproduction commands and meaningful limits of the evidence in the ADR.
 When changing an accepted decision, update it explicitly or supersede it
 with a new record and reciprocal links. Update affected contracts, code,
 tests, and the phase ledger together.
+| [0020](0020-journaled-initial-ipv4-address.md) | Proposed | Journaled exclusive IPv4 /32 assignment on an owned down TUN |

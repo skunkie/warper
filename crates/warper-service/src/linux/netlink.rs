@@ -25,6 +25,14 @@ static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 
 pub(super) const MAX_DATAGRAM: usize = 32768;
 
+pub(super) fn sequence() -> Result<u32, QueryError> {
+    NEXT_SEQUENCE
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| QueryError::ResourceLimit)
+}
+
 pub(super) enum Error {
     Io(io::Error),
     ResourceLimit,
@@ -79,11 +87,7 @@ pub(super) async fn bounded<T>(
 pub(super) async fn exchange(
     message: RouteNetlinkMessage,
 ) -> Result<RouteNetlinkMessage, QueryError> {
-    let sequence = NEXT_SEQUENCE
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            value.checked_add(1)
-        })
-        .map_err(|_| QueryError::ResourceLimit)?;
+    let sequence = sequence()?;
     let (socket, port) = socket(0).map_err(|error| match error {
         Error::Io(error) => socket_error(error),
         Error::ResourceLimit => QueryError::ResourceLimit,

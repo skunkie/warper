@@ -225,6 +225,14 @@ is under `target/evidence/phase-1/native-worker-ownership/`. The service supervi
 still must integrate these owners and drain them before shutdown; this is not a
 running daemon or a completed native address/route driver.
 
+The initial IPv4 address transaction (ADR 0020) now journals exclusive /32
+assignment with no connected-prefix route, validates kernel ACK/readback and
+supports verifying repetition and descriptor rollback. Local tests and native
+read-only inspection are available; privileged address mutation remains
+unverified pending owner-dispatched CI. Evidence is under
+`target/evidence/phase-1/journaled-ipv4-address/`. UP, capture routes, physical
+exemptions, full recovery and daemon/control integration remain open.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,

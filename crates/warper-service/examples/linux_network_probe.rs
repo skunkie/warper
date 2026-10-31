@@ -238,6 +238,7 @@ mod linux {
             return Err("journaled TUN retirement changed foreign metadata".into());
         }
         drop(owner);
+        journaled_address(context.clone(), foreign).await?;
         let started = tokio::time::Instant::now();
         let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
         let mut latencies = Vec::with_capacity(20);
@@ -265,6 +266,111 @@ mod linux {
         );
         println!(
             "PASS journaled fresh TUN creation, raced rename rollback, naming idempotency and verified retirement"
+        );
+        Ok(())
+    }
+    async fn journaled_address(
+        context: Arc<warper_service::linux::context::Context>,
+        foreign: &tun_rs::SyncDevice,
+    ) -> Result<(), Failure> {
+        use warper_service::{
+            linux::tun::{Error as TunError, Owner, Stage},
+            native::Workers,
+        };
+        let foreign_name = foreign.name()?;
+        let duplicate = "198.18.0.10/32";
+        ip(&["address", "add", duplicate, "dev", &foreign_name])?;
+        let before = ip(&["-j", "address", "show", "dev", &foreign_name])?;
+        let workers = Workers::new(1)?;
+        let (cancellation_owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut task = workers
+            .try_reserve()?
+            .start(move || -> Result<(), Failure> {
+                let mut owner = Owner::prepare(context, Some("warper-address"), MTU as u16)?;
+                let applied = (|| -> Result<(), Failure> {
+                    owner.allocate()?;
+                    owner.apply_name()?;
+                    let request = || Request {
+                        deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+                        cancellation: cancellation.clone(),
+                    };
+                    if owner.assign_ipv4(Ipv4Addr::new(198, 18, 0, 10), request())
+                        != Err(TunError::Conflict)
+                        || owner.stage() != Stage::Named
+                    {
+                        return Err("foreign address was not rejected before mutation".into());
+                    }
+                    let address = Ipv4Addr::new(198, 18, 0, 9);
+                    owner.assign_ipv4(address, request())?;
+                    owner.assign_ipv4(address, request())?;
+                    if owner.stage() != Stage::Addressed {
+                        return Err("address ownership was not committed".into());
+                    }
+                    let observed = String::from_utf8(ip(&[
+                        "-o",
+                        "-4",
+                        "address",
+                        "show",
+                        "dev",
+                        "warper-address",
+                    ])?)?;
+                    let fields: Vec<_> = observed.split_whitespace().collect();
+                    if observed.lines().count() != 1
+                        || !fields
+                            .windows(2)
+                            .any(|pair| pair == ["inet", "198.18.0.9/32"])
+                        || !fields.contains(&"noprefixroute")
+                    {
+                        return Err(
+                            "committed address differs from isolated kernel observation".into()
+                        );
+                    }
+                    if !ip(&[
+                        "-4",
+                        "route",
+                        "show",
+                        "table",
+                        "main",
+                        "dev",
+                        "warper-address",
+                    ])?
+                    .is_empty()
+                    {
+                        return Err("address assignment published a connected prefix route".into());
+                    }
+                    Ok(())
+                })();
+                let cleanup = owner.close();
+                match (applied, cleanup) {
+                    (Err(primary), Err(cleanup)) => {
+                        Err(format!("{primary}; cleanup: {cleanup}").into())
+                    }
+                    (Err(primary), Ok(())) => Err(primary),
+                    (Ok(()), Err(cleanup)) => Err(cleanup.into()),
+                    (Ok(()), Ok(())) => Ok(()),
+                }
+            });
+        // Retain and join even if the shorter mutation deadline has expired.
+        let result = loop {
+            match task
+                .wait(Request {
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(10),
+                    cancellation: cancellation_owner.subscribe(),
+                })
+                .await
+            {
+                Err(warper_service::native::Error::Deadline) => continue,
+                result => break result?,
+            }
+        };
+        let after = ip(&["-j", "address", "show", "dev", &foreign_name])?;
+        ip(&["address", "del", duplicate, "dev", &foreign_name])?;
+        result?;
+        if before != after {
+            return Err("owned address cleanup changed a foreign address".into());
+        }
+        println!(
+            "PASS journaled IPv4 /32 address ACK/readback, idempotency, foreign conflict and joined rollback"
         );
         Ok(())
     }

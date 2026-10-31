@@ -717,6 +717,12 @@ The initial native TUN owner accepts only MTU 1280 and a validated optional Linu
 name. It creates an unnamed down nonpersistent device, journals ownership and
 renames that newly owned descriptor through the kernel. No existing named TUN
 is adopted. Cleanup verifies retirement of the owned descriptor and leaves
-foreign/reused names untouched. Its fixed WTUN version-one payload records only
-TUN lifecycle; address, route, exemption and service readiness are not supplied
-by successful allocation. Active or uncertain prior state requires recovery.
+foreign/reused names untouched. Its fixed 160-byte WTUN version-two payload
+adds one IPv4 address and Addressing/Addressed stages to the version-one TUN
+lifecycle. A version-one Retired record remains readable for fresh preparation;
+active or uncertain prior state requires recovery. The internal address operation
+requires one unicast non-loopback /32, exclusive kernel addition and
+IFA_F_NOPREFIXROUTE. It rejects existing addresses across the namespace and
+verifies a correlated ACK and exact readback before committing ownership.
+It leaves the interface down. UP, capture routes, exemptions and service
+readiness are not supplied by successful allocation or address assignment.
