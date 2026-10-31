@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0020. Journaled initial Linux IPv4 address
 
-- Status: proposed; privileged address evidence pending.
+- Status: accepted scoped address transaction; full driver integration pending.
 - Date: 2026-10-31
 - Related: ADR 0019, NET-01 and NET-05.
 
@@ -56,5 +56,7 @@ a real read-only address dump requires no privileged mutation. Actual address
 assignment, repeat verification, foreign-address preservation, no prefix route
 and descriptor rollback run only in the owner-dispatched disposable Linux CI
 fixture (`linux_network_probe` through `scripts/control_acceptance.py`).
-Privileged execution remains unverified until that run succeeds. Evidence is
-stored under `target/evidence/phase-1/journaled-ipv4-address/` and CI artifacts.
+The owner-dispatched [native CI run](https://github.com/skunkie/warper/actions/runs/41233000400)
+at `51ddb3b` passes those address checks with exit code zero, no timeout and
+independently preserved host state. This does not verify UP, capture routing or
+complete service acceptance. Evidence is stored under `target/evidence/phase-1/journaled-ipv4-address/` and CI artifacts.

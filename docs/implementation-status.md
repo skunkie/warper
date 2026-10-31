@@ -227,9 +227,10 @@ running daemon or a completed native address/route driver.
 
 The initial IPv4 address transaction (ADR 0020) now journals exclusive /32
 assignment with no connected-prefix route, validates kernel ACK/readback and
-supports verifying repetition and descriptor rollback. Local tests and native
-read-only inspection are available; privileged address mutation remains
-unverified pending owner-dispatched CI. Evidence is under
+supports verifying repetition and descriptor rollback. Local tests/read-only
+inspection pass. Privileged address mutation, foreign preservation and rollback
+pass in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41233000400)
+at `51ddb3b`, with independently preserved host state. Evidence is under
 `target/evidence/phase-1/journaled-ipv4-address/`. UP, capture routes, physical
 exemptions, full recovery and daemon/control integration remain open.
 
