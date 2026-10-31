@@ -23,6 +23,11 @@ need their own record.
 | [0009](0009-linux-runtime-ownership.md) | Accepted ownership boundary; service integration pending | Fixed protected Linux runtime directory and persistent nonblocking instance lease |
 | [0010](0010-linux-owner-snapshots.md) | Accepted storage boundary; privileged integration pending | Fixed protected atomic owner snapshots with revision checks and uncertain-commit reporting |
 | [0011](0011-production-socks5-tcp.md) | Accepted protocol boundary; service integration pending | Production core TCP setup and bounded SOCKS5 CONNECT over protected connector injection |
+| [0012](0012-production-host-tcp.md) | Accepted scoped TCP boundary | Bounded host TCP adapter with retained runtime ownership |
+| [0013](0013-service-tcp-relays.md) | Accepted relay boundary | Retained service TCP setup and relay tasks |
+| [0014](0014-linux-tun-api.md) | Accepted scoped native API | Unnamed exclusive-lifetime TUN creation with collision preservation |
+| [0015](0015-durable-connection-intent.md) | Accepted persistence boundary | Revision-bound durable connection intent with native root evidence |
+| [0016](0016-bounded-linux-route-lookups.md) | Accepted read-only boundary | Bounded native IPv4 TCP observations without physical-path authority |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or

@@ -1759,3 +1759,31 @@ Explicit service shutdown must join workers before dropping the final reference.
 A real flock/thread test closes the listener, observes acquisition contention,
 then joins/releases the worker and reacquires the unchanged persistent lock.
 All lease mutation checks and native namespace/credential admission still apply.
+
+### Native read-only IPv4 TCP route lookup
+
+`warper_service::linux::route_lookup::lookup(Query, Request)` observes one route
+in the current network namespace. Query contains the numeric IPv4 destination
+and TCP port, optional actual source/port and nonzero interface constraint. The
+adapter supplies the process effective UID, protocol TCP and lookup-table flag;
+it never accepts caller-provided privilege or starts a network connection.
+It returns an opaque-Debug `Observation` with the reported interface index,
+source, optional gateway, table and local/unicast kind. These values confer no
+physical-path protection or mutation authority.
+
+Each retained future owns a nonblocking close-on-exec socket, a unique
+process-local sequence, at most 128 request bytes and 32769 receive bytes.
+Strict kernel input checking is mandatory; the verified kernel receive queue is
+at most 64 KiB including Linux bookkeeping doubling. The
+extra receive byte rejects oversized/truncated datagrams. Parsing allocations
+are bounded by that datagram; callers must reserve transient parse memory and
+bound concurrent queries before using this boundary in a service. No worker,
+subscription, hidden queue, retries after successful send or persistent cache is
+created. Cancellation, owner loss and one total deadline drop the socket.
+Exactly one complete kernel unicast reply with matching port and sequence is
+required. An ACK is not a route, and a negative kernel errno remains typed.
+Unknown, ambiguous, missing, duplicate or unsupported routing metadata fails
+closed. IPv6, multipath, encapsulation and nexthop indirection are unsupported.
+See ADR 0016 for dependency ownership and executable limits. A monitored path
+generation, interface identity, socket binding, native mutation ACKs and journal
+recovery remain separate obligations before capture or physical sends.

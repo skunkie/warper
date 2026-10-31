@@ -167,6 +167,12 @@ and kernel TUN gates pass with preserved host state. Artifacts are retained at
 ownership now permits retained workers to keep the instance lock beyond listener
 retirement; full service shutdown and journaled native work remain open.
 
+The Linux service now has a bounded read-only IPv4 TCP kernel route query
+(ADR 0016), with real loopback/source/interface and kernel-rejection tests.
+It does not authorize physical sends, publish routes or supply a monitored path
+lease. Fresh owner-dispatched private-namespace query execution remains pending.
+Evidence is retained under `target/evidence/phase-1/linux-route-lookup/`.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,

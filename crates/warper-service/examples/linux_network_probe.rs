@@ -9,7 +9,7 @@
 mod linux {
     use std::{
         fs, io,
-        net::{Ipv4Addr, SocketAddr},
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
         os::unix::{
             fs::{FileTypeExt, MetadataExt},
             net::UnixStream as NativeStream,
@@ -313,6 +313,28 @@ mod linux {
     }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         isolated(mount, net)?;
+        // Read-only production query in the fixture's private network namespace.
+        // This observes a route; it does not authorize the loopback connector.
+        let (_owner, cancellation) = tokio::sync::watch::channel(false);
+        let observed = warper_service::linux::route_lookup::lookup(
+            warper_service::linux::route_lookup::Query {
+                destination: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1080),
+                source: None,
+                interface: None,
+            },
+            Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation,
+            },
+        )
+        .await?;
+        if observed.source != Ipv4Addr::LOCALHOST
+            || observed.kind != warper_service::linux::route_lookup::Kind::Local
+            || observed.gateway.is_some()
+        {
+            return Err("private loopback route observation differs".into());
+        }
+        println!("PASS bounded native route query in private network namespace");
         let networking = networking()?;
         // A retained TUN occupies the first generated name. The candidate
         // must create another device and preserve this independent owner.

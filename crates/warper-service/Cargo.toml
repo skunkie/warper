@@ -20,6 +20,13 @@ warper-stack = { path = "../warper-stack" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "test-util"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-core.workspace = true
+netlink-packet-route.workspace = true
+netlink-sys.workspace = true
+nix.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tun-rs.workspace = true
 nix.workspace = true

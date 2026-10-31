@@ -1070,8 +1070,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c99d38e00b420df49e940fe0826e667c3dad82ac68eb4c2bbf754c1c14a83a10"
 dependencies = [
  "bytes",
+ "futures-util",
  "libc",
  "log",
+ "tokio",
 ]
 
 [[package]]
@@ -1778,6 +1780,9 @@ dependencies = [
 name = "warper-service"
 version = "0.0.0"
 dependencies = [
+ "netlink-packet-core",
+ "netlink-packet-route",
+ "netlink-sys",
  "nix",
  "rustix",
  "tokio",
