@@ -1926,3 +1926,27 @@ Validate the protected device node before invoking the upstream builder so its
 missing-node repair path is not selected. No network address, UP flag, route,
 DNS setting, packet task or application flow is published here. Those native
 transactions and full platform recovery remain subsequent implementation gates.
+
+### Blocking native job ownership
+
+`warper_service::native::Workers::new(1..=4)` bounds running jobs and unjoined
+results. `try_reserve` requires an active Tokio runtime and returns Busy without
+queuing; reserve before moving an existing native resource into a job.
+`Reservation::start` moves trusted synchronous native work into a blocking task.
+A reservation is shared by task and worker/result so a panic, early owner drop
+or completed-but-unjoined result cannot release capacity while work remains.
+Discarded results drop native resources before their reservation.
+
+`Task::wait(Request)` borrows its retained handle. Deadline, cancellation and
+owner loss end only the wait; they do not abort accepted native work or consume
+its result. Subsequent waits can join the same job. Successful completion or a
+panicked/cancelled worker is joined once and releases admission; another wait
+returns AlreadyJoined. Panic payloads are not returned/logged by the adapter.
+There is no hidden application queue, work replay, namespace change or native
+mutation in the worker primitive. Reusable blocking threads must preserve
+credentials/namespaces; concrete native operations revalidate their context.
+The supervisor retains every Task across caller detach, surfaces failures and
+joins/drains before dropping runtime ownership. Drop cannot asynchronously stop
+or join a blocking syscall and is not a clean-shutdown operation. Kernel waits
+may outlive a caller deadline; service worker admission and driver/application
+integration remain separate gates.

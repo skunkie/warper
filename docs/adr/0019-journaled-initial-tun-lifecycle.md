@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0019. Journaled initial Linux TUN lifecycle
 
-- Status: proposed; scoped native lifecycle acceptance pending.
+- Status: accepted scoped native lifecycle; full driver integration pending.
 - Date: 2026-10-31
 - Related: ADR 0014, ADR 0017, ADR 0018, NET-01 and NET-05.
 
@@ -18,7 +18,7 @@ still needs durable intent, committed ownership, explicit rollback and resource
 ordering. Adopting a configured interface name could touch foreign state.
 Inferring cleanup authority from a persisted name/index would permit reuse bugs.
 
-## Decision pending native acceptance
+## Decision
 
 Introduce a synchronous owner for retained native workers. Validate native
 context, name/MTU and the fixed protected TUN character device before durable
@@ -78,7 +78,9 @@ cycles with latency distributions, CPU and peak RSS. There are no application
 bytes or packet traffic in that lifecycle workload; packet drops/response bytes
 are not measured. It is a startup/cleanup baseline, not tunnel throughput.
 
-Accept only after the owner-dispatched native fixture passes with preserved host
-state. Retain source, checks, coverage and downloaded evidence under
+The [owner-dispatched gate](https://github.com/skunkie/warper/actions/runs/41220497788)
+passes at `3b17c4a` with preserved host state, including raced rollback, explicit
+storage-failure recovery, conservative drop and lifecycle workload. This accepts
+the scoped lifecycle only. Retain source, checks, coverage and downloaded evidence under
 `target/evidence/phase-1/journaled-tun/`. Reconsider for required persistence,
 external surviving state, unsafe upstream node handling or a broader MTU/profile.

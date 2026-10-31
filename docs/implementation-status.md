@@ -212,10 +212,18 @@ process liveness, object ownership and mutation/recovery remain open.
 The initial journaled TUN owner (ADR 0019) implements durable preparation,
 fresh down allocation, atomic requested naming and verified descriptor-based
 retirement. Local codec and strict compile checks pass; actual journaled native
-allocation/raced-conflict rollback and its lifecycle workload await the next
-owner-dispatched gate. Evidence is under
+allocation/raced-conflict rollback, storage recovery and lifecycle workload pass
+in [owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41220497788)
+at `3b17c4a` with independently preserved host state. Evidence is under
 `target/evidence/phase-1/journaled-tun/`. Address/UP/route/exemption transactions,
 packet-worker integration, recovery and the running daemon remain open.
+
+Blocking native-job ownership now bounds admission and retains work/results when
+caller waits expire or disappear. Real blocking-worker tests prove cancellation,
+deadline, owner loss, panic propagation and joined resource admission. Evidence
+is under `target/evidence/phase-1/native-worker-ownership/`. The service supervisor
+still must integrate these owners and drain them before shutdown; this is not a
+running daemon or a completed native address/route driver.
 
 ## Gate Evidence
 
