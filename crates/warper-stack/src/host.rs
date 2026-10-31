@@ -51,6 +51,7 @@ const MAX_CLOCK_MILLIS: u128 = i64::MAX as u128 / 2000;
 const IO_CHUNK_BYTES: usize = 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionError {
+    Quiescing,
     InvalidLimits,
     PacketTooLarge,
     MalformedPacket,
@@ -258,6 +259,7 @@ pub struct HostAdapter {
     limits: Limits,
     next_id: u64,
     now: Duration,
+    quiescing: bool,
     cancelled: bool,
     statistics: Statistics,
 }
@@ -318,6 +320,7 @@ impl HostAdapter {
                 limits,
                 next_id: 1,
                 now: Duration::ZERO,
+                quiescing: false,
                 cancelled: false,
                 statistics: Statistics::default(),
             },
@@ -479,6 +482,30 @@ impl HostAdapter {
         &self.statistics
     }
 
+    /// Stop new acceptance while retaining packet processing and accepted flows.
+    /// Pending handshakes abort before they can publish an application stream.
+    pub fn quiesce(&mut self) -> Result<(), AdmissionError> {
+        if self.cancelled {
+            return Err(AdmissionError::Cancelled);
+        }
+        self.quiescing = true;
+        for slot in &mut self.slots {
+            if slot
+                .flow
+                .as_ref()
+                .is_some_and(|flow| flow.pending.is_some())
+            {
+                if let Some(flow) = slot.flow.take() {
+                    flow.lifetime
+                        .termination
+                        .store(Termination::Cancelled as u8, Ordering::Release);
+                }
+                self.sockets.get_mut::<tcp::Socket>(slot.socket).abort();
+            }
+        }
+        Ok(())
+    }
+
     pub fn cancel(&mut self) {
         self.cancelled = true;
         self.accepted = None;
@@ -520,6 +547,17 @@ impl HostAdapter {
         }
         if !syn {
             return Err(AdmissionError::UnknownFlow);
+        }
+        if self.quiescing {
+            self.policy
+                .select(destination.ip())
+                .ok_or(AdmissionError::UnselectedDestination)?;
+            // No listener is created. The live interface can return a TCP RST
+            // while route ownership and existing streams are still retained.
+            self.device
+                .inject(packet.to_vec())
+                .map_err(|_| AdmissionError::ResourceLimit)?;
+            return Err(AdmissionError::Quiescing);
         }
         if self
             .now

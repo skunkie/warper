@@ -115,6 +115,7 @@ async fn lost_input_output_acceptance_or_shutdown_owners_surface_failures() {
             ingress,
             packets,
             tcp,
+            admission: _,
             shutdown,
         } = channels;
         let mut ingress = Some(ingress);
@@ -160,4 +161,152 @@ fn constructor_and_reservation_reject_invalid_capacity_before_allocating_channel
         Runtime::required_buffer_capacity(Limits::default(), 64).unwrap()
     );
     assert!(runtime.buffer_capacity() < 1024 * 1024);
+}
+
+fn observation(owner: &tokio::sync::watch::Sender<bool>) -> warper_core::transport::Request {
+    warper_core::transport::Request {
+        deadline: Instant::now() + Duration::from_secs(1),
+        cancellation: owner.subscribe(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn quiescence_waits_retain_work_and_unread_results_until_joined() {
+    let (runtime, mut channels) = create(8);
+    let (owner, _) = tokio::sync::watch::channel(false);
+    let mut receipt = channels.admission.quiesce().unwrap();
+    assert!(matches!(
+        channels.admission.quiesce(),
+        Err(Error::ControlBusy)
+    ));
+    assert_eq!(
+        receipt.wait(observation(&owner)).await,
+        Err(Error::WaitDeadline)
+    );
+    owner.send_replace(true);
+    assert_eq!(
+        receipt.wait(observation(&owner)).await,
+        Err(Error::WaitCancelled)
+    );
+    owner.send_replace(false);
+    let (detached, cancellation) = tokio::sync::watch::channel(false);
+    drop(detached);
+    assert_eq!(
+        receipt
+            .wait(warper_core::transport::Request {
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancellation
+            })
+            .await,
+        Err(Error::WaitCancelled)
+    );
+    let mut peer = Peer::new(false, 50000);
+    channels.ingress.try_inject(&peer.syn()).unwrap();
+    let task = tokio::spawn(runtime.run());
+    // A reset proves the command took effect while its receipt is unread.
+    let packet = tokio::time::timeout(Duration::from_secs(1), channels.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    peer.device.inject(packet).unwrap();
+    peer.poll(Duration::ZERO);
+    assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Closed);
+    assert!(matches!(
+        channels.admission.quiesce(),
+        Err(Error::ControlBusy)
+    ));
+    assert_eq!(
+        receipt.wait(observation(&owner)).await.unwrap(),
+        AdmissionSnapshot {
+            active_flows: 0,
+            retained_streams: 0
+        }
+    );
+    assert_eq!(
+        receipt.wait(observation(&owner)).await,
+        Err(Error::AlreadyJoined)
+    );
+    let mut repeated = channels.admission.quiesce().unwrap();
+    assert_eq!(
+        repeated
+            .wait(observation(&owner))
+            .await
+            .unwrap()
+            .active_flows,
+        0
+    );
+    assert!(!task.is_finished());
+    channels.shutdown.send(()).unwrap();
+    let report = task.await.unwrap().unwrap();
+    assert_eq!(report.tcp.admitted, 0);
+    assert_eq!(report.retained_streams, 0);
+    assert!(channels.tcp.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn dropped_observer_does_not_retract_quiescence_or_terminate_the_runtime() {
+    let (runtime, mut channels) = create(8);
+    let (owner, _) = tokio::sync::watch::channel(false);
+    let receipt = channels.admission.quiesce().unwrap();
+    drop(receipt);
+    assert!(matches!(
+        channels.admission.quiesce(),
+        Err(Error::ControlBusy)
+    ));
+    let mut peer = Peer::new(false, 50000);
+    channels.ingress.try_inject(&peer.syn()).unwrap();
+    let task = tokio::spawn(runtime.run());
+    let packet = tokio::time::timeout(Duration::from_secs(1), channels.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    peer.device.inject(packet).unwrap();
+    peer.poll(Duration::ZERO);
+    assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Closed);
+    let mut receipt = channels.admission.quiesce().unwrap();
+    receipt.wait(observation(&owner)).await.unwrap();
+    assert!(!task.is_finished());
+    channels.shutdown.send(()).unwrap();
+    assert_eq!(task.await.unwrap().unwrap().tcp.accepted, 0);
+}
+
+#[tokio::test]
+async fn admission_owner_loss_disables_commands_without_spinning_or_stopping_packets() {
+    let (runtime, mut channels) = create(8);
+    let task = tokio::spawn(runtime.run());
+    tokio::task::yield_now().await;
+    drop(channels.admission);
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!task.is_finished());
+    let mut peer = Peer::new(false, 50000);
+    channels.ingress.try_inject(&peer.syn()).unwrap();
+    let packet = tokio::time::timeout(Duration::from_secs(1), channels.packets.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    peer.device.inject(packet).unwrap();
+    peer.poll(Duration::ZERO);
+    assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Established);
+    channels.shutdown.send(()).unwrap();
+    let report = task.await.unwrap().unwrap();
+    assert_eq!(report.tcp.admitted, 1);
+    assert!(report.turns < 16, "a closed control queue must not spin");
+}
+
+#[tokio::test]
+async fn runtime_loss_surfaces_failed_quiescence_and_closes_future_admission() {
+    let (runtime, channels) = create(8);
+    let (owner, _) = tokio::sync::watch::channel(false);
+    let mut receipt = channels.admission.quiesce().unwrap();
+    drop(runtime);
+    assert_eq!(
+        receipt.wait(observation(&owner)).await,
+        Err(Error::ControlOwnerLost)
+    );
+    assert!(matches!(
+        channels.admission.quiesce(),
+        Err(Error::ControlClosed)
+    ));
 }

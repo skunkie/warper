@@ -613,6 +613,22 @@ mod linux {
         let owner = tokio::spawn(runtime.run());
         let app = application();
         tokio::pin!(app);
+        let rejected = async {
+            let error =
+                tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(DESTINATION))
+                    .await?
+                    .err()
+                    .ok_or("quiescence accepted a new kernel TCP connection")?;
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+            ) {
+                return Err(Box::new(error) as Failure);
+            }
+            Ok::<_, Failure>(())
+        };
+        tokio::pin!(rejected);
+        let mut application_done = false;
         let started = tokio::time::Instant::now();
         let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
         let (packet_owner, _) = tokio::sync::watch::channel(false);
@@ -631,7 +647,17 @@ mod linux {
             ip(&["route", "add", "198.18.0.2/32", "dev", NAME])?;
             loop {
                 tokio::select! {
-                    result=&mut app=>{result?;break;},
+                    result=&mut app,if !application_done=>{
+                        result?;
+                        let mut receipt=channels.admission.quiesce()?;
+                        receipt.wait(request()).await?;
+                        application_done=true;
+                    },
+                    result=&mut rejected,if application_done=>{
+                        result?;
+                        println!("PASS live quiescent mapping resets new kernel TCP without accepting another flow");
+                        break;
+                    },
                     packet=tun.recv(&mut buffer,request())=>{
                         let length=packet?;
                         if length==0 || length>MTU {return Err("TUN packet exceeds declared bounds".into());}

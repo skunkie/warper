@@ -23,6 +23,9 @@ use tokio::{
 };
 use warper_core::routing::Policy;
 
+mod admission;
+pub use admission::{AdmissionControl, Quiescence, Snapshot as AdmissionSnapshot};
+
 const OUTPUT_BATCH: usize = 8;
 const MAX_QUEUE: usize = 64;
 
@@ -36,6 +39,12 @@ pub enum Error {
     ConsumerClosed,
     ShutdownOwnerLost,
     InvalidClock,
+    ControlBusy,
+    ControlClosed,
+    ControlOwnerLost,
+    WaitCancelled,
+    WaitDeadline,
+    AlreadyJoined,
     Host(AdmissionError),
 }
 impl fmt::Display for Error {
@@ -91,6 +100,7 @@ pub struct Channels {
     pub ingress: Ingress,
     pub packets: Egress,
     pub tcp: mpsc::Receiver<AcceptedFlow>,
+    pub admission: AdmissionControl,
     pub shutdown: oneshot::Sender<()>,
 }
 pub struct Egress {
@@ -132,6 +142,7 @@ pub struct Runtime {
     input: mpsc::Receiver<Vec<u8>>,
     pending: Option<Vec<u8>>,
     output: mpsc::Sender<Vec<u8>>,
+    commands: mpsc::Receiver<admission::Command>,
     shutdown: oneshot::Receiver<()>,
     wake: Arc<ApplicationWake>,
     stopped: Arc<AtomicBool>,
@@ -149,6 +160,7 @@ impl Runtime {
         let (host, tcp) = HostAdapter::new(limits, policy, seed).map_err(Error::Host)?;
         let (input, receiver) = mpsc::channel(capacity);
         let (output, packets) = mpsc::channel(capacity);
+        let (admission, commands) = AdmissionControl::new();
         let (shutdown, stopping) = oneshot::channel();
         let stopped = Arc::new(AtomicBool::new(false));
         Ok((
@@ -157,6 +169,7 @@ impl Runtime {
                 input: receiver,
                 pending: None,
                 output,
+                commands,
                 shutdown: stopping,
                 wake: Arc::new(ApplicationWake(Notify::new())),
                 stopped: stopped.clone(),
@@ -170,6 +183,7 @@ impl Runtime {
                     stopped,
                 },
                 tcp,
+                admission,
                 shutdown,
             },
         ))
@@ -219,11 +233,19 @@ impl Runtime {
         let waker = Waker::from(self.wake.clone());
         let output = self.output.clone();
         let accepted = self.host.accept_sender().ok_or(Error::ConsumerClosed)?;
+        let mut commands_open = true;
         loop {
             match self.shutdown.try_recv() {
                 Ok(()) => return Ok(()),
                 Err(oneshot::error::TryRecvError::Closed) => return Err(Error::ShutdownOwnerLost),
                 Err(oneshot::error::TryRecvError::Empty) => {}
+            }
+            if commands_open {
+                match self.commands.try_recv() {
+                    Ok(command) => self.apply_admission(command)?,
+                    Err(mpsc::error::TryRecvError::Empty) => {}
+                    Err(mpsc::error::TryRecvError::Disconnected) => commands_open = false,
+                }
             }
             let now = origin.elapsed();
             {
@@ -264,6 +286,9 @@ impl Runtime {
                 .transpose()?;
             tokio::select! {
                 result=&mut self.shutdown=>return result.map_err(|_|Error::ShutdownOwnerLost),
+                command=self.commands.recv(),if commands_open=>{
+                    match command {Some(command)=>self.apply_admission(command)?,None=>commands_open=false}
+                },
                 ()=output.closed()=>return Err(Error::EgressClosed),
                 ()=accepted.closed()=>return Err(Error::ConsumerClosed),
                 permit=output.reserve(),if blocked=>{drop(permit.map_err(|_|Error::EgressClosed)?);},
@@ -274,6 +299,14 @@ impl Runtime {
                 },
             }
         }
+    }
+    fn apply_admission(&mut self, command: admission::Command) -> Result<(), Error> {
+        self.host.quiesce().map_err(Error::Host)?;
+        command.complete(AdmissionSnapshot {
+            active_flows: self.host.active_flows(),
+            retained_streams: self.host.retained_flows(),
+        });
+        Ok(())
     }
     fn drain_output(&mut self) {
         for _ in 0..OUTPUT_BATCH {

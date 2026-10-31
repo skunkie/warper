@@ -18,6 +18,7 @@ SPDX-License-Identifier: MIT
 | Control readiness | Local API can report state; distinct from OS service approval and a session being Connected |
 | Session readiness | Backends, packet handlers, exemptions, routes, and DNS have passed the network startup barrier |
 | Backend | One configured SSH, SOCKS5, or WireGuard instance with an ID and explicit transport/address-family capabilities |
+| Quiescence | New captured TCP flow admission has stopped while packet processing and already accepted flows remain alive for retirement |
 | Captured flow | Host TCP connection or UDP association accepted from the TUN with original source/destination metadata |
 | UDP association | Bounded ownership of UDP datagrams sharing an original source/destination tuple and selected backend; expiry ends that ownership without implying a wire-level connection |
 | Capture route | Owned kernel route that directs destination packets to the TUN; distinct from backend-selection policy |

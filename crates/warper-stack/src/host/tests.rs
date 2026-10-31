@@ -58,66 +58,71 @@ fn connected(
 
 #[tokio::test]
 async fn packet_flows_preserve_original_metadata_bytes_and_response_after_fin() {
-    for ipv6 in [false, true] {
-        let (mut host, _accepted, flow, mut peer) = connected(ipv6, Limits::default());
-        let mut flow = flow.into_core();
-        assert_eq!(flow.metadata.source, peer.source);
-        assert_eq!(flow.metadata.destination, peer.destination);
-        assert_eq!(flow.metadata.backend, BackendId(70000));
-        let request: Vec<_> = (0..65536).map(|n| (n % 251) as u8).collect();
-        let response: Vec<_> = (0..65536).map(|n| (n % 239) as u8).collect();
-        let mut actual = Vec::new();
-        let mut sent = 0;
-        let mut closed = false;
-        let ((), ()) = tokio::join!(
-            async {
-                let mut received = Vec::new();
-                flow.stream.read_to_end(&mut received).await.unwrap();
-                assert_eq!(received, request);
-                flow.stream.write_all(&response).await.unwrap();
-                flow.stream.flush().await.unwrap();
-                flow.stream.shutdown().await.unwrap();
-            },
-            async {
-                for turn in 100..10100 {
-                    let socket = peer.tcp();
-                    if socket.can_send() && sent < request.len() {
-                        sent += socket.send_slice(&request[sent..]).unwrap();
-                    }
-                    if sent == request.len() && !closed {
-                        socket.close();
-                        closed = true;
-                    }
-                    if socket.can_recv() {
-                        socket
-                            .recv(|bytes| {
-                                assert!(actual.len() + bytes.len() <= response.len());
-                                actual.extend_from_slice(bytes);
-                                (bytes.len(), ())
-                            })
-                            .unwrap();
-                    }
-                    let finished = actual.len() == response.len() && !socket.may_recv();
-                    pump(&mut host, &mut peer, Duration::from_millis(turn));
-                    if finished {
-                        for offset in 1..8 {
-                            pump(&mut host, &mut peer, Duration::from_millis(turn + offset));
-                        }
-                        assert_eq!(actual, response);
-                        return;
-                    }
-                    tokio::task::yield_now().await;
-                }
-                panic!("bounded packet exchange did not complete");
+    for quiescing in [false, true] {
+        for ipv6 in [false, true] {
+            let (mut host, _accepted, flow, mut peer) = connected(ipv6, Limits::default());
+            if quiescing {
+                host.quiesce().unwrap();
             }
-        );
-        assert_eq!(host.active_flows(), 0);
-        assert_eq!(host.statistics().finished, 1);
-        assert_eq!(host.retained_flows(), 1);
-        drop(flow);
-        assert_eq!(host.retained_flows(), 0);
-        host.cancel();
-        assert!(!host.has_packet());
+            let mut flow = flow.into_core();
+            assert_eq!(flow.metadata.source, peer.source);
+            assert_eq!(flow.metadata.destination, peer.destination);
+            assert_eq!(flow.metadata.backend, BackendId(70000));
+            let request: Vec<_> = (0..65536).map(|n| (n % 251) as u8).collect();
+            let response: Vec<_> = (0..65536).map(|n| (n % 239) as u8).collect();
+            let mut actual = Vec::new();
+            let mut sent = 0;
+            let mut closed = false;
+            let ((), ()) = tokio::join!(
+                async {
+                    let mut received = Vec::new();
+                    flow.stream.read_to_end(&mut received).await.unwrap();
+                    assert_eq!(received, request);
+                    flow.stream.write_all(&response).await.unwrap();
+                    flow.stream.flush().await.unwrap();
+                    flow.stream.shutdown().await.unwrap();
+                },
+                async {
+                    for turn in 100..10100 {
+                        let socket = peer.tcp();
+                        if socket.can_send() && sent < request.len() {
+                            sent += socket.send_slice(&request[sent..]).unwrap();
+                        }
+                        if sent == request.len() && !closed {
+                            socket.close();
+                            closed = true;
+                        }
+                        if socket.can_recv() {
+                            socket
+                                .recv(|bytes| {
+                                    assert!(actual.len() + bytes.len() <= response.len());
+                                    actual.extend_from_slice(bytes);
+                                    (bytes.len(), ())
+                                })
+                                .unwrap();
+                        }
+                        let finished = actual.len() == response.len() && !socket.may_recv();
+                        pump(&mut host, &mut peer, Duration::from_millis(turn));
+                        if finished {
+                            for offset in 1..8 {
+                                pump(&mut host, &mut peer, Duration::from_millis(turn + offset));
+                            }
+                            assert_eq!(actual, response);
+                            return;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                    panic!("bounded packet exchange did not complete");
+                }
+            );
+            assert_eq!(host.active_flows(), 0);
+            assert_eq!(host.statistics().finished, 1);
+            assert_eq!(host.retained_flows(), 1);
+            drop(flow);
+            assert_eq!(host.retained_flows(), 0);
+            host.cancel();
+            assert!(!host.has_packet());
+        }
     }
 }
 
@@ -382,4 +387,75 @@ fn invalid_limits_clocks_and_full_ingress_do_not_expand_resource_ownership() {
     assert!(host.buffer_capacity() < 1024 * 1024);
     host.cancel();
     assert_eq!(host.retained_flows(), 0);
+}
+
+#[tokio::test]
+async fn quiescence_keeps_accepted_lifetimes_and_resets_new_tuples() {
+    for ipv6 in [false, true] {
+        let (mut host, mut accepted, flow, _old) = connected(ipv6, Limits::default());
+        host.quiesce().unwrap();
+        host.quiesce().unwrap();
+        let mut peer = Peer::new(ipv6, 50001);
+        assert_eq!(host.inject(&peer.syn()), Err(AdmissionError::Quiescing));
+        poll(&mut host, Duration::from_secs(1));
+        while let Some(packet) = host.take_packet() {
+            let (_, destination, _) = tcp_metadata(&packet).unwrap();
+            if destination == peer.source {
+                peer.device.inject(packet).unwrap();
+            }
+        }
+        peer.poll(Duration::from_secs(1));
+        assert_eq!(peer.tcp().state(), tcp::State::Closed);
+        assert_eq!(host.active_flows(), 1);
+        assert_eq!(host.retained_flows(), 1);
+        assert!(matches!(
+            accepted.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(flow);
+        host.cancel();
+        assert_eq!(host.retained_flows(), 0);
+        assert_eq!(host.quiesce(), Err(AdmissionError::Cancelled));
+    }
+}
+
+#[tokio::test]
+async fn quiescence_aborts_unpublished_handshakes_without_accepting_a_stream() {
+    for ipv6 in [false, true] {
+        let mut peer = Peer::new(ipv6, 50000);
+        let (mut host, mut accepted) =
+            HostAdapter::new(Limits::default(), policy(peer.destination), Seed::fixture()).unwrap();
+        host.inject(&peer.syn()).unwrap();
+        poll(&mut host, Duration::ZERO);
+        host.quiesce().unwrap();
+        assert_eq!(host.active_flows(), 0);
+        assert_eq!(host.retained_flows(), 0);
+        poll(&mut host, Duration::from_millis(1));
+        while let Some(packet) = host.take_packet() {
+            peer.device.inject(packet).unwrap();
+        }
+        peer.poll(Duration::from_millis(1));
+        assert_eq!(peer.tcp().state(), tcp::State::Closed);
+        assert!(matches!(
+            accepted.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        host.cancel();
+    }
+}
+
+#[test]
+fn quiescent_reset_ingress_remains_bounded_without_flow_allocation() {
+    let mut peer = Peer::new(false, 50000);
+    let (mut host, _accepted) =
+        HostAdapter::new(Limits::default(), policy(peer.destination), Seed::fixture()).unwrap();
+    host.quiesce().unwrap();
+    let syn = peer.syn();
+    for _ in 0..crate::device::PACKET_CAPACITY {
+        assert_eq!(host.inject(&syn), Err(AdmissionError::Quiescing));
+    }
+    assert_eq!(host.inject(&syn), Err(AdmissionError::ResourceLimit));
+    assert_eq!(host.active_flows(), 0);
+    assert_eq!(host.retained_flows(), 0);
+    host.cancel();
 }

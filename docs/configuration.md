@@ -746,3 +746,10 @@ other path types rather than falling back. Each dial binds the observed source
 and interface and verifies its actual tuple; each stream invalidates on network
 change/loss. Its native kernel socket/monitor budgets remain separate from the
 existing payload-buffer accounting and must be admitted by the service.
+
+The host TCP runtime supports one retained quiescence command/result at a time.
+It stops new acceptance and rejects selected new SYNs with RST while preserving
+accepted streams and packet processing. A caller wait timeout does not cancel
+accepted quiescence. This internal barrier does not change CLI connection state
+or authorize removing routes; the supervisor must still drain references and
+complete native retirement before reporting disconnected cleanup success.

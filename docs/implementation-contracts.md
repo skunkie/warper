@@ -2101,3 +2101,31 @@ Portable transport errors distinguish UnsupportedIntegration (an unavailable
 verified OS transport path) from UnsupportedCapability (an unsupported backend
 operation). Neither category permits selecting a different backend or direct
 connection. Native route/monitor details remain behind the Linux adapter.
+
+### Host TCP admission quiescence
+
+Before retiring capture routes, the service can request quiescence through a
+runtime-owned admission control. At the acknowledged linearization point, no
+new flow or pending handshake may become an accepted stream. Already accepted
+flows retain their tuple/backend, data, FIN behavior and lifetime references.
+Selected new SYNs are processed without a listener so the live stack returns
+RST; they allocate no stream, ID or backend task. Unknown/unselected traffic
+retains its typed rejection. Pending handshakes abort without discarding queued
+output or allowing a socket slot to be reused for a different tuple.
+
+One command/result reservation bounds queued work and unread acknowledgements.
+A successful queue admission owns the command even if its observer disappears;
+timeout, cancellation and owner loss end only that wait. The retained receipt
+can be waited again and is joined once. The runtime processes queued commands
+before new ingress, and acknowledges active/retained flow counts after applying
+quiescence. Repetition is idempotent, with no resume operation in this slice.
+Dropping all admission senders disables that command branch without a hot loop;
+it does not close the networking service. Explicit shutdown ownership remains
+separate and retains its existing owner-loss behavior.
+
+Quiescence is not shutdown, drain completion, route retirement or OS authority.
+The supervisor still must drain/cancel accepted streams and pending output,
+retain route/response grace references, remove acknowledged owned capture state,
+then stop/join packet and stack tasks. Counts in one acknowledgement alone do
+not prove those barriers. One fixed command and completion plus their retained
+reservation/waker metadata are bounded separately from packet payload capacity.

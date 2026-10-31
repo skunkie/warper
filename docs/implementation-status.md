@@ -272,6 +272,15 @@ at `25396a0`, with independently preserved host state. Evidence is under `target
 path evidence, full native budget admission, capture publication/recovery and
 daemon/control integration remain open.
 
+Host TCP admission quiescence now has a bounded retained command/result,
+wait-cancellation-safe acknowledgement and active/retained flow snapshots.
+It preserves accepted TCP traffic while resetting selected new SYNs and
+aborting unpublished handshakes. Local controlled-peer lifecycle tests are
+available; native kernel rejection after acknowledgement remains unverified
+pending CI. Evidence is under `target/evidence/phase-1/host-tcp-quiescence/`.
+This is an admission barrier, not completed route withdrawal, response-grace
+accounting or daemon shutdown/recovery.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,
