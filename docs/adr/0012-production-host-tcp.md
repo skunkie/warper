@@ -79,3 +79,15 @@ Kernel TUN ownership, physical-path protection, authenticated service sessions,
 configuration preflight, journaled rollback/recovery and service lifecycle
 acceptance remain separate Phase 1 requirements. Native macOS integration and
 later production protocols remain open.
+
+## Admission quiescence extension
+
+The runtime now retains one admission command/result across observer timeout,
+cancellation and loss. Quiescence aborts unpublished handshakes and resets new
+selected SYNs while preserving accepted streams and packet processing. It
+acknowledges current flow counts without authorizing route removal or implying
+completed drain. IPv4/IPv6 full data/FIN and resource lifecycle tests pass.
+Real kernel rejection after acknowledgement passes in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41241770521)
+at `c077749`, with independently preserved host state. Route/reference retirement
+and complete service shutdown remain separate integration gates.

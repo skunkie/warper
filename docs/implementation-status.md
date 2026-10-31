@@ -275,9 +275,10 @@ daemon/control integration remain open.
 Host TCP admission quiescence now has a bounded retained command/result,
 wait-cancellation-safe acknowledgement and active/retained flow snapshots.
 It preserves accepted TCP traffic while resetting selected new SYNs and
-aborting unpublished handshakes. Local controlled-peer lifecycle tests are
-available; native kernel rejection after acknowledgement remains unverified
-pending CI. Evidence is under `target/evidence/phase-1/host-tcp-quiescence/`.
+aborting unpublished handshakes. Local controlled-peer lifecycle tests pass.
+Native kernel rejection after acknowledgement passes in
+[owner-dispatched CI](https://github.com/skunkie/warper/actions/runs/41241770521)
+at `c077749`, with independently preserved host state. Evidence is under `target/evidence/phase-1/host-tcp-quiescence/`.
 This is an admission barrier, not completed route withdrawal, response-grace
 accounting or daemon shutdown/recovery.
 
