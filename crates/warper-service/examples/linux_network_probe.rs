@@ -33,6 +33,8 @@ mod linux {
     use warper_service::preflight::{Networking, Plan};
     use warper_stack::{Seed, host::MTU};
 
+    mod physical;
+
     type Failure = Box<dyn std::error::Error + Send + Sync>;
     const NAME: &str = "warper-probe";
     const DESTINATION: &str = "198.18.0.2:443";
@@ -707,6 +709,7 @@ mod linux {
     }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         isolated(mount, net)?;
+        physical::exercise(mount, net).await?;
         let (context, runtime_lease) = native_context()?;
         let context = Arc::new(context);
         // Read-only production query in the fixture's private network namespace.
@@ -916,6 +919,9 @@ mod linux {
         }
         preserve(result, cleanup)
     }
+    pub async fn physical_peer(mount: &str, net: &str) -> Result<(), Failure> {
+        physical::peer(mount, net).await
+    }
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -967,6 +973,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match args.as_slice() {
         [mode] if mode == "--require-initial-root" => linux::root(),
         [mode, mount, net] if mode == "--exercise" => linux::exercise(mount, net).await,
+        [mode, mount, net] if mode == "--physical-peer" => linux::physical_peer(mount, net).await,
         _ => Err("use the disposable namespace acceptance harness".into()),
     }
 }

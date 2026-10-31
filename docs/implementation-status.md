@@ -253,6 +253,14 @@ at `feaa91a`, with independently preserved host state. Evidence is under `target
 and loopback connector still do not establish production route ownership or
 verified physical egress; daemon supervision/recovery remain open.
 
+The bound TCP egress experiment (ADR 0021) now exercises source/device binding,
+actual tuple route verification and an isolated peer under a competing capture
+/32, with retained child cleanup and independent host-state checks. Compile
+checks are available; native bypass remains unverified pending disposable CI.
+Evidence is under `target/evidence/phase-1/bound-tcp-egress/`. A production
+physical connector, continuous path invalidation and exemption ownership remain
+open even if the candidate socket API passes.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,

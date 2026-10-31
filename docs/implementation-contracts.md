@@ -2031,3 +2031,25 @@ until the last port drops and leaves conservative active journal state. There
 is no asynchronous cleanup hook or capture-route authority in this boundary.
 Verified physical protection, journaled route ownership and a supervising daemon
 remain separate gates.
+
+### Bound TCP egress feasibility experiment
+
+Before a production physical connector depends on a binding mechanism, the
+private Linux fixture must create two isolated veth namespaces, observe the
+original unicast path and bind a TCP socket to that interface and source.
+Read back SO_BINDTODEVICE and the actual ephemeral local tuple; query routing
+with that same TCP tuple/UID/interface. Add a competing /32 capture TUN route
+and prove the unconstrained lookup selects the TUN while the constrained tuple
+still selects the original egress. Actual TCP must reach only the isolated
+peer, preserve source/port and FIN, and leave no IPv4 packet in the capture TUN.
+A failed proof remains failure; it does not authorize an unbound connection.
+
+The root experiment uses only synthetic bytes, a fixed 1281-byte observation
+buffer, at most 32 capture observations, six readiness bytes and bounded peer
+request/response reads. Socket/pipe operations have two-second waits; the peer
+has a five-second lifetime. Retain and join the child, preserve initial/cleanup
+errors, and remove only fixture-created links/namespaces. The outer private
+mount/network/PID harness independently reaps processes and verifies host state.
+This is proposed API evidence, not a production physical-path lease: monitored
+path generations, continuous invalidation, reservations, endpoint refresh,
+exemption ownership and daemon integration remain open.
