@@ -191,8 +191,10 @@ and uncertain-commit reporting. See the
 [storage contract](configuration.md#linux-owner-enrollment-storage).
 The Linux client now verifies and pins the fixed protected endpoint, connects
 with a deadline/cancellation owner and authenticates the real root service
-before returning a stream. It sends no payload during admission. Pending
-recovery, session handlers, live revocation and service integration remain open.
+before returning a stream. It sends no payload during admission. Explicit
+administrative inspection/discard now recovers unchanged pending enrollment
+without granting its proposed owner; committed policy remains intact. Session
+handlers, live revocation and service integration remain open.
 
 ### Initial control wire framing
 

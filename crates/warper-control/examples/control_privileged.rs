@@ -234,11 +234,36 @@ mod linux {
         {
             return Err("old kernel credential snapshot retained owner permission".into());
         }
-        drop(old_owner);
         let cleared = store.enroll(endpoint.runtime(), &admin, 2, None)?;
         if cleared.revision() != 3 {
             return Err("owner removal revision differs".into());
         }
+        let pending = "/var/lib/warper/owner.pending";
+        fs::write(pending, b"WOWN")?;
+        fs::set_permissions(pending, fs::Permissions::from_mode(0o600))?;
+        if !matches!(
+            store.inspect_pending(endpoint.runtime(), &old_owner),
+            Err(warper_control::runtime::enrollment::Error::Peer(
+                Error::PermissionDenied
+            ))
+        ) {
+            return Err("ordinary peer inspected administrative recovery state".into());
+        }
+        let inspection = store
+            .inspect_pending(endpoint.runtime(), &admin)?
+            .ok_or("partial enrollment intent was not inspected")?;
+        if inspection.committed().revision() != 3 || inspection.pending_len() != 4 {
+            return Err("pending enrollment inspection differs".into());
+        }
+        if store
+            .discard_pending(endpoint.runtime(), &admin, inspection)?
+            .revision()
+            != 3
+            || fs::symlink_metadata(pending).is_ok()
+        {
+            return Err("partial enrollment recovery did not preserve committed revision".into());
+        }
+        drop(old_owner);
         let reopened = OwnerStore::open(endpoint.runtime())?;
         if reopened.read(endpoint.runtime())?.revision() != 3 {
             return Err("protected owner snapshot did not persist".into());
@@ -254,7 +279,7 @@ mod linux {
         }
         drop(RuntimeLease::acquire()?);
         println!(
-            "PASS root ownership, bootstrap enrollment, actual owner/foreign peers, policy replacement, persistence and endpoint retirement"
+            "PASS root ownership, bootstrap enrollment, actual owner/foreign peers, policy replacement, pending recovery, persistence and endpoint retirement"
         );
         Ok(())
     }

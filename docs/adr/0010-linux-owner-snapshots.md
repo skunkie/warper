@@ -80,3 +80,16 @@ Pending administrative recovery, live revocation and integrated service
 acceptance remain open. No live `/var/lib` or `/run` state is changed.
 Reconsider for multi-process writers, a new schema version or enrollment/config
 transactions requiring a shared journal.
+
+## Explicit interrupted-intent recovery
+
+The fixed store now supplies an opaque bounded inspection and an explicit
+administrative discard operation. Empty/partial/complete unpublished intent
+can be discarded only after renewed native root authorization and revalidation
+of the held lease, store, committed owner and pending file. Compare inode,
+metadata timestamps and bytes to preserve changes after inspection. Never adopt
+a proposed owner or reset the committed revision during recovery. Abandoned
+inspections preserve state; post-unlink sync failure is uncertain durability.
+The service must serialize mutations and bound outstanding inspection handles.
+Recovery tests use private current-UID state; positive public root evidence is a
+separate owner-dispatched acceptance gate. CLI/API recovery remains open.

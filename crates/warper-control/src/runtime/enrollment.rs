@@ -21,6 +21,9 @@ const OWNER: &str = "owner";
 const PENDING: &str = "owner.pending";
 const RECORD_LEN: usize = 24;
 
+mod recovery;
+pub use recovery::PendingInspection;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Runtime(super::Error),
@@ -447,7 +450,7 @@ mod tests {
         os::unix::fs::{PermissionsExt, symlink},
     };
 
-    fn store(fixture: &Fixture) -> OwnerStore {
+    pub(super) fn store(fixture: &Fixture) -> OwnerStore {
         fs::create_dir_all(fixture.path.join("var/lib/warper")).unwrap();
         for (name, mode) in [
             ("var", 0o755),
@@ -465,11 +468,11 @@ mod tests {
         OwnerStore::open_at(anchor, fixture.owner).unwrap()
     }
 
-    fn record_path(fixture: &Fixture) -> std::path::PathBuf {
+    pub(super) fn record_path(fixture: &Fixture) -> std::path::PathBuf {
         fixture.path.join("var/lib/warper/owner")
     }
 
-    fn write_record(fixture: &Fixture, bytes: &[u8]) {
+    pub(super) fn write_record(fixture: &Fixture, bytes: &[u8]) {
         let path = record_path(fixture);
         fs::write(&path, bytes).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();

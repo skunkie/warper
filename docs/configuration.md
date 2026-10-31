@@ -105,6 +105,25 @@ Normal reads refuse pending state. Per-request policy refresh and connection
 revocation still belong to service integration. No generic file/path operation
 or enrollment CLI is introduced by the storage boundary.
 
+Administrative pending recovery is explicit and discards only unpublished
+intent; it never promotes a pending owner. `inspect_pending` authenticates a
+live UID-0 peer and revalidates the runtime lease and fixed store, then pins the
+committed owner and a regular root-owned mode-0600 single-link pending file of
+at most 24 bytes. Empty or partial pending writes can be inspected; unsafe or
+oversized files remain untouched. The opaque in-process inspection exposes
+only committed enrollment and pending length, with redacted diagnostics.
+
+`discard_pending` consumes that inspection under fresh administrative
+authentication. Revalidate the store, committed revision/content/identity, and
+pending identity, metadata timestamps and bytes before unlinking only the
+inspected pending pathname and syncing the directory. Any mismatch preserves
+state and requires a fresh inspection. The committed owner is never removed,
+replaced or reset. A post-unlink sync error reports uncertain durability; it
+must be inspected again rather than replayed blindly. Inspection abandonment
+performs no cleanup. These synchronous operations have no hard filesystem wall
+bound. The future service serializes enrollment/recovery and revokes sessions
+when committed owner policy changes; no recovery CLI/API handler exists yet.
+
 ## 1. Parsing and Path Rules
 
 - Accept one UTF-8 YAML document containing a mapping. Reject unknown keys at every level, duplicate mapping keys, null values, custom tags, anchors/aliases, multiple documents, and wrong scalar types. A boolean must be a boolean; integer fields do not accept strings, floats, or booleans. Secrets and addresses are strings. An omitted optional value uses its documented default.
