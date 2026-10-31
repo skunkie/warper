@@ -220,20 +220,31 @@ mod tests {
         fs::{self, OpenOptions},
         os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink},
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Mutex, MutexGuard,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     use super::*;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+    // fork temporarily inherits even CLOEXEC descriptors until exec. Keep the
+    // kill/reap fixture from borrowing another test's flock during its release
+    // assertion. Production acquisition still reports contention immediately.
+    static FIXTURE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 
     pub(super) struct Fixture {
         pub(super) path: PathBuf,
         pub(super) owner: u32,
+        _process_spawn: MutexGuard<'static, ()>,
     }
 
     impl Fixture {
         pub(super) fn new() -> Self {
+            let process_spawn = FIXTURE_PROCESS_LOCK
+                .lock()
+                .expect("serialize fixture descriptor inheritance");
             let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
             let path =
                 std::env::temp_dir().join(format!("warper-runtime-{}-{id}", std::process::id()));
@@ -247,6 +258,7 @@ mod tests {
             Self {
                 path,
                 owner: nix::unistd::geteuid().as_raw(),
+                _process_spawn: process_spawn,
             }
         }
 
