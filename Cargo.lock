@@ -1456,6 +1456,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "warper-service"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+ "warper-backends",
+ "warper-core",
+]
+
+[[package]]
 name = "warper-stack"
 version = "0.0.0"
 dependencies = [

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 [workspace]
-members = ["experiments/host-stack", "experiments/wireguard-stack", "experiments/initial-contract", "crates/warper-core", "crates/warper-config", "crates/warper-cli", "crates/warper-control", "crates/warper-backends", "crates/warper-stack"]
+members = ["experiments/host-stack", "experiments/wireguard-stack", "experiments/initial-contract", "crates/warper-core", "crates/warper-config", "crates/warper-cli", "crates/warper-control", "crates/warper-backends", "crates/warper-stack", "crates/warper-service"]
 resolver = "3"
 
 [workspace.package]

@@ -1676,3 +1676,40 @@ entropy is unsupported. UDP, fragmented IP, IPv4 options, IPv6 extension headers
 and MTUs other than 1280 are outside this initial production boundary. Service
 preflight must reject unsupported configuration before external changes. This
 boundary alone establishes neither TUN interception nor physical egress safety.
+
+## 29. Service-owned TCP relay supervision
+
+The service owns a bounded `relay::Relays` set, with 1..1024 task slots and at
+most 64 immutable backend registrations. Duplicate backend/active flow IDs,
+unknown selected IDs and unsupported destination families fail admission. A
+slot covers setup, transfer and the completion record until joined; completed
+records cannot accumulate outside the task bound. Constructor/admission checks
+precede task creation. There is no task admission queue or backend reselection.
+
+Each flow opens only its selected backend with the original numeric destination
+and a shared cancellation owner. One absolute setup deadline is capped by the
+flow's absolute lifetime, and the service independently enforces it around the
+backend future. Established copying uses two 8192-byte buffers and preserves
+half-close in each direction. Positive writes count transferred bytes even on
+later failure; progress resets the idle deadline. Millisecond progress timestamps
+permit up to one millisecond of expiry grace, never early expiry. Payload is
+never replayed after errors. The caller adds stack, backend and kernel buffers
+to the service relay reservation of `flow_limit * 16384` bytes.
+
+A returned completion contains flow/backend IDs, transferred byte counts and a
+typed/redacted outcome without addresses, credentials or payload. Backend and
+individual flow failures terminate that flow. A worker panic/lost worker closes
+admission, cancels remaining relays and is surfaced to the supervisor. Explicit
+shutdown closes admission, signals cancellation and joins all workers within
+the configured shutdown budget; at expiry it aborts remaining async workers and
+joins their cancellation. This relies on backend futures respecting nonblocking
+polling. Dropping the task set aborts workers as a safety net; required service
+shutdown uses the explicit joined path. Client connection lifetime is unrelated
+to relay ownership. This boundary alone does not publish a connected service,
+create a TUN or verify a physical transport path.
+
+Shutdown reports retain the first typed flow failure and worker failure alongside
+aggregate counters and any shutdown deadline/clock error. Expected cancellation
+is counted separately. Thus explicit teardown preserves an initial operational
+failure even when workers finish while shutdown is joining them; bounded reports
+do not silently replace errors with successful cleanup.

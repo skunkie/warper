@@ -31,7 +31,9 @@ Real privileged CI now verifies root ownership/enrollment, owner/foreign peers
 and endpoint retirement; explicit pending inspection/discard preserves committed enrollment, while
 service integration remains open. Linux client endpoint
 admission now pins protected state and verifies a real root peer before exposing
-a bounded connection. No service executable exists yet.
+a bounded connection. A bounded service relay set now retains/joins TCP workers independently of
+clients, enforcing selected-backend setup, idle/absolute expiry and cancellation.
+No service executable exists yet.
 
 ## Phase Ledger
 
@@ -40,7 +42,7 @@ a bounded connection. No service executable exists yet.
 | Development infrastructure | Available | `scripts/check.sh`: licensing, actionlint with ShellCheck, composite validation, Python harness tests, Rust formatting/Clippy/rustdoc/tests/release and dependency policy |
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
-| 1: Headless Linux service slice | In progress | Static policy/configuration/CLI and Linux kernel peer checks have executable tests. Mandatory initial-user-namespace admission rejects real nested-root, counterfeit-procfs and same-procfs overmount cases (ADR 0008). A fixed protected runtime-directory lease verifies metadata/identity and retains a persistent flock inode (ADR 0009), with controlled SIGKILL/reacquisition evidence. A real endpoint adapter publishes/retires controlled sockets with durable intent and authorizes peers; a protected owner store now atomically persists revisioned enrollment under native administrative authorization. No service executable exists. Evidence under `target/evidence/phase-1/`: `configuration-paths/`, `native-identity/`, `yaml-decoder/`, `schema-validation/`, `check-config-cli/`, `linux-peer-auth/`, `user-namespace-admission/`, `runtime-ownership/`, `control-endpoint/`, `owner-enrollment/`, `control-framing/`, `socks5-backend/`, `host-tcp-adapter/`. SOCKS5 has real controlled TCP/FIN evidence in both destination/physical families and a loopback workload baseline; physical/TUN integration remains open. Production TCP host/runtime tests cover original tuples, FIN, bounded queues and owner loss; kernel integration remains open. Pending enrollment recovery now compares pinned intent and committed state under renewed administrative authorization; root recovery CI remains pending. Next: session handlers, runtime preflight, Linux driver/journal and actual SOCKS5/TUN service lifecycle |
+| 1: Headless Linux service slice | In progress | Static policy/configuration/CLI and Linux kernel peer checks have executable tests. Mandatory initial-user-namespace admission rejects real nested-root, counterfeit-procfs and same-procfs overmount cases (ADR 0008). A fixed protected runtime-directory lease verifies metadata/identity and retains a persistent flock inode (ADR 0009), with controlled SIGKILL/reacquisition evidence. A real endpoint adapter publishes/retires controlled sockets with durable intent and authorizes peers; a protected owner store now atomically persists revisioned enrollment under native administrative authorization. No service executable exists. Evidence under `target/evidence/phase-1/`: `configuration-paths/`, `native-identity/`, `yaml-decoder/`, `schema-validation/`, `check-config-cli/`, `linux-peer-auth/`, `user-namespace-admission/`, `runtime-ownership/`, `control-endpoint/`, `owner-enrollment/`, `control-framing/`, `socks5-backend/`, `host-tcp-adapter/`, `service-relays/`. SOCKS5 has real controlled TCP/FIN evidence in both destination/physical families and a loopback workload baseline; physical/TUN integration remains open. Production TCP host/runtime tests cover original tuples, FIN, bounded queues and owner loss; kernel integration remains open. Pending enrollment recovery now compares pinned intent and committed state under renewed administrative authorization; the owner-dispatched root recovery gate passes. Next: session handlers, runtime preflight, Linux driver/journal and actual SOCKS5/TUN service lifecycle |
 | 2: Linux DNS and routing | Not started | Production DNS parsing/transport, complete service-binding dependency gates, response handoff, route leases, retained-state admission and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
@@ -126,6 +128,13 @@ the actual root service; changed socket mode is rejected before connection.
 Artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41188150779/`. This adds client
 admission evidence; recovery additions need their own fresh root run.
+
+The [enrollment recovery gate](https://github.com/skunkie/warper/actions/runs/41188500176)
+passes at `122e3ed`, including partial-intent recovery through public native root
+authentication and denied ordinary-peer inspection. Host state is independently
+preserved; artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41188500176/`. Recovery CLI/API
+handlers and live service policy revocation remain integration work.
 
 ## Gate Evidence
 

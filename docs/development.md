@@ -101,6 +101,21 @@ include the controlled peer stack. Packet/drop counts describe bounded runtime
 queues, not a physical network or kernel TUN. Its fixed MTU, TCP-only capability
 and sixteen-flow maximum are documented in ADR 0012 and contract section 28.
 
+Service relay verification uses controlled TCP peers in both destination and
+physical address families. A separate release workload repeats the IPv4 flow
+100 times in batches of four:
+
+```sh
+cargo test --locked -p warper-service
+cargo test --locked --release -p warper-service --test socks5 service_workload -- --ignored --exact --nocapture
+```
+
+The workload prints byte counts, elapsed time and latency percentiles. Record
+process CPU/RSS and loopback drop deltas alongside stdout and environment under
+`target/evidence/phase-1/service-relays/`; counters include fixture peers. This
+is a controlled loopback service-relay baseline, not a TUN or physical-path
+result. Normal tests do not execute the repeated workload.
+
 ## Repository stages and CI
 
 Configuration parser tests run as part of workspace tests, or separately with:
