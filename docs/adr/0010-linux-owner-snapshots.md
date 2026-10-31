@@ -74,8 +74,9 @@ actual rename and proves that the new snapshot remains visible while reporting
 uncertain durability. Tests also cover owned and replaced pending cleanup.
 
 Full checks and changed-code coverage are recorded under
-`target/evidence/phase-1/owner-enrollment/`. Positive public root construction
-and enrollment, pending administrative recovery, live revocation and integrated
-service acceptance remain open. No live `/var/lib` or `/run` state is changed.
+`target/evidence/phase-1/owner-enrollment/`. Public root construction/enrollment and actual owner/foreign peers now have
+[privileged CI evidence](https://github.com/skunkie/warper/actions/runs/41181399851).
+Pending administrative recovery, live revocation and integrated service
+acceptance remain open. No live `/var/lib` or `/run` state is changed.
 Reconsider for multi-process writers, a new schema version or enrollment/config
 transactions requiring a shared journal.

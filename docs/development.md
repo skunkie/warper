@@ -231,7 +231,9 @@ resolver sockets/joining, namespace refusal, supervisor timeout/failure,
 artifact preservation, primary/cleanup diagnostics and the workflow trust guard.
 A passing boundary job is not full UX-01 or Phase 1 service/TUN acceptance.
 A complete passing privileged run is required; local compilation is not
-evidence. The private D-Bus health query must explicitly address the bus daemon
+evidence. The initial native boundary now has a passing
+[owner-dispatched run](https://github.com/skunkie/warper/actions/runs/41181399851)
+with downloaded artifacts indexed in implementation-status.md. The private D-Bus health query must explicitly address the bus daemon
 and its fixture-only policy must allow method replies. It never contacts or
 changes the host bus.
 

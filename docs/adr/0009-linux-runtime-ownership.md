@@ -96,9 +96,9 @@ The subprocess gets its fixture through Command's environment without mutating
 the parent's environment. It has a bounded readiness wait and a cleanup guard.
 Native namespace probes additionally reject nested UID 0 before runtime access.
 
-Evidence belongs under `target/evidence/phase-1/runtime-ownership/`. Positive
-public UID-0 acquisition in a disposable initial-user-namespace fixture,
-runtime submount rejection, native macOS and complete service/networking
-acceptance remain unverified. Tests never provision or modify live `/run`.
+Evidence belongs under `target/evidence/phase-1/runtime-ownership/`. Public UID-0 acquisition, native owner/foreign peers and protected endpoint
+retirement now have [privileged CI evidence](https://github.com/skunkie/warper/actions/runs/41181399851)
+in a disposable initial-user-namespace fixture. Runtime submount rejection,
+native macOS helper and complete service/networking acceptance remain unverified. Tests never provision or modify live `/run`.
 Reconsider for a different installation layout, mount policy, filesystem
 locking semantics or administrator recovery requirements.

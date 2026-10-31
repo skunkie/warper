@@ -24,8 +24,8 @@ protected state and holds a persistent nonblocking lock; it is not yet
 integrated with a network-instance lifecycle. The endpoint adapter now performs
 intent-backed publication, kernel-authorized acceptance and explicit owned
 retirement. A protected owner store supplies administrative revisioned snapshots;
-positive public root enrollment, pending recovery and service integration remain
-open. No service executable exists yet.
+Real privileged CI now verifies root ownership/enrollment, owner/foreign peers
+and endpoint retirement; pending recovery and service integration remain open. No service executable exists yet.
 
 ## Phase Ledger
 
@@ -82,7 +82,7 @@ belong to the ignored evidence package, rather than this durable ledger.
   route manager. Production NET-10–NET-12 and complete retained-allocation
   accounting remain open. No full networking acceptance ID is closed here.
 - Native workspace builds/tests now pass on Linux x86_64/aarch64 and macOS
-  aarch64 in [CI evidence](https://github.com/skunkie/warper/actions/runs/41180390352).
+  aarch64 in [CI evidence](https://github.com/skunkie/warper/actions/runs/41181399851).
   Native macOS utun/route/DNS, service entropy integration, helper registration,
   exact identity enrollment, mutual code-identity checks and UX-05 remain
   **not run**. Release signing evidence cannot replace the no-paid-account
@@ -102,9 +102,13 @@ Failure/cleanup logs and exact revision/probe hashes upload as
 `linux-control-<commit>` artifacts.
 
 Local harness tests, workflow lint and compilation establish harness readiness,
-not root service acceptance. Real CI verifies the initial-user-namespace UID-0
-kernel peer check and independent host-state preservation. A complete passing
-private endpoint/enrollment scenario is still required. Full
+not root service acceptance. The actual
+[owner-dispatched CI gate](https://github.com/skunkie/warper/actions/runs/41181399851)
+passes at `8722e57`: initial-user-namespace root ownership, bootstrap enrollment,
+actual owner/foreign peers, policy replacement/removal, reopened snapshots,
+endpoint retirement and independently preserved host state. Raw artifacts are
+retained under `target/evidence/phase-1/privileged-control-ci/run-41181399851/`.
+This closes those native Linux boundaries, not the authenticated service API. Full
 Phase 1 TUN/SOCKS application traffic, journaled startup rollback, service/client
 lifecycle and required service-manager integration remain open.
 
