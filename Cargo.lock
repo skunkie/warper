@@ -1456,6 +1456,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "warper-stack"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "rustix",
+ "smoltcp 0.14.0",
+ "tokio",
+ "warper-core",
+]
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

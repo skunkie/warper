@@ -87,6 +87,20 @@ the system account database; automated unit tests instead use synthetic records
 and injected lookup outcomes. Linux evidence does not establish native macOS
 account lookup. This example is not an installed CLI command.
 
+The production host TCP adapter has a controlled in-process workload:
+
+```sh
+cargo test --locked -p warper-stack
+cargo run --locked --release -p warper-stack --example host_workload
+```
+
+It checks 100 synthetic 64 KiB exchanges in batches of four, including FIN,
+original tuples and backend selection. Record stdout plus environment/toolchain
+and source hashes under `target/evidence/phase-1/host-tcp-adapter/`. CPU/RSS
+include the controlled peer stack. Packet/drop counts describe bounded runtime
+queues, not a physical network or kernel TUN. Its fixed MTU, TCP-only capability
+and sixteen-flow maximum are documented in ADR 0012 and contract section 28.
+
 ## Repository stages and CI
 
 Configuration parser tests run as part of workspace tests, or separately with:

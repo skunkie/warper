@@ -1632,3 +1632,46 @@ The MTU gate requires actual runtime and kernel-TUN exchanges with multiple
 flows, exact bytes/FIN, pending output, failed seed retry, cancellation/expiry,
 and independent cleanup. The raw stack failure stays a separate negative
 control and cannot substitute for this gate.
+
+## 28. Production host TCP boundary
+
+`warper-stack::{host, runtime}` promotes the initial TCP boundary from sections
+7 and 10; it does not promote the experimental combined TCP/UDP or expanded
+PMTU interfaces. ADR 0012 records the scope. No third-party stack types cross
+this boundary. `AcceptedFlow::into_core` preserves `transport::Metadata` and
+returns the core boxed stream; backend selection is immutable per flow.
+
+`HostAdapter::new(Limits, Arc<Policy>, Seed)` validates limits before allocation.
+MTU is 1280, each flow has two 8192-byte stack buffers and a duplex stream with
+two 8192-byte directions, and each adapter packet queue holds at most 64 MTU
+packets. Flow/accepted limits are nonzero, accepted is at most flows, and flows
+is at most sixteen. Setup, idle and absolute lifetimes are positive bounded
+`Duration`s. A retired stream retains its permit until all handles drop; a
+reusable socket slot does not release that charge. Adapter-owned delayed input
+for the old tuple is discarded before slot reuse. Packet rejection is typed,
+with no backend retry or direct fallback. The caller advances the adapter clock
+with `poll_io` before admitting new input; the runtime enforces this ordering.
+
+`Runtime::new` adds bounded ingress/egress channels, each with capacity 1..64.
+`required_buffer_capacity` validates first and reserves adapter payload buffers
+plus `(2 * capacity + 1) * MTU` for channel and pending input. Allocator, policy,
+stack metadata, kernel I/O and relay buffers require separate service accounting.
+Ingress reserves capacity before copying. Egress returns no queued packets
+after runtime termination. Cancellation cannot retract packets already handed
+to the consumer, which must stop/join its own I/O worker.
+
+`run` is the only owner future and spawns no task. The caller retains and joins
+it. It handles application wakeups, monotonic transport and lifecycle timers,
+eight output packets per turn, and bounded input admission. Output pressure
+suppresses transport retries while retaining lifecycle expiry. Explicit stop
+wins before another turn; loss of input, output, acceptance or shutdown owners
+returns a typed failure with counters. Normal stop and failure cancel flows,
+drain pending input and close outputs. Dropping/aborting the future also cancels
+flows; retained streams expose terminal errors rather than silently surviving.
+
+`Seed::generate` uses native nonblocking Linux randomness, returns typed OS or
+short-read failure, and has no configured value or fallback. Non-Linux native
+entropy is unsupported. UDP, fragmented IP, IPv4 options, IPv6 extension headers
+and MTUs other than 1280 are outside this initial production boundary. Service
+preflight must reject unsupported configuration before external changes. This
+boundary alone establishes neither TUN interception nor physical egress safety.
