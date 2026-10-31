@@ -161,6 +161,13 @@ kills/reaps it on failure. Public root acquisition and runtime submount
 rejection require separate disposable privileged evidence and remain unverified;
 the fixture is not a production rootless override. See ADR 0009.
 
+Control endpoint tests use the same private fixture: real pathname sockets,
+nonblocking admission, owner-policy denial before returning a stream, explicit
+retirement/republication and preserved replaced objects or changed permissions.
+Drop/restart must refuse uncertain socket/intent state. Intent and directory
+syncs run on the local fixture filesystem. Actual privileged publication and
+injected syscall failures are not established by these tests.
+
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
 checkout credentials, sets timeouts, and cancels superseded branch runs.

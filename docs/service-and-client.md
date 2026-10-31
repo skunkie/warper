@@ -181,9 +181,12 @@ lease. No arbitrary path or ordinary-user ownership override is exposed.
 
 The lock is advisory; administrators are trusted, and this does not establish
 mount/network namespace admission. It is not yet integrated into `warperd`.
-Protected listener creation, safe socket retirement, client endpoint checks,
-durable enrollment and journaled recovery remain open. Existing sockets are
-never removed by this ownership boundary.
+The endpoint adapter now publishes a fixed listener only after synced intent,
+returns only kernel-authorized peers, and explicitly retires unchanged owned
+socket/intent state. Drop preserves uncertain state; existing objects are never
+automatically removed. See the [endpoint contract](configuration.md#linux-control-endpoint).
+Client endpoint checks, durable enrollment, versioned framing, journaled recovery
+and service integration remain open.
 
 ### Control API and managed material
 

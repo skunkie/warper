@@ -42,6 +42,25 @@ This is a library ownership boundary, not a service command, journal, recovery
 operation or active listener. Crash-stale sockets remain untouched. Packaging,
 protected listener lifecycle and durable owner enrollment are still required.
 
+### Linux control endpoint
+
+The runtime lease publishes fixed `/run/warper/control.sock` as a nonblocking
+Unix stream listener with backlog 32 and root-owned mode 0666. Permissions
+allow connections, not access to metadata: kernel peer authorization precedes
+returning an accepted stream, and each request must recheck current policy.
+No socket path override or abstract socket is provided. Root and the launch
+mount namespace are trusted; no process-global cwd or umask is changed.
+
+Before binding, exclusively create empty root-owned mode-0600 `control.intent`
+and sync it and its directory. Existing socket or intent objects are conflicts,
+including uncertain crash state. Explicit endpoint close stops admission and
+removes only the pinned, unchanged socket and intent while retaining the lease.
+Changed identity, owner, link count or mode fails cleanup and preserves evidence.
+Drop closes descriptors without unlinking. An accepted connection is separately
+owned and must be drained/joined by the future supervisor before explicit close.
+Publication errors preserve the primary failure alongside cleanup failure.
+There is no automatic stale-endpoint recovery or service executable yet.
+
 ## 1. Parsing and Path Rules
 
 - Accept one UTF-8 YAML document containing a mapping. Reject unknown keys at every level, duplicate mapping keys, null values, custom tags, anchors/aliases, multiple documents, and wrong scalar types. A boolean must be a boolean; integer fields do not accept strings, floats, or booleans. Secrets and addresses are strings. An omitted optional value uses its documented default.

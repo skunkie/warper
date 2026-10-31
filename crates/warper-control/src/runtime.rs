@@ -12,6 +12,8 @@ use rustix::fs::{
     openat2, statat,
 };
 
+pub mod endpoint;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Admission(crate::Error),
@@ -224,13 +226,13 @@ mod tests {
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
-    struct Fixture {
-        path: PathBuf,
-        owner: u32,
+    pub(super) struct Fixture {
+        pub(super) path: PathBuf,
+        pub(super) owner: u32,
     }
 
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
             let path =
                 std::env::temp_dir().join(format!("warper-runtime-{}-{id}", std::process::id()));
@@ -247,7 +249,7 @@ mod tests {
             }
         }
 
-        fn acquire(&self) -> Result<RuntimeLease, Error> {
+        pub(super) fn acquire(&self) -> Result<RuntimeLease, Error> {
             let anchor = open(
                 &self.path,
                 OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -257,7 +259,7 @@ mod tests {
             RuntimeLease::acquire_at(anchor, self.owner)
         }
 
-        fn lock_path(&self) -> PathBuf {
+        pub(super) fn lock_path(&self) -> PathBuf {
             self.path.join("run/warper/service.lock")
         }
     }
@@ -478,6 +480,113 @@ mod tests {
             system_error(rustix::io::Errno::ACCESS),
         ] {
             assert!(!error.to_string().contains("warper-runtime-"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::{
+        endpoint::{ControlEndpoint, Error},
+        tests::Fixture,
+    };
+    use crate::{OwnerPolicy, Role};
+    use std::{
+        fs,
+        io::{Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixStream},
+    };
+
+    #[test]
+    fn endpoint_authenticates_local_peers_and_retires_only_owned_state() {
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        let policy = OwnerPolicy::new(Some(fixture.owner)).unwrap();
+        assert!(endpoint.accept(&policy).unwrap().is_none());
+        let mut client = UnixStream::connect(fixture.path.join("run/warper/control.sock")).unwrap();
+        let mut accepted = endpoint.accept(&policy).unwrap().unwrap();
+        assert_eq!(
+            accepted.role,
+            if fixture.owner == 0 {
+                Role::Administrator
+            } else {
+                Role::Owner
+            }
+        );
+        client.write_all(b"synthetic control data").unwrap();
+        let mut bytes = [0; 22];
+        accepted.stream.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"synthetic control data");
+        drop(accepted);
+        drop(client);
+        endpoint.close().unwrap();
+        assert!(!fixture.path.join("run/warper/control.sock").exists());
+        assert!(!fixture.path.join("run/warper/control.intent").exists());
+        assert!(fixture.lock_path().exists());
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        endpoint.close().unwrap();
+    }
+
+    #[test]
+    fn endpoint_denies_foreign_policy_before_payload_is_returned() {
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        let client = UnixStream::connect(fixture.path.join("run/warper/control.sock")).unwrap();
+        let policy = OwnerPolicy::new(None).unwrap();
+        if fixture.owner != 0 {
+            assert!(matches!(
+                endpoint.accept(&policy),
+                Err(Error::Peer(crate::Error::PermissionDenied))
+            ));
+        } else {
+            drop(endpoint.accept(&policy).unwrap());
+        }
+        drop(client);
+        endpoint.close().unwrap();
+    }
+
+    #[test]
+    fn endpoint_drop_preserves_uncertain_state_and_restart_never_deletes_it() {
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        drop(endpoint);
+        assert!(
+            matches!(ControlEndpoint::bind(fixture.acquire().unwrap()), Err(failure) if failure.primary == Error::Conflict)
+        );
+        assert!(fixture.path.join("run/warper/control.sock").exists());
+        assert!(fixture.path.join("run/warper/control.intent").exists());
+    }
+
+    #[test]
+    fn endpoint_retirement_preserves_replaced_or_changed_socket_and_intent() {
+        for name in ["control.sock", "control.intent"] {
+            let fixture = Fixture::new();
+            let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+            let path = fixture.path.join("run/warper").join(name);
+            fs::rename(&path, fixture.path.join("retired")).unwrap();
+            fs::write(&path, b"foreign fixture state").unwrap();
+            assert!(endpoint.close().is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"foreign fixture state");
+        }
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        let path = fixture.path.join("run/warper/control.sock");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(endpoint.close(), Err(Error::ChangedState));
+        assert!(path.exists());
+        assert!(fixture.path.join("run/warper/control.intent").exists());
+    }
+
+    #[test]
+    fn existing_intent_and_socket_objects_are_preserved_before_publication() {
+        for name in ["control.sock", "control.intent"] {
+            let fixture = Fixture::new();
+            let path = fixture.path.join("run/warper").join(name);
+            fs::write(&path, b"foreign fixture state").unwrap();
+            assert!(
+                matches!(ControlEndpoint::bind(fixture.acquire().unwrap()), Err(failure) if failure.primary == Error::Conflict)
+            );
+            assert_eq!(fs::read(path).unwrap(), b"foreign fixture state");
         }
     }
 }

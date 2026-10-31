@@ -17,7 +17,8 @@ The future listener needs exclusive ownership before publishing an endpoint.
 Deleting a lock pathname on shutdown lets another process lock a new inode
 while an existing holder still owns the old one. Opening unchecked runtime
 objects can follow a symlink or access a device before its type is validated.
-No running service, protected owner store or listener exists yet.
+No running service or protected owner store exists yet. The subsequent endpoint
+adapter uses this lease for intent-backed listener publication and retirement.
 
 ## Alternatives
 
@@ -72,9 +73,10 @@ runtime directories; this is not proof of initial mount/network namespace
 admission or an already integrated network-instance lock. Those remain service
 startup gates before host mutations.
 
-No stale socket is removed. Journaled recovery, listener creation, client
-endpoint validation, administrative owner enrollment and bounded/versioned
-messaging remain separate increments. The API is Linux-only; macOS still needs
+No stale socket is automatically removed. The endpoint adapter now implements
+intent-backed publication and explicit owned retirement under this lease.
+Journaled recovery, client endpoint validation, administrative owner enrollment
+and bounded/versioned messaging remain separate increments. The API is Linux-only; macOS still needs
 its native helper lifecycle and authentication.
 
 ## Validation and reconsideration
