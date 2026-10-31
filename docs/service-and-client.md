@@ -199,7 +199,7 @@ handlers, live revocation and service integration remain open.
 ### Initial control wire framing
 
 The shared Rust framing adapter uses a 20-byte big-endian header: `WRPC`, u16
-version 1, u16 kind, u32 body length, and nonzero u64 request ID. Unknown magic,
+version 2, u16 kind, u32 body length, and nonzero u64 request ID. Unknown magic,
 version, kind, zero request IDs and invalid kind-specific lengths fail before
 body allocation. Bodies admit at most 1 MiB plus eight bytes of generation metadata; fixed
 commands have exact sizes.
@@ -213,15 +213,21 @@ OperationReply=0x8008 and ErrorReply=0xffff. The framing layer is not a handler:
 unsupported operations must still return a typed unsupported response.
 
 Hello/Status/InspectRecovery have empty bodies; HelloReply has a nonzero
-16-byte instance ID. Connect/Disconnect carry a nonzero 16-byte operation ID
-and u64 expected configuration generation. Enroll carries u64 expected owner
+16-byte instance ID. Connect/Disconnect carry a nonzero 16-byte operation ID,
+u64 expected configuration generation, u64 expected desired-state revision and
+the nonzero 16-byte expected service instance ID (48 bytes total). StatusReply
+appends the current desired-state revision as u64 to its original fields. A
+service restart creates a new instance ID, so an uncertain request from an old
+instance cannot be silently reinterpreted as new intent. Version 1 frames are
+rejected before body allocation; no released client/service handler depends on
+that prototype layout. Enroll carries u64 expected owner
 revision, u32 presence and u32 UID using the enrollment record's rules.
 OperationStatus and Accepted carry a nonzero 16-byte operation ID. InstallConfig
 carries u64 expected configuration generation followed by 1..=1 MiB of managed
 input, never a request to read a privileged path.
 EnrollmentReply/ConfigReply carry nonzero u64 revisions. StatusReply is session-state
 u8 (0..5), u64 configuration generation, u64 owner revision and configuration
-presence u8 (0/1). RecoveryReply is a u16 bitset with only bits 0..2 defined.
+presence u8 (0/1), then u64 desired-state revision (26 bytes total). RecoveryReply is a u16 bitset with only bits 0..2 defined.
 OperationReply carries operation ID, state u8 (0..4) and error code u16.
 ErrorReply is a nonzero error code u16. Codes are None=0, Unsupported=1,
 PermissionDenied=2, Malformed=3, Busy=4, Conflict=5, RecoveryRequired=6,
@@ -350,3 +356,22 @@ References: [Tauri app bundles](https://v2.tauri.app/distribute/macos-applicatio
 and [SMAppService](https://developer.apple.com/documentation/servicemanagement/smappservice).
 For development signing, see [Apple Silicon executable signing](https://developer.apple.com/documentation/macos-release-notes/macos-big-sur-11_0_1-universal-apps-release-notes)
 and [code identity requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
+
+### Lifecycle request freshness
+
+Before accepting a state-changing command, compare the request's service
+instance and expected configuration/desired-state revisions. Repeated operation
+identity must retain the same command and expected revisions; a conflicting
+reuse is rejected. Persist accepted desired intent and its incremented revision
+before returning Accepted or applying OS changes. Serialize Disconnect against
+pending Connect/reconnect work; completion from an older desired revision may
+clean up its owned resources but cannot publish connected state.
+
+Terminal operation history is bounded. After eviction or restart, unknown stale
+commands fail their revision/instance checks; they are never applied again merely
+because their IDs are absent from memory. Reusing an operation ID can retrieve
+its retained result, but an expired result may require a fresh status snapshot
+and an explicit new command. Client wait cancellation still does not cancel an
+accepted operation. These rules require durable intent and handler enforcement;
+the codec only validates and carries the fields. Persistent intent, bounded
+history and authenticated operation handlers remain open implementation gates.

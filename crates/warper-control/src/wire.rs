@@ -15,7 +15,7 @@ use tokio::{
 pub const MAX_CONFIG: usize = 1024 * 1024;
 pub const MAX_BODY: usize = MAX_CONFIG + 8;
 const HEADER_LEN: usize = 20;
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -67,12 +67,12 @@ impl Kind {
     fn check_length(self, length: usize) -> Result<(), Error> {
         let valid = match self {
             Self::Hello | Self::Status | Self::InspectRecovery => length == 0,
-            Self::Connect | Self::Disconnect => length == 24,
+            Self::Connect | Self::Disconnect => length == 48,
             Self::Enroll | Self::HelloReply | Self::Accepted | Self::OperationStatus => {
                 length == 16
             }
             Self::InstallConfig => (9..=MAX_BODY).contains(&length),
-            Self::StatusReply => length == 18,
+            Self::StatusReply => length == 26,
             Self::EnrollmentReply | Self::ConfigReply => length == 8,
             Self::RecoveryReply | Self::ErrorReply => length == 2,
             Self::OperationReply => length == 19,
@@ -293,7 +293,7 @@ fn check_body(kind: Kind, body: &[u8]) -> Result<(), Error> {
         | Kind::OperationStatus
         | Kind::EnrollmentReply
         | Kind::ConfigReply => nonzero(body),
-        Kind::Connect | Kind::Disconnect => nonzero(&body[..16]),
+        Kind::Connect | Kind::Disconnect => nonzero(&body[..16]) && nonzero(&body[32..48]),
         Kind::Enroll => {
             let present = u32::from_be_bytes(body[8..12].try_into().map_err(|_| Error::Malformed)?);
             let uid = u32::from_be_bytes(body[12..].try_into().map_err(|_| Error::Malformed)?);
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(
             encode_header(frame.kind, frame.request_id, 0).unwrap(),
             [
-                87, 82, 80, 67, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42
+                87, 82, 80, 67, 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42
             ]
         );
         assert_eq!(format!("{frame:?}"), "Frame(<redacted>)");
@@ -376,7 +376,7 @@ mod tests {
             },
             Case {
                 id: "zero operation",
-                body: vec![0; 24],
+                body: vec![0; 48],
                 kind: Kind::Connect,
                 expected: Error::Malformed,
             },
@@ -388,7 +388,7 @@ mod tests {
             },
             Case {
                 id: "unknown status",
-                body: vec![255; 18],
+                body: vec![255; 26],
                 kind: Kind::StatusReply,
                 expected: Error::Malformed,
             },
@@ -436,8 +436,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn every_message_kind_round_trips_through_bounded_partial_stream_io() {
-        let mut operation = vec![0; 24];
+        let mut operation = vec![0; 48];
         operation[0] = 1;
+        operation[32] = 2;
         let mut operation_reply = vec![0; 19];
         operation_reply[0] = 1;
         let samples = [
@@ -450,7 +451,7 @@ mod tests {
             (Kind::InstallConfig, vec![b'x'; MAX_BODY]),
             (Kind::OperationStatus, vec![1; 16]),
             (Kind::HelloReply, vec![1; 16]),
-            (Kind::StatusReply, vec![0; 18]),
+            (Kind::StatusReply, vec![0; 26]),
             (Kind::Accepted, vec![1; 16]),
             (Kind::EnrollmentReply, vec![1; 8]),
             (Kind::RecoveryReply, vec![0, 7]),
@@ -478,12 +479,69 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn lifecycle_fences_use_v2_and_legacy_layouts_fail_before_body_reads() {
+        let mut body = vec![0x11; 16];
+        body.extend_from_slice(&7u64.to_be_bytes());
+        body.extend_from_slice(&13u64.to_be_bytes());
+        body.extend_from_slice(&[0x22; 16]);
+        let (_owner, mut cancel) = watch::channel(false);
+        for kind in [Kind::Connect, Kind::Disconnect] {
+            let frame = Frame::new(kind, 9, body.clone()).unwrap();
+            let mut bytes = Vec::new();
+            frame
+                .write(
+                    &mut bytes,
+                    Instant::now() + Duration::from_secs(1),
+                    &mut cancel,
+                )
+                .await
+                .unwrap();
+            assert_eq!(&bytes[..6], b"WRPC\x00\x02");
+            assert_eq!(&bytes[8..12], &48u32.to_be_bytes());
+            assert_eq!(&bytes[20..36], &[0x11; 16]);
+            assert_eq!(&bytes[36..44], &7u64.to_be_bytes());
+            assert_eq!(&bytes[44..52], &13u64.to_be_bytes());
+            assert_eq!(&bytes[52..68], &[0x22; 16]);
+            let mut reader = bytes.as_slice();
+            let received = Frame::read(
+                &mut reader,
+                Instant::now() + Duration::from_secs(1),
+                &mut cancel,
+            )
+            .await
+            .unwrap();
+            assert_eq!(received.body(), body);
+            assert!(reader.is_empty());
+        }
+        for (kind, length, version, expected) in [
+            (Kind::Connect, 24, 1, Error::IncompatibleVersion),
+            (Kind::Disconnect, 24, 1, Error::IncompatibleVersion),
+            (Kind::Connect, 24, 2, Error::InvalidLength),
+            (Kind::StatusReply, 18, 2, Error::InvalidLength),
+        ] {
+            let mut bytes = encode_header(kind, 9, length).unwrap().to_vec();
+            bytes[5] = version;
+            bytes.extend(vec![0x33; length]);
+            let mut reader = bytes.as_slice();
+            assert!(
+                matches!(Frame::read(&mut reader, Instant::now() + Duration::from_secs(1), &mut cancel).await, Err(error) if error == expected)
+            );
+            assert_eq!(reader, vec![0x33; length]);
+        }
+        body[32..].fill(0);
+        assert!(matches!(
+            Frame::new(Kind::Connect, 9, body),
+            Err(Error::Malformed)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn malformed_headers_fail_before_attempting_to_read_or_allocate_the_body() {
         let base = encode_header(Kind::InstallConfig, 1, MAX_BODY).unwrap();
         let mut magic = base;
         magic[0] = 0;
         let mut version = base;
-        version[5] = 2;
+        version[5] = 1;
         let mut kind = base;
         kind[6..8].copy_from_slice(&0xfffeu16.to_be_bytes());
         let mut length = base;
@@ -523,7 +581,7 @@ mod tests {
         drop(input);
         drop(peer);
         let (mut input, mut peer) = tokio::io::duplex(64);
-        peer.write_all(&encode_header(Kind::Connect, 1, 24).unwrap())
+        peer.write_all(&encode_header(Kind::Connect, 1, 48).unwrap())
             .await
             .unwrap();
         peer.write_all(&[1; 8]).await.unwrap();
