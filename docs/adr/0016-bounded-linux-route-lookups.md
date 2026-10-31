@@ -71,7 +71,16 @@ constraint and check a genuine kernel rejection for an absent interface. No
 external DNS, network payload or host mutation is involved. Malformed replies,
 correlation, unsupported routes and deadline/cancellation have separate tests.
 The existing owner-dispatched isolated TUN fixture also runs a private loopback
-query; fresh root CI execution remains pending until recorded in the ledger.
+query; the [owner-dispatched run](https://github.com/skunkie/warper/actions/runs/41210002931)
+passes at `e23a88b` with preserved host state. This closes the native query
+boundary, not physical path verification.
 Retain raw evidence under `target/evidence/phase-1/linux-route-lookup/`.
 Reconsider if required routes cannot be represented, measured preflight costs
 are excessive or the upstream socket ownership contract changes.
+
+The shared private socket constructor now also serves a bounded change sensor.
+It explicitly disables ENOBUFS suppression. A caller-owned subscription observes
+link/address/route/rule changes and permanently closes on the first event or
+uncertainty. This supplies no atomic snapshot, physical send authority or
+replacement generation. The contract defines ownership and bounds; actual
+private-namespace notification execution remains pending fresh native evidence.

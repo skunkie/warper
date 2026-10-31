@@ -14,6 +14,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use super::netlink::{self, MAX_DATAGRAM};
 use netlink_packet_core::{
     NLM_F_MULTIPART, NLM_F_REQUEST, NetlinkBuffer, NetlinkMessage, NetlinkPayload,
 };
@@ -21,12 +22,11 @@ use netlink_packet_route::{
     AddressFamily, RouteNetlinkMessage,
     route::{RouteAddress, RouteAttribute, RouteFlags, RouteMessage, RouteType},
 };
-use netlink_sys::{AsyncSocket, SocketAddr as NetlinkAddr, TokioSocket, protocols::NETLINK_ROUTE};
+use netlink_sys::{AsyncSocket, SocketAddr as NetlinkAddr};
 use nix::errno::Errno;
 use tokio::time::sleep_until;
 use warper_core::transport::Request;
 
-const MAX_DATAGRAM: usize = 32768;
 const MAX_REQUEST: usize = 128;
 // IPv4's rtmsg also reports RTCF_LOCAL from linux/in_route.h. This is not an
 // unknown link-health flag; accept it only together with the Local route kind.
@@ -122,23 +122,11 @@ async fn exchange(query: Query) -> Result<Observation, Error> {
             value.checked_add(1)
         })
         .map_err(|_| Error::ResourceLimit)?;
-    let mut socket = TokioSocket::new(NETLINK_ROUTE).map_err(socket_error)?;
-    socket
-        .socket_ref()
-        .set_rx_buf_sz(MAX_DATAGRAM as i32)
-        .map_err(socket_error)?;
-    if socket.socket_ref().get_rx_buf_sz().map_err(socket_error)? > 2 * MAX_DATAGRAM {
-        return Err(Error::ResourceLimit);
-    }
-    socket
-        .socket_ref()
-        .set_netlink_get_strict_chk(true)
-        .map_err(socket_error)?;
-    let address = socket.socket_mut().bind_auto().map_err(socket_error)?;
-    let port = address.port_number();
-    if port == 0 || address.multicast_groups() != 0 {
-        return Err(Error::InvalidReply);
-    }
+    let (socket, port) = netlink::socket(0).map_err(|error| match error {
+        netlink::Error::Io(error) => socket_error(error),
+        netlink::Error::ResourceLimit => Error::ResourceLimit,
+        netlink::Error::InvalidSocket => Error::InvalidReply,
+    })?;
     let packet = request_packet(query, sequence, port)?;
     let length = poll_fn(|context| socket.poll_send_to(context, &packet, &NetlinkAddr::new(0, 0)))
         .await

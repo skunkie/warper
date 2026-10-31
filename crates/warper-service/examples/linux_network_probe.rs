@@ -315,7 +315,8 @@ mod linux {
         isolated(mount, net)?;
         // Read-only production query in the fixture's private network namespace.
         // This observes a route; it does not authorize the loopback connector.
-        let (_owner, cancellation) = tokio::sync::watch::channel(false);
+        let (query_owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut changes = warper_service::linux::change_monitor::Monitor::subscribe()?;
         let observed = warper_service::linux::route_lookup::lookup(
             warper_service::linux::route_lookup::Query {
                 destination: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1080),
@@ -335,10 +336,39 @@ mod linux {
             return Err("private loopback route observation differs".into());
         }
         println!("PASS bounded native route query in private network namespace");
+        if changes.check_pending().is_err() {
+            return Err("private network changed during route query".into());
+        }
+        let interrupted = tokio::time::timeout(
+            Duration::from_millis(1),
+            changes.wait(Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation: query_owner.subscribe(),
+            }),
+        )
+        .await;
+        if interrupted.is_ok()
+            || changes.invalidation().is_some()
+            || changes.check_pending().is_err()
+        {
+            return Err("dropped pending wait changed private subscription".into());
+        }
         let networking = networking()?;
         // A retained TUN occupies the first generated name. The candidate
         // must create another device and preserve this independent owner.
         let foreign = DeviceBuilder::new().mtu(1400).enable(false).build_sync()?;
+        let reason = changes
+            .wait(Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation: query_owner.subscribe(),
+            })
+            .await;
+        if reason != warper_service::linux::change_monitor::Invalidation::NetworkChanged
+            || changes.check_pending() != Err(reason)
+        {
+            return Err("private TUN change did not invalidate native monitor".into());
+        }
+        println!("PASS native link change permanently invalidates bounded monitor");
         let foreign_name = foreign.name()?;
         let result=async {
             let before=ip(&["-j","link","show","dev",&foreign_name])?;

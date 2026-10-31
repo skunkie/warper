@@ -170,8 +170,17 @@ retirement; full service shutdown and journaled native work remain open.
 The Linux service now has a bounded read-only IPv4 TCP kernel route query
 (ADR 0016), with real loopback/source/interface and kernel-rejection tests.
 It does not authorize physical sends, publish routes or supply a monitored path
-lease. Fresh owner-dispatched private-namespace query execution remains pending.
+lease. The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41210002931)
+passes at `e23a88b`, including the private-namespace query and existing kernel
+TUN/control fixtures with independently preserved host state.
 Evidence is retained under `target/evidence/phase-1/linux-route-lookup/`.
+
+The native change monitor subscribes to link/address/route/rule events with a
+bounded kernel queue and permanently invalidates on changes or uncertainty.
+Native subscription/owner-loss and bounded parser tests pass locally; actual
+private-namespace link-change acceptance is pending the next owner-dispatched
+run. Evidence is retained under `target/evidence/phase-1/linux-change-monitor/`.
+It does not close physical socket binding, snapshot consistency or the driver.
 
 ## Gate Evidence
 
