@@ -166,3 +166,41 @@ jobs:
       - uses: ./.github/actions/validate-native
         with:
           target: ${{ matrix.target }}
+
+  privileged-control:
+    name: Privileged Linux control acceptance
+    needs: [stage, quality]
+    # Privileged acceptance requires an explicit dispatch by this repository's owner.
+    # PR/push events cannot start it; callers must preserve owner-dispatch trust.
+    if: >-
+      needs.stage.outputs.rust == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'skunkie/warper' &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          build-warnings: warn
+      - name: Build the actual privileged control probe
+        run: cargo build --locked -p warper-control --example control_privileged
+      - name: Exercise protected root state and real kernel peers in isolation
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control
+          sudo -n -- python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/control_privileged" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/controller.log
+      - name: Retain privileged gate evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-control-${{ github.sha }}
+          path: target/evidence/phase-1/privileged-control/
+          if-no-files-found: error
+          retention-days: 14

@@ -200,6 +200,39 @@ conditions alongside JSON; counters include fixture servers and unrelated
 loopback activity may affect drops. It does not mutate routes or DNS and does
 not establish TUN performance, physical protection or service acceptance.
 
+The `privileged-control` CI job runs only on explicit workflow_dispatch by
+this repository's owner in `skunkie/warper`. PR/push events cannot launch it;
+reusable callers inherit the same owner-dispatch restriction. It uses a
+standard GitHub-hosted Ubuntu VM with passwordless sudo, never a container or
+self-hosted desktop. It builds the actual control probe and runs:
+
+```sh
+sudo -n -- python3 scripts/control_acceptance.py \
+  --probe "$PWD/target/debug/examples/control_privileged" \
+  --evidence "$PWD/target/evidence/phase-1/privileged-control"
+```
+
+Run reviewed code on a disposable VM only. The harness retains the initial
+user namespace while creating private mount/network/PID namespaces. Inherited
+namespace handles guard against accidental unisolated invocation. It privately
+mounts `/run`, `/var/lib`, `/etc` and `/proc`, supplies a real bounded UDP/TCP
+NXDOMAIN fixture and dedicated D-Bus instance, and joins both. Actual root,
+owner UID 1000 and foreign UID 1001 exercise protected state, native root/owner
+policy, revisioned enrollment and endpoint retirement. The artifact is copied
+to the private runtime directory so peer users need no runner-home access.
+The real namespace/UID gate is never overridden.
+
+The independent outer supervisor bounds runtime, kills/reaps the process group
+on timeout or leaked descendants, compares stable host links/routes and resolver
+hash before/after, and uploads logs plus exact revision/probe hash even on
+failure. Artifacts refuse preexisting names/symlinks and use explicit readable
+permissions for the non-root uploader. Harness unit tests cover real temporary
+resolver sockets/joining, namespace refusal, supervisor timeout/failure,
+artifact preservation, primary/cleanup diagnostics and the workflow trust guard.
+A passing boundary job is not full UX-01 or Phase 1 service/TUN acceptance.
+Native privileged results remain unverified until the real job runs; local
+compilation is not evidence.
+
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
 checkout credentials, sets timeouts, and cancels superseded branch runs.

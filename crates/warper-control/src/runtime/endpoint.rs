@@ -133,6 +133,12 @@ impl ControlEndpoint {
         Ok(endpoint)
     }
 
+    /// Borrow retained ownership for protected state operations. This exposes
+    /// no descriptor/path override and does not transfer or release the lease.
+    pub fn runtime(&self) -> &RuntimeLease {
+        &self.lease
+    }
+
     pub fn accept(&self, policy: &OwnerPolicy) -> Result<Option<Accepted>, Error> {
         self.verify()?;
         let listener = self.listener.as_ref().ok_or(Error::ChangedState)?;

@@ -89,6 +89,21 @@ belong to the ignored evidence package, rather than this durable ledger.
   ownership/journal, startup rollback and recovery remain Phase 1 work.
   Experimental fixed seeds and public synthetic keys are not production inputs.
 
+## Privileged Linux CI boundary
+
+An owner-dispatched `privileged-control` job builds the actual root control
+probe and runs the private namespace/state/resolver/bus harness on a standard
+hosted Ubuntu VM. PR/push events cannot start it, and reusable callers inherit
+the owner-dispatch restriction. It preserves the initial user namespace and
+uses real root, owner and foreign peers without an authentication bypass.
+Failure/cleanup logs and exact revision/probe hashes upload as
+`linux-control-<commit>` artifacts.
+
+Local harness tests, workflow lint and compilation establish harness readiness,
+not root service acceptance. The first real CI result is still pending. Full
+Phase 1 TUN/SOCKS application traffic, journaled startup rollback, service/client
+lifecycle and required service-manager integration remain open.
+
 ## Gate Evidence
 
 For each changed gate, preserve behavior, revision/worktree, environment,
