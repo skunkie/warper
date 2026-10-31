@@ -185,8 +185,12 @@ The endpoint adapter now publishes a fixed listener only after synced intent,
 returns only kernel-authorized peers, and explicitly retires unchanged owned
 socket/intent state. Drop preserves uncertain state; existing objects are never
 automatically removed. See the [endpoint contract](configuration.md#linux-control-endpoint).
-Client endpoint checks, durable enrollment, versioned framing, journaled recovery
-and service integration remain open.
+The fixed protected owner store now implements atomic revisioned enrollment,
+replacement/removal with native administrative authorization, durable staging
+and uncertain-commit reporting. See the
+[storage contract](configuration.md#linux-owner-enrollment-storage).
+Client endpoint checks, pending recovery, request framing, live revocation and
+service integration remain open.
 
 ### Control API and managed material
 

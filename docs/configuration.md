@@ -61,6 +61,33 @@ owned and must be drained/joined by the future supervisor before explicit close.
 Publication errors preserve the primary failure alongside cleanup failure.
 There is no automatic stale-endpoint recovery or service executable yet.
 
+### Linux owner enrollment storage
+
+The service stores enrollment only in fixed `/var/lib/warper/owner`, outside
+imported YAML. Installation provisions `/var/lib/warper` as root mode 0700;
+`/`, `/var` and `/var/lib` must be root-owned without group/other write access.
+Startup never creates or repairs these directories. The state directory and
+its files cannot be symlinks or separate mounts beneath `/var/lib`.
+
+Owner records are immutable atomic snapshots: exactly 24 bytes consisting of
+`WOWN`, big-endian u32 version 1, u64 revision, u32 presence (0/1), and u32 UID.
+A stored revision is nonzero; an absent owner uses presence 0 and UID 0. A
+present owner cannot use the reserved u32-max UID. A missing record means no
+owner, revision 0. Files must be regular root-owned mode 0600 with one hard link.
+No malformed/unsafe record is treated as an unenrolled installation.
+
+Enrollment/replacement/removal requires a live kernel-authenticated UID-0 peer,
+a held runtime lease, and the expected current enrollment revision. Create
+`owner.pending` exclusively, write/sync the complete next revision, revalidate
+current state, rename atomically and sync the state directory before success.
+An existing pending record requires recovery; it is never automatically deleted.
+Before publication, errors attempt cleanup of only the unchanged owned pending
+file and retain primary/cleanup failures. A post-rename sync failure reports
+uncertain commit and requires inspection, never a blind rollback or replay.
+Normal reads refuse pending state. Per-request policy refresh and connection
+revocation still belong to service integration. No generic file/path operation
+or enrollment CLI is introduced by the storage boundary.
+
 ## 1. Parsing and Path Rules
 
 - Accept one UTF-8 YAML document containing a mapping. Reject unknown keys at every level, duplicate mapping keys, null values, custom tags, anchors/aliases, multiple documents, and wrong scalar types. A boolean must be a boolean; integer fields do not accept strings, floats, or booleans. Secrets and addresses are strings. An omitted optional value uses its documented default.

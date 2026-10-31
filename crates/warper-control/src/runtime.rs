@@ -13,6 +13,7 @@ use rustix::fs::{
 };
 
 pub mod endpoint;
+pub mod enrollment;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

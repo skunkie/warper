@@ -168,6 +168,15 @@ Drop/restart must refuse uncertain socket/intent state. Intent and directory
 syncs run on the local fixture filesystem. Actual privileged publication and
 injected syscall failures are not established by these tests.
 
+Enrollment tests use private state directories with the current real UID and
+actual file writes, fsync, rename and reopen. The public constructor still
+accepts only fixed root-owned state and a held runtime lease. Tests cover
+revision conflicts/exhaustion, owner removal, malformed/unsafe/pending state,
+changed objects, bounded records, native administrative denial before reads,
+and injected final directory-sync failure after actual rename. That failure
+must retain the new snapshot and report CommitUncertain. Positive public root
+enrollment, pending recovery and service revocation need separate evidence.
+
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
 checkout credentials, sets timeouts, and cancels superseded branch runs.
