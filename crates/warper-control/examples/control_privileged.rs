@@ -107,7 +107,21 @@ mod linux {
         Ok(())
     }
     fn client(mode: &str) -> Result<(), Failure> {
-        let mut stream = UnixStream::connect("/run/warper/control.sock")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (_cancellation, cancel) = tokio::sync::watch::channel(false);
+        let connected = runtime.block_on(warper_control::runtime::client::connect(
+            tokio::time::Instant::now() + Duration::from_secs(2),
+            cancel,
+        ));
+        if mode == "unsafe-endpoint" {
+            return match connected {
+                Err(warper_control::runtime::client::Error::UnsafeEndpoint) => Ok(()),
+                _ => Err("unsafe endpoint was not rejected before connection".into()),
+            };
+        }
+        let mut stream = connected?.into_std()?;
         configure(&stream)?;
         unix::authenticate_service(&stream)?;
         match mode {
@@ -144,6 +158,18 @@ mod linux {
             return Err("fixture must start with empty enrollment".into());
         }
         let endpoint = ControlEndpoint::bind(lease)?;
+        // The ordinary owner must inspect the protected endpoint itself,
+        // including rejecting changed permissions before sending any payload.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            "/run/warper/control.sock",
+            fs::Permissions::from_mode(0o600),
+        )?;
+        Client::start(1000, "unsafe-endpoint")?.join()?;
+        fs::set_permissions(
+            "/run/warper/control.sock",
+            fs::Permissions::from_mode(0o666),
+        )?;
         let (admin, _other) = UnixStream::pair()?;
         let enrolled = store.enroll(endpoint.runtime(), &admin, 0, Some(1000))?;
         if enrolled.revision() != 1 {

@@ -61,6 +61,23 @@ owned and must be drained/joined by the future supervisor before explicit close.
 Publication errors preserve the primary failure alongside cleanup failure.
 There is no automatic stale-endpoint recovery or service executable yet.
 
+The Linux client connects only through `runtime::client::connect`: verify the
+initial user namespace and fixed root-owned directory chain, pin the pathname
+socket inode, and require socket mode 0666 with one hard link. Connect through
+the pinned descriptor's procfs path, authenticate the actual UID-0 kernel peer,
+then revalidate named identities and metadata before returning any stream. No
+payload is sent during this admission. There is no path, UID or abstract-socket
+override. Missing, changed, unsafe and non-root endpoints fail closed without
+repair or fallback. Trusted root and the launch mount namespace remain part of
+the deployment contract.
+
+An absolute Tokio deadline and cancellation owner bound asynchronous connect;
+pre-expired/cancelled admission touches no endpoint. Owner loss cancels setup.
+Filesystem/procfs inspections are synchronous and have no hard kernel-operation
+wall bound. The caller retains the cancellation owner and must negotiate the
+wire version before configuration transfer. A returned stream is independently
+owned: closing that client connection does not request service disconnect.
+
 ### Linux owner enrollment storage
 
 The service stores enrollment only in fixed `/var/lib/warper/owner`, outside

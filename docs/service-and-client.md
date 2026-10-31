@@ -189,8 +189,10 @@ The fixed protected owner store now implements atomic revisioned enrollment,
 replacement/removal with native administrative authorization, durable staging
 and uncertain-commit reporting. See the
 [storage contract](configuration.md#linux-owner-enrollment-storage).
-Client endpoint checks, pending recovery, request framing, live revocation and
-service integration remain open.
+The Linux client now verifies and pins the fixed protected endpoint, connects
+with a deadline/cancellation owner and authenticates the real root service
+before returning a stream. It sends no payload during admission. Pending
+recovery, session handlers, live revocation and service integration remain open.
 
 ### Initial control wire framing
 

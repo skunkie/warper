@@ -12,6 +12,7 @@ use rustix::fs::{
     openat2, statat,
 };
 
+pub mod client;
 pub mod endpoint;
 pub mod enrollment;
 
