@@ -2152,3 +2152,30 @@ response grace, packet drain or verified native ownership. Its private runtime
 identity distinguishes two runtimes using the same policy. Payload queues stay
 unchanged;
 its fixed references/counters are separately bounded metadata.
+
+### Bounded native IPv4 route inventory
+
+The read-only route inventory runs synchronously in a retained native worker
+under the caller's cancellation and absolute deadline (at most 30 seconds).
+It requests all IPv4 tables, retains at most 8192 compact entries, and accepts
+at most 64 datagrams / 16384 messages. Each datagram is bounded to 32768 bytes,
+with a one-byte oversize sentinel and a verified kernel receive queue of at
+most 65536 bytes. Parsing retains one bounded upstream message at a time.
+There are no tasks, subprocesses, name lookups, mutations or retries.
+
+A successful result requires a correlated kernel unicast multipart dump and
+terminal zero-code Done. Truncation, interruption, overrun, malformed
+correlation or capacity exhaustion returns an error without a partial result.
+Entries retain canonical destination, table, output interface, metric, source
+preference, gateway, protocol, scope and kind as adapter-owned values. Extra
+selectors, flags or attributes make an entry ineligible for exact ownership
+comparison; they never disappear from conflict inspection. Ambiguous or
+unrepresentable destination/table metadata rejects the whole inventory.
+Debug output omits route metadata.
+
+This is a bounded observation, not a consistent snapshot, policy-rule proof,
+route ownership token or authority to publish/delete routes. A future driver
+must subscribe before inspection, validate rules and conflicts, journal intent,
+apply exclusive changes, await ACKs, compare fresh exact metadata and commit
+ownership before reporting capture readiness. Retirement must also honor
+quiescence and retained flows.

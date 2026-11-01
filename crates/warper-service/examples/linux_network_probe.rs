@@ -600,6 +600,39 @@ mod linux {
             Err(Box::new(CombinedFailure { primary, cleanup }))
         }
     }
+    async fn inspect_capture_route() -> Result<(), Failure> {
+        let interface = inspect_link(NAME).await?.index;
+        let jobs = warper_service::native::Workers::new(1)?;
+        let (owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut task = jobs.try_reserve()?.start(move || {
+            warper_service::linux::route_inventory::inspect(Request {
+                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                cancellation,
+            })
+        });
+        let inventory = join_native(&mut task, &owner).await??;
+        let matches = inventory
+            .entries()
+            .iter()
+            .filter(|entry| {
+                entry.network == Ipv4Addr::new(198, 18, 0, 2)
+                    && entry.prefix_len == 32
+                    && entry.table.get() == 254
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1
+            || matches[0].interface != Some(interface)
+            || matches[0].scope != 253
+            || matches[0].kind != 1
+            || !matches[0].exact
+        {
+            return Err("native capture route inventory differs".into());
+        }
+        println!(
+            "PASS complete bounded IPv4 inventory preserves exact fixture capture route metadata"
+        );
+        Ok(())
+    }
     async fn exchange(
         tun: Arc<warper_service::linux::tun::PacketPort>,
         networking: Networking,
@@ -645,6 +678,7 @@ mod linux {
             // The internal policy/handler and retained runtime owner exist
             // before the fixture publishes its acknowledged kernel route.
             ip(&["route", "add", "198.18.0.2/32", "dev", NAME])?;
+            inspect_capture_route().await?;
             loop {
                 tokio::select! {
                     result=&mut app,if !application_done=>{

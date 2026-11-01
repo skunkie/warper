@@ -753,3 +753,10 @@ accepted streams and packet processing. A caller wait timeout does not cancel
 accepted quiescence. This internal barrier does not change CLI connection state
 or authorize removing routes; the supervisor must still drain references and
 complete native retirement before reporting disconnected cleanup success.
+
+The internal read-only IPv4 route inventory accepts at most 8192 entries, 64
+netlink datagrams and 16384 messages per completed dump. Its 32 KiB datagram
+bound and at most 64 KiB kernel receive queue are independent of payload-buffer
+limits. These are implementation ceilings, not configurable route capacity or
+permission to capture traffic. Unknown route selectors remain visible to
+conflict checks but cannot establish exact ownership metadata.

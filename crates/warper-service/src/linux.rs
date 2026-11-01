@@ -12,7 +12,9 @@ pub mod context;
 pub mod egress;
 pub mod link_lookup;
 mod netlink;
+pub mod route_inventory;
 pub mod route_lookup;
+mod transaction;
 pub mod tun;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

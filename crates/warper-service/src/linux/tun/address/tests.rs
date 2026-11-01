@@ -2,10 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::super::transaction::decode_ack;
+use super::super::transaction::{decode_ack, packet};
 use super::*;
-use netlink_packet_core::{ErrorMessage, NetlinkHeader};
-use netlink_packet_core::{NLM_F_ACK, NLM_F_DUMP_INTR};
+use crate::linux::netlink::MAX_DATAGRAM;
+use netlink_packet_core::{ErrorMessage, NetlinkHeader, NetlinkMessage, NetlinkPayload};
+use netlink_packet_core::{NLM_F_ACK, NLM_F_REQUEST};
+use netlink_sys::SocketAddr;
 use std::num::NonZeroI32;
 use std::time::Duration;
 use tokio::{sync::watch, time::Instant as TokioInstant};
@@ -198,61 +200,4 @@ fn native_read_only_snapshot_observes_loopback_without_external_traffic() {
     let snapshot = inspect(loopback, Ipv4Addr::LOCALHOST, &wait).unwrap();
     assert!(snapshot.matches >= 1);
     assert_eq!(snapshot.owned_exact, 0);
-}
-
-#[test]
-fn interrupted_malformed_and_over_budget_dumps_never_establish_ownership() {
-    let address = Ipv4Addr::new(198, 18, 0, 1);
-    let dump = || Dump {
-        sequence: 7,
-        port: 42,
-        index: 9,
-        address,
-        snapshot: Snapshot::default(),
-        messages: 0,
-    };
-    let serialize = |mut message: NetlinkMessage<RouteNetlinkMessage>| {
-        message.header.sequence_number = 7;
-        message.header.port_number = 42;
-        message.finalize();
-        let mut bytes = vec![0; message.buffer_len()];
-        message.serialize(&mut bytes);
-        bytes
-    };
-    let sample = serialize(NetlinkMessage::from(add_message(9, address)));
-    let kernel = SocketAddr::new(0, 0);
-    let mut state = dump();
-    assert_eq!(state.observe(&sample, kernel), Ok(false));
-    assert_eq!(state.snapshot.owned_exact, 1);
-    let done = serialize(NetlinkMessage::new(
-        NetlinkHeader::default(),
-        NetlinkPayload::Done(netlink_packet_core::DoneMessage::default()),
-    ));
-    assert_eq!(state.observe(&done, kernel), Ok(true));
-    for end in 0..sample.len() {
-        assert_eq!(dump().observe(&sample[..end], kernel), Err(Cause::Protocol));
-    }
-    let mut interrupted = sample.clone();
-    interrupted[6..8].copy_from_slice(&NLM_F_DUMP_INTR.to_ne_bytes());
-    assert_eq!(dump().observe(&interrupted, kernel), Err(Cause::Lost));
-    let mut wrong_sequence = sample.clone();
-    wrong_sequence[8..12].copy_from_slice(&8u32.to_ne_bytes());
-    assert_eq!(
-        dump().observe(&wrong_sequence, kernel),
-        Err(Cause::Protocol)
-    );
-    assert_eq!(
-        dump().observe(&sample, SocketAddr::new(1, 0)),
-        Err(Cause::Protocol)
-    );
-    assert_eq!(
-        dump().observe(&vec![0; MAX_DATAGRAM + 1], kernel),
-        Err(Cause::Lost)
-    );
-    let mut too_many = dump();
-    too_many.messages = MAX_MESSAGES;
-    assert_eq!(too_many.observe(&sample, kernel), Err(Cause::ResourceLimit));
-    let mut trailing = done;
-    trailing.extend_from_slice(&sample);
-    assert_eq!(dump().observe(&trailing, kernel), Err(Cause::Protocol));
 }

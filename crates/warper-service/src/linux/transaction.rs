@@ -296,3 +296,112 @@ pub(super) fn query(
         cause,
     })
 }
+
+/// Complete bounded multipart query. Partial observations never escape an error.
+pub(super) fn dump<T>(
+    message: RouteNetlinkMessage,
+    wait: &Wait,
+    max_messages: usize,
+    mut state: T,
+    mut observe: impl FnMut(&mut T, RouteNetlinkMessage) -> Result<(), Cause>,
+) -> Result<T, Cause> {
+    wait.check()?;
+    let (socket, port) = socket()?;
+    let sequence = sequence()?;
+    let request = packet(
+        message,
+        NLM_F_REQUEST | netlink_packet_core::NLM_F_DUMP,
+        sequence,
+        port,
+    )?;
+    send(&socket, &request, wait)?;
+    let mut dump = Dump::new(sequence, port, max_messages);
+    for _ in 0..64 {
+        let mut bytes = [0; MAX_DATAGRAM + 1];
+        let (length, sender) = receive(&socket, &mut bytes, wait)?;
+        if dump.observe(&bytes[..length], sender, |message| {
+            observe(&mut state, message)
+        })? {
+            return Ok(state);
+        }
+    }
+    Err(Cause::ResourceLimit)
+}
+
+struct Dump {
+    sequence: u32,
+    port: u32,
+    max_messages: usize,
+    messages: usize,
+    done: bool,
+}
+impl Dump {
+    fn new(sequence: u32, port: u32, max_messages: usize) -> Self {
+        Self {
+            sequence,
+            port,
+            max_messages,
+            messages: 0,
+            done: false,
+        }
+    }
+    fn observe(
+        &mut self,
+        bytes: &[u8],
+        sender: SocketAddr,
+        mut observe: impl FnMut(RouteNetlinkMessage) -> Result<(), Cause>,
+    ) -> Result<bool, Cause> {
+        validate_sender(sender)?;
+        if bytes.len() > MAX_DATAGRAM {
+            return Err(Cause::Lost);
+        }
+        if bytes.is_empty() || self.done {
+            return Err(Cause::Protocol);
+        }
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            if self.messages >= self.max_messages {
+                return Err(Cause::ResourceLimit);
+            }
+            self.messages += 1;
+            let envelope = NetlinkBuffer::new_checked(remaining).map_err(|_| Cause::Protocol)?;
+            let length = envelope.length() as usize;
+            let message = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&remaining[..length])
+                .map_err(|_| Cause::Protocol)?;
+            correlate(&message, self.sequence, self.port)?;
+            let aligned = (length + 3) & !3;
+            remaining = remaining.get(aligned..).ok_or(Cause::Protocol)?;
+            match message.payload {
+                NetlinkPayload::InnerMessage(message_body)
+                    if message.header.flags & netlink_packet_core::NLM_F_MULTIPART != 0 =>
+                {
+                    observe(message_body)?;
+                }
+                NetlinkPayload::Done(done)
+                    if message.header.flags & netlink_packet_core::NLM_F_MULTIPART != 0
+                        && remaining.is_empty() =>
+                {
+                    if done.code < 0 && done.code != i32::MIN {
+                        return Err(Cause::Kernel(-done.code));
+                    }
+                    if done.code != 0 {
+                        return Err(Cause::Protocol);
+                    }
+                    self.done = true;
+                    return Ok(true);
+                }
+                NetlinkPayload::Error(error)
+                    if error.raw_code() < 0 && error.raw_code() != i32::MIN =>
+                {
+                    return Err(Cause::Kernel(-error.raw_code()));
+                }
+                NetlinkPayload::Overrun(_) => return Err(Cause::Lost),
+                _ => return Err(Cause::Protocol),
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests;

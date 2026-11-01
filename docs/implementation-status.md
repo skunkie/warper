@@ -299,3 +299,14 @@ limits and next unmet requirements under `target/evidence/` or CI artifacts.
 Keep successful and failed runs distinguishable. Never record live credentials,
 raw user configuration or user packet payloads. Gate completion needs no human
 approval; proceed to the next applicable independent increment.
+
+A bounded read-only IPv4 route inventory now retains all tables and compact
+route comparison metadata, including routes with unsupported selectors. It
+requires complete correlated multipart termination and never returns a partial
+result on interruption, loss or capacity exhaustion. Address inspection shares
+the same bounded multipart transport. Local read-only kernel and malformed-input
+tests cover the boundary; a private TUN fixture checks exact capture metadata.
+Evidence belongs under `target/evidence/phase-1/linux-route-inventory/`.
+Privileged execution of that new fixture remains unverified until its CI run.
+Policy-rule inspection, journaled publication/retirement and recovery remain
+open; an inventory is not ownership authority or a consistent monitored snapshot.

@@ -16,8 +16,8 @@ mod address;
 mod link;
 mod node;
 mod packet;
+use super::transaction;
 pub use packet::{BUFFER_BYTES, Error as PacketError, PacketPort};
-mod transaction;
 pub use transaction::{
     Cause as AddressCause, Delivery as AddressDelivery, Failure as AddressFailure,
 };

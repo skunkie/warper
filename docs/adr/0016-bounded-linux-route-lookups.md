@@ -94,3 +94,13 @@ TAP; they do not prove an owned generation. Native loopback name/index lookup
 passes locally. The [isolated TUN inspection gate](https://github.com/skunkie/warper/actions/runs/41211693343)
 passes at `bc04a62` with foreign identity and host state preserved. Journaling,
 namespace identity, service ownership marks and native mutations remain open.
+
+The read-only boundary also includes a complete IPv4 route inventory for future
+capture conflict checks. Unlike a single route lookup, it accepts a bounded
+multipart dump with terminal Done and retains at most 8192 compact entries.
+It shares the synchronous retained-worker transport with address inspection.
+Unknown selectors remain visible but preclude exact metadata comparison; no
+partial result survives failed parsing or termination. The contract specifies
+queue, datagram and message limits. This supplies neither policy-rule validation
+nor mutation/ownership authority. Read-only loopback and parser tests are local;
+the new private TUN inventory fixture needs fresh privileged execution.
