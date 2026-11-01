@@ -632,7 +632,6 @@ mod linux {
     }
     async fn journaled_capture(
         context: Arc<warper_service::linux::context::Context>,
-        foreign_name: &str,
     ) -> Result<(), Failure> {
         use warper_service::linux::tun::Error as TunError;
         let (native, port) = owned_packet_port(context.clone()).await?;
@@ -723,7 +722,7 @@ mod linux {
                 "replace",
                 "198.18.0.2/32",
                 "dev",
-                foreign_name,
+                "lo",
                 "proto",
                 "static",
                 "metric",
@@ -832,14 +831,13 @@ mod linux {
     }
     async fn measure_captures(
         context: Arc<warper_service::linux::context::Context>,
-        foreign: &str,
     ) -> Result<(), Failure> {
         let started = tokio::time::Instant::now();
         let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
         let mut latencies = Vec::with_capacity(20);
         for _ in 0..20 {
             let before = tokio::time::Instant::now();
-            journaled_capture(context.clone(), foreign).await?;
+            journaled_capture(context.clone()).await?;
             latencies.push(before.elapsed().as_nanos());
         }
         let elapsed = started.elapsed().as_nanos();
@@ -1172,7 +1170,7 @@ mod linux {
         let foreign_name = foreign.name()?;
         let result=async {
             journaled_tun_lifecycle(context.clone(),&foreign).await?;
-            measure_captures(context.clone(), &foreign_name).await?;
+            measure_captures(context.clone()).await?;
             let foreign_identity=inspect_link(&foreign_name).await?;
             if foreign_identity.kind!=warper_service::linux::link_lookup::Kind::Tun
                 || foreign_identity.mtu.get()!=1400 {return Err("foreign fixture TUN inspection differs".into());}
