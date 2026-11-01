@@ -103,4 +103,14 @@ Unknown selectors remain visible but preclude exact metadata comparison; no
 partial result survives failed parsing or termination. The contract specifies
 queue, datagram and message limits. This supplies neither policy-rule validation
 nor mutation/ownership authority. Read-only loopback and parser tests are local;
-the new private TUN inventory fixture needs fresh privileged execution.
+the [private TUN inventory gate](https://github.com/skunkie/warper/actions/runs/41340340274)
+passes at `6945401`, with exact route metadata and independently preserved host
+state. This closes only the scoped read-only inventory boundary.
+
+An accompanying bounded IPv4 rule classifier reports whether the complete
+layout is exactly the ordinary unconditional local/main/default rules. Custom
+selectors, duplicate/missing rules, suppression and other actions cannot pass
+that classification. It changes no host state and retains only counters and
+a bitset for at most 64 rules. The same caller deadline, cancellation and
+multipart transport bounds apply. Rule inspection alone is not capture
+readiness or monitored snapshot consistency.

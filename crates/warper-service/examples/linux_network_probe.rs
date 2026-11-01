@@ -600,17 +600,68 @@ mod linux {
             Err(Box::new(CombinedFailure { primary, cleanup }))
         }
     }
-    async fn inspect_capture_route() -> Result<(), Failure> {
-        let interface = inspect_link(NAME).await?.index;
+    async fn inspect_rules() -> Result<warper_service::linux::rule_inventory::Inventory, Failure> {
         let jobs = warper_service::native::Workers::new(1)?;
         let (owner, cancellation) = tokio::sync::watch::channel(false);
         let mut task = jobs.try_reserve()?.start(move || {
-            warper_service::linux::route_inventory::inspect(Request {
+            warper_service::linux::rule_inventory::inspect(Request {
                 deadline: tokio::time::Instant::now() + Duration::from_secs(2),
                 cancellation,
             })
         });
-        let inventory = join_native(&mut task, &owner).await??;
+        Ok(join_native(&mut task, &owner).await??)
+    }
+    async fn reject_custom_rules() -> Result<(), Failure> {
+        // The private fixture starts with exactly three rules, so this priority
+        // is not foreign state. Delete only after our successful addition.
+        ip(&["rule", "add", "priority", "1000", "table", "main"])?;
+        let result = async {
+            let before = ip(&["-j", "rule", "show"])?;
+            let rules = inspect_rules().await?;
+            if rules.is_default_layout() || rules.rules() != 4 {
+                return Err("custom native IPv4 rule layout was admitted".into());
+            }
+            if before != ip(&["-j", "rule", "show"])? {
+                return Err("rule inspection mutated custom fixture state".into());
+            }
+            Ok(())
+        }
+        .await;
+        let cleanup = ip(&["rule", "del", "priority", "1000", "table", "main"])
+            .err()
+            .into_iter()
+            .collect();
+        preserve(result, cleanup)?;
+        if !inspect_rules().await?.is_default_layout() {
+            return Err("private fixture rule restoration differs".into());
+        }
+        println!(
+            "PASS custom IPv4 rules are rejected and preserved; fixture cleanup restores the default layout"
+        );
+        Ok(())
+    }
+    async fn inspect_capture_route() -> Result<(), Failure> {
+        let interface = inspect_link(NAME).await?.index;
+        let jobs = warper_service::native::Workers::new(1)?;
+        let (owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut task = jobs.try_reserve()?.start(move || -> Result<_, Failure> {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let routes = warper_service::linux::route_inventory::inspect(Request {
+                deadline,
+                cancellation: cancellation.clone(),
+            })?;
+            let rules = warper_service::linux::rule_inventory::inspect(Request {
+                deadline,
+                cancellation,
+            })?;
+            Ok((routes, rules))
+        });
+        let (inventory, rules) = join_native(&mut task, &owner).await??;
+        if !rules.is_default_layout() {
+            return Err("private fixture IPv4 rule layout differs".into());
+        }
+        println!("PASS complete bounded IPv4 rules retain the ordinary local/main/default layout");
+        reject_custom_rules().await?;
         let matches = inventory
             .entries()
             .iter()

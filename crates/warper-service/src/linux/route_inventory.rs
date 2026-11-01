@@ -68,7 +68,7 @@ impl fmt::Debug for Inventory {
 /// Run in a retained native worker. No partial result survives error, and no
 /// task, subprocess or retry is created. Bound concurrent workers externally.
 pub fn inspect(request: Request) -> Result<Inventory, Error> {
-    let wait = Wait::new(request).map_err(map_cause)?;
+    let wait = Wait::new(request).map_err(transaction::query_error)?;
     let mut query = RouteMessage::default();
     query.header.address_family = AddressFamily::Inet;
     transaction::dump(
@@ -80,7 +80,7 @@ pub fn inspect(request: Request) -> Result<Inventory, Error> {
         },
         Inventory::observe,
     )
-    .map_err(map_cause)
+    .map_err(transaction::query_error)
 }
 
 fn entry(message: RouteMessage) -> Result<Entry, Cause> {
@@ -150,18 +150,5 @@ fn once<T>(slot: &mut Option<T>, value: T) -> Result<(), Cause> {
     }
     Ok(())
 }
-fn map_cause(cause: Cause) -> Error {
-    match cause {
-        Cause::InvalidInput => Error::InvalidInput,
-        Cause::ResourceLimit => Error::ResourceLimit,
-        Cause::Cancelled => Error::Cancelled,
-        Cause::Timeout => Error::Timeout,
-        Cause::Io(kind) => Error::Io(kind),
-        Cause::Kernel(code) => Error::Kernel(code),
-        Cause::Protocol => Error::InvalidReply,
-        Cause::Lost => Error::Lost,
-    }
-}
-
 #[cfg(test)]
 mod tests;

@@ -760,3 +760,9 @@ bound and at most 64 KiB kernel receive queue are independent of payload-buffer
 limits. These are implementation ceilings, not configurable route capacity or
 permission to capture traffic. Unknown route selectors remain visible to
 conflict checks but cannot establish exact ownership metadata.
+
+Initial IPv4 capture admission supports only the three ordinary unconditional
+local/main/default policy rules. Its read-only classifier admits at most 64
+rules and shares the bounded inventory transport. Custom rules, selectors,
+suppression or extra actions are reported as unsupported without mutation.
+This internal observation does not change CLI behavior or establish readiness.

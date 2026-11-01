@@ -403,5 +403,19 @@ impl Dump {
     }
 }
 
+pub(super) fn query_error(cause: Cause) -> super::QueryError {
+    use super::QueryError as Error;
+    match cause {
+        Cause::InvalidInput => Error::InvalidInput,
+        Cause::ResourceLimit => Error::ResourceLimit,
+        Cause::Cancelled => Error::Cancelled,
+        Cause::Timeout => Error::Timeout,
+        Cause::Io(kind) => Error::Io(kind),
+        Cause::Kernel(code) => Error::Kernel(code),
+        Cause::Protocol => Error::InvalidReply,
+        Cause::Lost => Error::Lost,
+    }
+}
+
 #[cfg(test)]
 mod tests;

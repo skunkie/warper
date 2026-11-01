@@ -307,6 +307,17 @@ result on interruption, loss or capacity exhaustion. Address inspection shares
 the same bounded multipart transport. Local read-only kernel and malformed-input
 tests cover the boundary; a private TUN fixture checks exact capture metadata.
 Evidence belongs under `target/evidence/phase-1/linux-route-inventory/`.
-Privileged execution of that new fixture remains unverified until its CI run.
+The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41340340274)
+passes at `6945401`, including exact private TUN capture-route metadata and
+independently preserved host state. Artifacts are retained under
+`target/evidence/phase-1/privileged-control-ci/run-41340340274/`.
 Policy-rule inspection, journaled publication/retirement and recovery remain
 open; an inventory is not ownership authority or a consistent monitored snapshot.
+
+The initial IPv4 policy-rule classifier now distinguishes exactly the three
+unconditional local/main/default rules from custom or incomplete layouts.
+Complete bounded native read-only dumps and synthetic selector/duplicate/limit
+tests cover inspection; the private TUN fixture checks its default layout.
+Evidence belongs under `target/evidence/phase-1/linux-rule-inventory/`; its new
+privileged fixture is unverified until fresh CI. It neither changes rules nor
+closes capture publication, monitored consistency, retirement or recovery.

@@ -2179,3 +2179,26 @@ must subscribe before inspection, validate rules and conflicts, journal intent,
 apply exclusive changes, await ACKs, compare fresh exact metadata and commit
 ownership before reporting capture readiness. Retirement must also honor
 quiescence and retained flows.
+
+### Initial IPv4 policy-rule admission observation
+
+The initial capture driver supports only the ordinary three unconditional IPv4
+lookup rules: priority 0/table 255, priority 32766/table 254, and priority
+32767/table 253. A complete bounded rule dump reports whether exactly this
+layout was observed. Additional/duplicate rules, selectors, suppression, flags
+or actions make the layout unsupported; no rule is changed or ignored to make
+a host fit. Missing priority on the local rule represents its kernel default
+of zero. A matching Table attribute must agree with a nonzero header table.
+Protocol is origin metadata only. SuppressPrefixLen equal to u32::MAX means
+no prefix suppression; any other value is unsupported. Duplicate comparison
+attributes and malformed family/length/table metadata reject inspection.
+
+Inspection shares the retained-worker multipart transport, 30-second maximum
+caller deadline, cancellation/owner loss, 32 KiB datagram, 64 KiB kernel queue
+and 64-datagram bounds. At most 64 rules plus terminal Done are admitted, with
+constant retained counters/bitset and one bounded parsed message. There are no
+background tasks, retries or host mutations. Debug contains only counts and
+layout classification. Concurrent changes invalidate observations; subscribe
+before inspection and freshly recheck around journaled capture publication.
+This classifier is not snapshot consistency, authorization to mutate rules,
+capture readiness or support for custom policy routing.

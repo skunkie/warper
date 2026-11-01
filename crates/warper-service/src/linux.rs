@@ -14,6 +14,7 @@ pub mod link_lookup;
 mod netlink;
 pub mod route_inventory;
 pub mod route_lookup;
+pub mod rule_inventory;
 mod transaction;
 pub mod tun;
 
