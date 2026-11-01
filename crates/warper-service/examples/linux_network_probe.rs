@@ -762,7 +762,7 @@ mod linux {
                     },
                     completion=relays.next(),if relays.retained()>0=>{
                         let completion=completion?.ok_or("relay completion owner stopped")?;
-                        if completion.outcome.is_err() || completion.transferred.sent!=PAYLOAD as u64 || completion.transferred.received!=16384+9 {return Err("TUN relay outcome differs".into());}joined+=1;
+                        if completion.outcome.is_err() || completion.transferred.sent!=PAYLOAD as u64 || completion.transferred.received!=16384+9 {return Err(format!("TUN relay outcome differs: {:?}, sent={}, received={}", completion.outcome, completion.transferred.sent, completion.transferred.received).into());}joined+=1;
                     },
                 }
             }
@@ -774,7 +774,13 @@ mod linux {
                     || completion.transferred.sent != PAYLOAD as u64
                     || completion.transferred.received != 16384 + 9
                 {
-                    return Err("final relay failed".into());
+                    return Err(format!(
+                        "final relay failed: {:?}, sent={}, received={}",
+                        completion.outcome,
+                        completion.transferred.sent,
+                        completion.transferred.received
+                    )
+                    .into());
                 }
                 joined += 1;
             }
