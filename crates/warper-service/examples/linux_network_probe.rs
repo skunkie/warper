@@ -661,7 +661,6 @@ mod linux {
             return Err("private fixture IPv4 rule layout differs".into());
         }
         println!("PASS complete bounded IPv4 rules retain the ordinary local/main/default layout");
-        reject_custom_rules().await?;
         let matches = inventory
             .entries()
             .iter()
@@ -851,6 +850,9 @@ mod linux {
         isolated(mount, net)?;
         let (context, runtime_lease) = native_context()?;
         let context = Arc::new(context);
+        // Complete deliberate rule changes before preparing protected paths.
+        // Restoring visible rules does not promise unchanged kernel lookup state.
+        reject_custom_rules().await?;
         physical::exercise(context.clone(), mount, net).await?;
         // Read-only production query in the fixture's private network namespace.
         // This observes a route; it does not authorize the loopback connector.
