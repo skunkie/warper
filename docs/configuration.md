@@ -781,3 +781,9 @@ Pure Phase 1 service preparation rejects more than 4096 actual static prefixes
 with ResourceLimit before entropy, sockets or TUN allocation, even when the
 configured `max_route_entries` is larger. Offline schema validation retains its
 configured ceiling; passing `check-config` does not establish runtime capability.
+
+Internal forced flow cancellation stops new acceptance and aborts driver flows
+while keeping packet/reset handling and the policy alive. Application/queued
+stream references stay charged until final drop. The supervisor must join
+relays and native I/O, release unread streams and drain/discard bounded packets
+before withdrawing capture. This adds no user option or authenticated command.

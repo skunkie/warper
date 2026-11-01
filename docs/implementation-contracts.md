@@ -2264,3 +2264,25 @@ It joins native withdrawal before stopping the still-published runtime mapping.
 This controlled quiet interval is not a general kernel drain guarantee or DNS
 response grace policy. Error-driven forced flow draining, uncertain mutation
 recovery and the production service supervisor remain separate gates.
+
+### Explicit flow cancellation with retained capture mapping
+
+The admission controller also accepts an explicit `cancel_flows` command for
+error/deadline shutdown. It shares the one-command/unread-result reservation,
+retained receipt, wait cancellation and observer-loss semantics of quiescence.
+It first stops new admission, then cancels all driver flows and pending
+handshakes, drops driver-owned packet queues and retains the live interface,
+policy, input/output owners and reset handling. Existing accepted I/O wakes
+with Interrupted. No application payload is replayed or handed to another
+backend. Repeating the command does not restore admission or double-count
+canceled flows.
+
+Completion reports zero active driver flows but may report retained queued or
+application stream handles. The supervisor must cancel/join relays and release
+unread accepted streams; those references remain charged until their last drop.
+Already handed-off packets and in-flight native I/O remain supervisor-owned.
+`Egress::discard_pending` discards at most one configured queue capacity without
+closing the receiver or stopping the runtime. It is a bounded cleanup tool, not
+a kernel delivery/drain acknowledgment or DNS response-grace barrier. Only after
+flow references and packet/grace work retire may the supervisor withdraw native
+capture and stop the handler. No CLI state or authenticated command is added.

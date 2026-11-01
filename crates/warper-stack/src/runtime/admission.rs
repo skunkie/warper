@@ -35,6 +35,14 @@ impl AdmissionControl {
         )
     }
     pub fn quiesce(&self) -> Result<Quiescence, Error> {
+        self.submit(false)
+    }
+    /// Stop admission and cancel driver flows while retaining packet/reset
+    /// handling. Queued/application stream references still require last drop.
+    pub fn cancel_flows(&self) -> Result<Quiescence, Error> {
+        self.submit(true)
+    }
+    fn submit(&self, cancel_flows: bool) -> Result<Quiescence, Error> {
         let reservation = Arc::new(
             self.slots
                 .clone()
@@ -47,6 +55,7 @@ impl AdmissionControl {
         })?;
         let (reply, receiver) = oneshot::channel();
         permit.send(Command {
+            cancel_flows,
             reply,
             reservation: reservation.clone(),
         });
@@ -85,6 +94,7 @@ impl fmt::Debug for Quiescence {
 }
 
 pub(super) struct Command {
+    pub(super) cancel_flows: bool,
     reply: oneshot::Sender<Completion>,
     reservation: Arc<OwnedSemaphorePermit>,
 }

@@ -103,3 +103,16 @@ handle releases its flow. Controlled lifecycle tests verify these properties.
 This is neither scheduled-task readiness nor permission to remove kernel state;
 native route owners and the supervising service must still enforce publication,
 quiescence, drain, response grace and retirement order.
+
+## Explicit flow cancellation with the mapping retained
+
+The admission controller now exposes explicit forced flow cancellation for
+shutdown deadlines/errors. It quiesces, cancels driver flows, clears bounded
+driver/input packets and leaves the policy/reset handler alive. Idle accepted
+I/O wakes with Interrupted; queued/application handles retain their reservations
+until final drop. Cancellation is counted once, and an unread or detached
+receipt never retracts the command. Bounded output discard leaves its receiver
+open for subsequent handling. Controlled IPv4/IPv6 peers verify idle-reader
+wakeup, retained counts, resets and continued mapping publication; buffered
+unread acceptance and observer loss have separate assertions. These are portable
+adapter tests, not a full native service shutdown or packet-grace proof.

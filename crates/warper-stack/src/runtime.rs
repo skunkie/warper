@@ -124,9 +124,21 @@ impl Egress {
             packet
         }
     }
+    /// Discard at most one queue capacity without closing packet ownership.
+    /// The supervisor separately joins in-flight I/O and handles later resets.
+    pub fn discard_pending(&mut self) -> usize {
+        let mut discarded = 0;
+        for _ in 0..self.receiver.max_capacity() {
+            if self.receiver.try_recv().is_err() {
+                break;
+            }
+            discarded += 1;
+        }
+        discarded
+    }
     fn discard(&mut self) {
         self.receiver.close();
-        while self.receiver.try_recv().is_ok() {}
+        self.discard_pending();
     }
 }
 
@@ -316,7 +328,20 @@ impl Runtime {
         }
     }
     fn apply_admission(&mut self, command: admission::Command) -> Result<(), Error> {
-        self.host.quiesce().map_err(Error::Host)?;
+        if command.cancel_flows {
+            self.host.cancel_flows().map_err(Error::Host)?;
+            if self.pending.take().is_some() {
+                self.report.discarded_ingress = self.report.discarded_ingress.saturating_add(1);
+            }
+            for _ in 0..self.input.max_capacity() {
+                if self.input.try_recv().is_err() {
+                    break;
+                }
+                self.report.discarded_ingress = self.report.discarded_ingress.saturating_add(1);
+            }
+        } else {
+            self.host.quiesce().map_err(Error::Host)?;
+        }
         self.quiescent.store(true, Ordering::Release);
         command.complete(AdmissionSnapshot {
             active_flows: self.host.active_flows(),

@@ -122,6 +122,7 @@ pub struct Statistics {
     pub timed_out: u64,
     pub reset: u64,
     pub application_closed: u64,
+    pub cancelled: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -503,6 +504,7 @@ impl HostAdapter {
                     flow.lifetime
                         .termination
                         .store(Termination::Cancelled as u8, Ordering::Release);
+                    self.statistics.cancelled = self.statistics.cancelled.saturating_add(1);
                 }
                 self.sockets.get_mut::<tcp::Socket>(slot.socket).abort();
             }
@@ -510,14 +512,25 @@ impl HostAdapter {
         Ok(())
     }
 
+    /// Force flow termination while retaining a quiescent policy and reset
+    /// handling. Accepted handles retain their reservations until final drop.
+    pub fn cancel_flows(&mut self) -> Result<(), AdmissionError> {
+        self.quiesce()?;
+        self.cancel_owned_flows();
+        Ok(())
+    }
     pub fn cancel(&mut self) {
         self.cancelled = true;
         self.accepted = None;
+        self.cancel_owned_flows();
+    }
+    fn cancel_owned_flows(&mut self) {
         for slot in &mut self.slots {
             if let Some(flow) = slot.flow.take() {
                 flow.lifetime
                     .termination
                     .store(Termination::Cancelled as u8, Ordering::Release);
+                self.statistics.cancelled = self.statistics.cancelled.saturating_add(1);
             }
             self.sockets.get_mut::<tcp::Socket>(slot.socket).abort();
         }

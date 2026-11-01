@@ -344,8 +344,20 @@ The actual kernel TCP fixture now uses journaled capture publication, retains
 the runtime before kernel routing, supervises capture changes, and quiesces with
 a live accepted stream. It asserts that native withdrawal rejects that flow,
 then preserves duplex bytes/FIN, drains the controlled output and joins native
-withdrawal before runtime shutdown. Local compilation/checks establish harness
-readiness only; this integrated traffic gate remains unverified until fresh
-isolated CI. Evidence belongs under
+withdrawal before runtime shutdown. The [owner-dispatched traffic gate](https://github.com/skunkie/warper/actions/runs/41344540549)
+passes at `a339d36`, including exact real TCP/FIN and independently preserved
+host state. Artifacts are retained under
+`target/evidence/phase-1/privileged-control-ci/run-41344540549/`. Evidence belongs under
 `target/evidence/phase-1/journaled-capture-traffic/`. Forced error-driven flow
 draining, crash reconciliation and the real daemon remain open.
+
+The host runtime now supports explicit forced flow cancellation while retaining
+the quiescent policy/reset handler. Idle readers wake with Interrupted, driver
+flows and bounded input buffers retire, and queued/application references remain
+charged until final drop. Bounded output discard leaves its owner open. Local
+IPv4/IPv6 controlled-peer tests include observer loss, unread buffered streams,
+repeated cancellation and continued reset handling. Evidence belongs under
+`target/evidence/phase-1/forced-flow-cancellation/`. Service integration must
+still join relays/native I/O, release queued handles, drain packets/grace and
+withdraw capture before stopping the mapping. Full daemon/recovery gates remain
+open.

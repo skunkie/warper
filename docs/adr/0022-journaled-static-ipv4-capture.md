@@ -94,5 +94,8 @@ The subsequent application fixture uses the same production owner for its real
 TCP /32 capture route. It tests quiescence/retirement fencing with a retained
 accepted stream, completes duplex data/FIN, supervises capture changes and joins
 withdrawal while the runtime mapping remains published. Its controlled output
-quiet interval is not a general service drain or DNS grace guarantee. Fresh
-native execution remains required before accepting that traffic integration.
+quiet interval is not a general service drain or DNS grace guarantee. The
+[owner-dispatched traffic execution](https://github.com/skunkie/warper/actions/runs/41344540549)
+passes at `a339d36`, with exact TCP/FIN, withdrawal before runtime shutdown and
+independently preserved host state. Full failure draining/recovery and daemon
+acceptance remain open.
