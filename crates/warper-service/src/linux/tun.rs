@@ -13,6 +13,7 @@ use warper_control::runtime::journal::{Error as StorageError, NetworkJournal};
 use warper_core::transport::Request;
 
 mod address;
+mod capture;
 mod link;
 mod node;
 mod packet;
@@ -36,6 +37,14 @@ pub enum Error {
     Address(AddressFailure),
     Activation(NativeFailure),
     UnsupportedMtu,
+    InvalidCapturePolicy,
+    UnsupportedRules,
+    RouteInspection(super::QueryError),
+    Capture(NativeFailure),
+    CaptureMonitor(super::change_monitor::Error),
+    CaptureChanged(super::change_monitor::Invalidation),
+    CaptureActive,
+    CaptureFlowsActive,
     DeviceUnavailable,
     DeviceInspection(io::ErrorKind),
     Conflict,
@@ -53,6 +62,22 @@ impl fmt::Display for Error {
             Self::Context(_) => "SystemConfiguration: TUN owner context failed",
             Self::Storage(_) => "SystemConfiguration: TUN journal operation failed",
             Self::InvalidAddress => "InvalidConfig: invalid initial TUN IPv4 address",
+            Self::InvalidCapturePolicy => {
+                "UnsupportedCapability: capture requires 1..4096 canonical IPv4 prefixes"
+            }
+            Self::UnsupportedRules => {
+                "UnsupportedIntegration: capture requires ordinary IPv4 policy rules"
+            }
+            Self::RouteInspection(_) => "SystemConfiguration: capture route inspection failed",
+            Self::Capture(_) => "SystemConfiguration: capture route transaction failed",
+            Self::CaptureMonitor(_) => "SystemConfiguration: capture subscription failed",
+            Self::CaptureChanged(_) => {
+                "SystemConfiguration: capture state changed or became uncertain"
+            }
+            Self::CaptureActive => "Conflict: withdraw capture routes before closing the TUN",
+            Self::CaptureFlowsActive => {
+                "Conflict: quiesce and drain flows before withdrawing capture"
+            }
             Self::Address(_) => "SystemConfiguration: native TUN address transaction failed",
             Self::Activation(_) => "SystemConfiguration: native TUN activation failed",
             Self::InvalidInput => "InvalidConfig: invalid TUN interface name",
@@ -109,6 +134,8 @@ pub struct Owner {
     record: Record,
     failed: bool,
     port_issued: bool,
+    capture_publication: Option<warper_stack::runtime::Publication>,
+    capture_monitor: Option<super::change_monitor::Monitor>,
     // Device and journal resources retire before the last native context owner.
     context: Arc<Context>,
 }
@@ -143,6 +170,7 @@ impl Owner {
             requested: name.map(str::to_owned),
             identity: None,
             address: None,
+            capture: None,
         };
         let revision = journal
             .replace(context.runtime(), revision, &record.encode())
@@ -156,6 +184,8 @@ impl Owner {
             record,
             failed: false,
             port_issued: false,
+            capture_publication: None,
+            capture_monitor: None,
             context,
         })
     }
@@ -374,7 +404,168 @@ impl Owner {
         self.port_issued = true;
         Ok(PacketPort::new(device, self.context.clone()))
     }
+    /// Publish an exclusive static batch after the caller starts and retains
+    /// the runtime and packet owners. Run in a retained native worker.
+    pub fn publish_capture(
+        &mut self,
+        publication: warper_stack::runtime::Publication,
+        request: Request,
+    ) -> Result<(), Error> {
+        if !matches!(self.record.stage, Stage::Enabled | Stage::Captured) || !self.port_issued {
+            return Err(Error::InvalidState);
+        }
+        let wait = transaction::Wait::new(request.clone()).map_err(capture_cause)?;
+        self.ready()?;
+        self.verify_device()?;
+        tokio::runtime::Handle::try_current().map_err(|_| Error::NoRuntime)?;
+        let owner = self.record.owner.encode();
+        let metric = 0x80000000 | u32::from_be_bytes([owner[56], owner[57], owner[58], owner[59]]);
+        let plan = capture::Plan::new(&publication, metric)?;
+        let index = self.index().ok_or(Error::InvalidState)?;
+        if self.record.stage == Stage::Captured {
+            if self.record.capture.as_ref() != Some(&plan)
+                || self
+                    .capture_publication
+                    .as_ref()
+                    .is_none_or(|current| !current.same_runtime(&publication))
+            {
+                return Err(Error::Conflict);
+            }
+            self.capture_changes()?
+                .check_pending()
+                .map_err(Error::CaptureChanged)?;
+            plan.inspect(index, request, true)?;
+            return self
+                .capture_changes()?
+                .check_pending()
+                .map_err(Error::CaptureChanged);
+        }
+        let mut before =
+            super::change_monitor::Monitor::subscribe().map_err(Error::CaptureMonitor)?;
+        plan.inspect(index, request.clone(), false)?;
+        before.check_pending().map_err(Error::CaptureChanged)?;
+        self.verify_capture_device(&wait)?;
+        let mut intent = self.record.clone();
+        intent.stage = Stage::Routing;
+        intent.capture = Some(plan.clone());
+        // Retain runtime identity before saving: uncertain persistence must not
+        // permit closing the descriptor while accepted streams still exist.
+        self.capture_publication = Some(publication);
+        self.save(intent)?;
+        let result = (|| {
+            for prefix in &plan.prefixes {
+                wait.check().map_err(capture_cause)?;
+                self.context.revalidate().map_err(Error::Context)?;
+                self.verify_device()?;
+                let publication = self
+                    .capture_publication
+                    .as_ref()
+                    .ok_or(Error::InvalidState)?;
+                if !publication.is_published() || publication.is_quiescent() {
+                    return Err(Error::InvalidState);
+                }
+                capture::add(*prefix, plan.metric, index, &wait)?;
+            }
+            // Own additions invalidate the initial subscription. Subscribe
+            // again before fresh full verification rather than clearing events.
+            drop(before);
+            self.capture_monitor =
+                Some(super::change_monitor::Monitor::subscribe().map_err(Error::CaptureMonitor)?);
+            plan.inspect(index, request, true)?;
+            self.verify_capture_device(&wait)?;
+            self.capture_changes()?
+                .check_pending()
+                .map_err(Error::CaptureChanged)?;
+            let publication = self
+                .capture_publication
+                .as_ref()
+                .ok_or(Error::InvalidState)?;
+            if !publication.is_published() || publication.is_quiescent() {
+                return Err(Error::InvalidState);
+            }
+            let mut committed = self.record.clone();
+            committed.stage = Stage::Captured;
+            self.save(committed)?;
+            self.capture_changes()?
+                .check_pending()
+                .map_err(Error::CaptureChanged)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    /// Retain and supervise this monitor. A quiet check is momentary metadata,
+    /// not permission to report service readiness or ignore later changes.
+    pub fn capture_changes(&mut self) -> Result<&mut super::change_monitor::Monitor, Error> {
+        self.capture_monitor.as_mut().ok_or(Error::InvalidState)
+    }
+    /// Quiescence and zero flow owners are necessary; the supervisor must also
+    /// drain packet/grace work. Cleanup never adopts a changed route key.
+    pub fn withdraw_capture(&mut self, request: Request) -> Result<(), Error> {
+        let wait = transaction::Wait::new(request.clone()).map_err(capture_cause)?;
+        if self.record.stage == Stage::Enabled
+            && self.record.capture.is_none()
+            && self.capture_publication.is_none()
+        {
+            self.check_storage()?;
+            return self.verify_device();
+        }
+        let publication = self
+            .capture_publication
+            .as_ref()
+            .ok_or(Error::InvalidState)?;
+        if !publication.is_quiescent() || publication.retained_flows() != 0 {
+            return Err(Error::CaptureFlowsActive);
+        }
+        self.check_storage()?;
+        self.verify_device()?;
+        let plan = self.record.capture.clone().ok_or(Error::RecoveryRequired)?;
+        let index = self.index().ok_or(Error::InvalidState)?;
+        let mut intent = self.record.clone();
+        intent.stage = Stage::RoutesRetiring;
+        self.save(intent)?;
+        let result = (|| {
+            capture::remove(&plan, index, request, &wait, || {
+                self.context.revalidate().map_err(Error::Context)?;
+                self.verify_device()
+            })?;
+            self.verify_device()?;
+            let mut retired = self.record.clone();
+            retired.stage = Stage::Enabled;
+            retired.capture = None;
+            self.save(retired)?;
+            self.capture_publication = None;
+            self.capture_monitor = None;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn verify_capture_device(&self, wait: &transaction::Wait) -> Result<(), Error> {
+        self.context.revalidate().map_err(Error::Context)?;
+        self.verify_device()?;
+        let index = self.index().ok_or(Error::InvalidState)?;
+        if !link::is_up(index, wait).map_err(Error::Capture)? {
+            return Err(Error::Conflict);
+        }
+        let observed =
+            address::inspect(index, self.record.address.ok_or(Error::InvalidState)?, wait)
+                .map_err(Error::Capture)?;
+        if observed.matches != 1 || observed.owned_exact != 1 {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
     pub fn close(&mut self) -> Result<(), Failure> {
+        if self.record.capture.is_some() || self.capture_publication.is_some() {
+            return Err(Failure {
+                primary: Error::CaptureActive,
+                cleanup: [None; 2],
+            });
+        }
         if self
             .device
             .as_ref()
@@ -518,6 +709,13 @@ fn ensure_index_absent(index: u32) -> Result<(), Error> {
         Ok(_) => Err(Error::CleanupUncertain),
         Err(error) => Err(native_error(error.into())),
     }
+}
+
+fn capture_cause(cause: NativeCause) -> Error {
+    Error::Capture(NativeFailure {
+        delivery: NativeDelivery::NotSent,
+        cause,
+    })
 }
 
 fn native_error(error: io::Error) -> Error {

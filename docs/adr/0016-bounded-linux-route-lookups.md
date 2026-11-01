@@ -114,3 +114,11 @@ that classification. It changes no host state and retains only counters and
 a bitset for at most 64 rules. The same caller deadline, cancellation and
 multipart transport bounds apply. Rule inspection alone is not capture
 readiness or monitored snapshot consistency.
+
+The [isolated rule-layout gate](https://github.com/skunkie/warper/actions/runs/41343062611)
+passes at `a030484`: ordinary-rule classification, rejection/preservation of a
+controlled extra rule, explicit fixture restoration and real TUN/SOCKS TCP all
+pass with independently preserved host state. Deliberate fixture rule changes
+finish before protected path preparation; restored visible rules alone are not
+a promise of identical kernel lookup observations. Capture mutation/recovery
+remain separate gates.

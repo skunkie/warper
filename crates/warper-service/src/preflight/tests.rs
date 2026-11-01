@@ -321,3 +321,29 @@ async fn instantiated_backend_failure_is_reported_once_and_all_allocated_owners_
     channels.shutdown.send(()).unwrap();
     assert_eq!(runtime.run().await.unwrap().admitted_packets, 0);
 }
+
+#[test]
+fn capture_prefix_capacity_is_checked_before_runtime_or_host_preparation() {
+    let mut config = config();
+    let backend = config.protocols[0].registry_id;
+    config.protocols[0].routes = (0..MAX_CAPTURE_ROUTES)
+        .map(|index| warper_core::routing::Entry {
+            network: std::net::Ipv4Addr::from(0xc0000200 + index as u32).into(),
+            prefix_len: 32,
+            backend,
+        })
+        .collect();
+    let plan = Plan::prepare(&config, Platform::Linux).unwrap();
+    assert_eq!(plan.policy().entries().len(), MAX_CAPTURE_ROUTES);
+    config.protocols[0]
+        .routes
+        .push(warper_core::routing::Entry {
+            network: "203.0.113.1".parse().unwrap(),
+            prefix_len: 32,
+            backend,
+        });
+    assert!(matches!(
+        Plan::prepare(&config, Platform::Linux),
+        Err(Error::InvalidLimits)
+    ));
+}

@@ -2202,3 +2202,46 @@ layout classification. Concurrent changes invalidate observations; subscribe
 before inspection and freshly recheck around journaled capture publication.
 This classifier is not snapshot consistency, authorization to mutate rules,
 capture readiness or support for custom policy routing.
+
+### Initial journaled static IPv4 capture batch
+
+After creating the packet port, the retained TUN owner can publish the complete
+immutable IPv4 policy of one allocated host runtime (at most 4096 prefixes).
+The caller must start and retain the real runtime/packet owners first; the
+publication observation alone proves allocation, not task scheduling. No
+backend dispatch or connected readiness is inferred from capture publication.
+The owner retains the same runtime identity through failures and retirement.
+
+Admission requires the ordinary IPv4 rules and no overlapping local-table
+route or foreign main/default route at equal or greater specificity. Unknown
+rules fail as unsupported; conflicts preserve existing state before mutation.
+A bounded change subscription precedes inspection. Journal the full batch as
+Routing before adding any route; add each main-table static unicast link-scope
+route exclusively with destination, original TUN index and an instance-derived
+high-bit metric. Each mutation requires its correlated ACK, without replay.
+After all additions, subscribe afresh, recheck the complete batch/rules/link/
+address and a quiet queue, commit Captured, then check the queue again. Expected
+own-change notifications never stand in for fresh post-mutation verification.
+The retained monitor must be supervised; any later change or uncertainty
+invalidates capture readiness. No race-free kernel transaction is claimed.
+
+Native delivery categories describe the last request, not the entire batch.
+Partial or uncertain mutation leaves sticky failure, the full durable intent,
+the original device and runtime observation retained. No automatic retry,
+direct fallback or deletion follows. Withdrawal requires runtime quiescence
+and zero retained flows, with caller-owned packet/grace draining. Journal
+RoutesRetiring, inspect each exact recorded route key before deletion, preserve
+changed/foreign keys, await each deletion ACK, and verify absence before clearing
+the batch. Missing keys allow idempotent cleanup; different metadata at the same
+prefix/metric is a conflict. Explicit TUN close refuses an attached capture
+batch, even after an error, until withdrawal succeeds. Drop/crash still closes
+the original nonpersistent descriptor; restart reconciliation remains required.
+
+WTUN version four retains the 160-byte header and adds up to 4096 eight-byte
+canonical IPv4 prefix entries. Header bytes 140..142 hold count, 144..148 the
+metric, with remaining reserved bytes zero. Entries contain address, prefix
+length and three zero bytes in policy selection order. The maximum payload is
+32928 bytes. Legacy versions remain conservatively readable; only Retired
+permits fresh allocation. Routing/Captured/RoutesRetiring require a nonempty
+batch, address and device identity. Retiring/Retired may retain batch history;
+recorded data alone never authorizes touching a named/reused device or route.

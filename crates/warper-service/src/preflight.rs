@@ -25,6 +25,8 @@ use warper_stack::{
     runtime::{Channels, Runtime},
 };
 
+pub const MAX_CAPTURE_ROUTES: usize = 4096;
+
 const PACKET_QUEUE: usize = 64;
 const MAX_BACKENDS: usize = 64;
 const SETUP_BYTES: usize = 513 + 22 + 257;
@@ -124,6 +126,16 @@ impl Plan {
             return Err(Error::UnsupportedDns);
         }
         if config.protocols.is_empty() || config.protocols.len() > MAX_BACKENDS {
+            return Err(Error::InvalidLimits);
+        }
+        let routes = config
+            .protocols
+            .iter()
+            .try_fold(0usize, |count, backend| {
+                count.checked_add(backend.routes.len())
+            })
+            .ok_or(Error::InvalidLimits)?;
+        if routes > MAX_CAPTURE_ROUTES {
             return Err(Error::InvalidLimits);
         }
         if config.limits.max_tcp_flows == 0 {

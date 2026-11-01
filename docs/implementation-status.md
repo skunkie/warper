@@ -318,6 +318,21 @@ The initial IPv4 policy-rule classifier now distinguishes exactly the three
 unconditional local/main/default rules from custom or incomplete layouts.
 Complete bounded native read-only dumps and synthetic selector/duplicate/limit
 tests cover inspection; the private TUN fixture checks its default layout.
-Evidence belongs under `target/evidence/phase-1/linux-rule-inventory/`; its new
-privileged fixture is unverified until fresh CI. It neither changes rules nor
+The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41343062611)
+passes at `a030484`, including custom-rule preservation, restored layout and
+actual TUN/SOCKS TCP with independently preserved host state. Evidence is under
+`target/evidence/phase-1/linux-rule-inventory/` and
+`target/evidence/phase-1/privileged-control-ci/run-41343062611/`. It neither changes rules nor
 closes capture publication, monitored consistency, retirement or recovery.
+
+ADR 0022 proposes the initial journaled static IPv4 capture batch boundary.
+The owner now records full intent before exclusive kernel adds, verifies ACKs
+and fresh monitored metadata, retains runtime ownership across failures, and
+fences exact route withdrawal with quiescence/zero flow references. Changed
+route keys are preserved. WTUN v4 keeps conservative legacy decoding with
+bounded canonical batch records. Local parser/conflict tests pass; the new
+private native lifecycle fixture remains unverified until its CI execution.
+Evidence belongs under `target/evidence/phase-1/journaled-capture/`. The actual
+application-flow fixture still publishes its route with `ip`; production-route
+traffic integration, partial/uncertain failure injection, crash recovery,
+complete native budget admission and full daemon lifecycle remain open.

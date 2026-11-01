@@ -766,3 +766,18 @@ local/main/default policy rules. Its read-only classifier admits at most 64
 rules and shares the bounded inventory transport. Custom rules, selectors,
 suppression or extra actions are reported as unsupported without mutation.
 This internal observation does not change CLI behavior or establish readiness.
+
+The initial journaled capture owner admits 1..4096 canonical static IPv4
+prefixes for one retained runtime, after packet-port creation. WTUN v4 extends
+the 160-byte header with at most 4096 eight-byte prefix records (32928 bytes
+maximum). Admission rejects local-route overlaps and equal/more specific
+foreign routes before mutation. Capture changes retain a bounded monitor;
+service supervision and aggregate native budget admission remain required.
+Quiescence and zero retained flows fence withdrawal, with packet/grace draining
+owned by the supervisor. Explicit TUN close refuses an attached capture batch.
+These internal operations do not expose new CLI behavior or connected readiness.
+
+Pure Phase 1 service preparation rejects more than 4096 actual static prefixes
+with ResourceLimit before entropy, sockets or TUN allocation, even when the
+configured `max_route_entries` is larger. Offline schema validation retains its
+configured ceiling; passing `check-config` does not establish runtime capability.

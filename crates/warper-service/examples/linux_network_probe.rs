@@ -555,6 +555,9 @@ mod linux {
         Ok(())
     }
     fn plan() -> Result<Plan, Failure> {
+        plan_for("198.18.0.2/32")
+    }
+    fn plan_for(prefixes: &str) -> Result<Plan, Failure> {
         let endpoint: SocketAddr = "127.0.0.1:1080".parse()?;
         let account = Account {
             uid: 1000,
@@ -563,7 +566,7 @@ mod linux {
         };
         let paths = Paths::new(&account, std::path::Path::new("/"), Some("/fixture.yaml"))?;
         let source = format!(
-            "tunnel: {{ip: 198.18.0.1, name: {NAME}}}\nprotocols: [{{socks5: {{host: '{endpoint}', ips: [198.18.0.2/32]}}}}]\n"
+            "tunnel: {{ip: 198.18.0.1, name: {NAME}}}\nprotocols: [{{socks5: {{host: '{endpoint}', ips: [{prefixes}]}}}}]\n"
         );
         let config = Config::parse(source.as_bytes(), &paths, Platform::Linux)?;
         Ok(Plan::prepare(&config, Platform::Linux)?)
@@ -599,6 +602,262 @@ mod linux {
         } else {
             Err(Box::new(CombinedFailure { primary, cleanup }))
         }
+    }
+    async fn capture_change(
+        owner: &mut Option<warper_service::linux::tun::Owner>,
+        work: impl FnOnce(
+            &mut warper_service::linux::tun::Owner,
+            Request,
+        ) -> Result<(), warper_service::linux::tun::Error>
+        + Send
+        + 'static,
+    ) -> Result<(), Failure> {
+        let jobs = warper_service::native::Workers::new(1)?;
+        let reservation = jobs.try_reserve()?;
+        let mut native = owner.take().ok_or("capture fixture owner missing")?;
+        let (join_owner, cancellation) = tokio::sync::watch::channel(false);
+        let mut task = reservation.start(move || {
+            let result = work(
+                &mut native,
+                Request {
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(3),
+                    cancellation,
+                },
+            );
+            (native, result)
+        });
+        let (native, result) = join_native(&mut task, &join_owner).await?;
+        *owner = Some(native);
+        Ok(result?)
+    }
+    async fn journaled_capture(
+        context: Arc<warper_service::linux::context::Context>,
+        foreign_name: &str,
+    ) -> Result<(), Failure> {
+        use warper_service::linux::tun::Error as TunError;
+        let (native, port) = owned_packet_port(context.clone()).await?;
+        let mut native = Some(native);
+        let plan = plan_for("198.18.0.2/32, 203.0.113.2/32, 203.0.113.0/24")?;
+        let index = native
+            .as_ref()
+            .and_then(|owner| owner.index())
+            .ok_or("capture fixture index missing")?;
+        let connector = protected_connector(
+            context,
+            plan.endpoints().map(|(_, endpoint)| endpoint).collect(),
+            index,
+            plan.flow_capacity(),
+        )
+        .await?;
+        let Networking {
+            runtime,
+            channels,
+            relays,
+            ..
+        } = plan.instantiate(Seed::generate()?, Arc::new(connector))?;
+        let host = tokio::spawn(runtime.run());
+        let (owner, _) = tokio::sync::watch::channel(false);
+        let mut restore_metric = None;
+        let outcome = async {
+            let publication = channels.publication.clone();
+            capture_change(&mut native, move |native, request| {
+                native.publish_capture(publication, request)
+            })
+            .await?;
+            let publication = channels.publication.clone();
+            capture_change(&mut native, move |native, request| {
+                native.publish_capture(publication, request)?;
+                if !matches!(native.close(), Err(error) if error.primary == TunError::CaptureActive)
+                {
+                    return Err(TunError::InvalidState);
+                }
+                Ok(())
+            })
+            .await?;
+            let blocked = capture_change(&mut native, |native, request| {
+                native.withdraw_capture(request)
+            })
+            .await;
+            if !matches!(
+                blocked
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.downcast_ref::<TunError>()),
+                Some(TunError::CaptureFlowsActive)
+            ) {
+                return Err("capture retirement ignored admission quiescence".into());
+            }
+            let mut receipt = channels.admission.quiesce()?;
+            receipt
+                .wait(Request {
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                    cancellation: owner.subscribe(),
+                })
+                .await?;
+            let jobs = warper_service::native::Workers::new(1)?;
+            let cancellation = owner.subscribe();
+            let mut inspection = jobs.try_reserve()?.start(move || {
+                warper_service::linux::route_inventory::inspect(Request {
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                    cancellation,
+                })
+            });
+            let inventory = join_native(&mut inspection, &owner).await??;
+            let route = inventory
+                .entries()
+                .iter()
+                .find(|entry| {
+                    entry.network == Ipv4Addr::new(198, 18, 0, 2)
+                        && entry.prefix_len == 32
+                        && entry
+                            .interface
+                            .is_some_and(|interface| interface.get() == index)
+                })
+                .ok_or("journaled capture route missing")?;
+            let metric = route
+                .metric
+                .ok_or("journaled capture metric missing")?
+                .to_string();
+            ip(&[
+                "route",
+                "replace",
+                "198.18.0.2/32",
+                "dev",
+                foreign_name,
+                "proto",
+                "static",
+                "metric",
+                &metric,
+            ])?;
+            restore_metric = Some(metric.clone());
+            let before = ip(&["-j", "route", "show", "198.18.0.2/32"])?;
+            let blocked = capture_change(&mut native, |native, request| {
+                native.withdraw_capture(request)
+            })
+            .await;
+            if !matches!(
+                blocked
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.downcast_ref::<TunError>()),
+                Some(TunError::Conflict)
+            ) || before != ip(&["-j", "route", "show", "198.18.0.2/32"])?
+            {
+                return Err("capture retirement changed foreign route metadata".into());
+            }
+            Ok(())
+        }
+        .await;
+        let mut cleanup = Vec::new();
+        if let Some(metric) = restore_metric
+            && let Err(error) = ip(&[
+                "route",
+                "replace",
+                "198.18.0.2/32",
+                "dev",
+                NAME,
+                "proto",
+                "static",
+                "metric",
+                &metric,
+            ])
+        {
+            cleanup.push(error);
+        }
+        // Always retain/join quiescence and native cleanup before withdrawing
+        // the actual runtime mapping; this fixture has no application flows.
+        let quiescence = async {
+            let mut receipt = channels.admission.quiesce()?;
+            receipt
+                .wait(Request {
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+                    cancellation: owner.subscribe(),
+                })
+                .await?;
+            Ok::<_, Failure>(())
+        }
+        .await;
+        if let Err(error) = quiescence {
+            cleanup.push(error);
+        }
+        if native.as_ref().is_some_and(|native| {
+            matches!(
+                native.stage(),
+                warper_service::linux::tun::Stage::Routing
+                    | warper_service::linux::tun::Stage::Captured
+                    | warper_service::linux::tun::Stage::RoutesRetiring
+            )
+        }) && let Err(error) = capture_change(&mut native, |native, request| {
+            native.withdraw_capture(request)
+        })
+        .await
+        {
+            cleanup.push(error);
+        }
+        if native
+            .as_ref()
+            .is_some_and(|native| native.stage() == warper_service::linux::tun::Stage::Enabled)
+            && let Err(error) = capture_change(&mut native, |native, request| {
+                native.withdraw_capture(request)
+            })
+            .await
+        {
+            cleanup.push(error);
+        }
+        let report = relays.shutdown().await;
+        if report.finished != 0 || report.shutdown_error.is_some() {
+            cleanup.push("empty capture fixture relay shutdown differs".into());
+        }
+        if channels.shutdown.send(()).is_err() {
+            cleanup.push("capture runtime shutdown owner lost".into());
+        }
+        match host.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => cleanup.push(Box::new(error) as Failure),
+            Err(error) => cleanup.push(Box::new(error) as Failure),
+        }
+        drop(port);
+        if let Some(mut native) = native {
+            let jobs = warper_service::native::Workers::new(1)?;
+            let mut closing = jobs.try_reserve()?.start(move || native.close());
+            if let Err(error) = join_native(&mut closing, &owner).await? {
+                cleanup.push(Box::new(error) as Failure);
+            }
+        }
+        preserve(outcome, cleanup)?;
+        println!(
+            "PASS journaled capture ACK/readback, repeated publication, quiescence fence, changed-route preservation and joined retirement"
+        );
+        Ok(())
+    }
+    async fn measure_captures(
+        context: Arc<warper_service::linux::context::Context>,
+        foreign: &str,
+    ) -> Result<(), Failure> {
+        let started = tokio::time::Instant::now();
+        let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let mut latencies = Vec::with_capacity(20);
+        for _ in 0..20 {
+            let before = tokio::time::Instant::now();
+            journaled_capture(context.clone(), foreign).await?;
+            latencies.push(before.elapsed().as_nanos());
+        }
+        let elapsed = started.elapsed().as_nanos();
+        let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let cpu = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
+            + i128::from(after.tv_nsec)
+            - i128::from(cpu.tv_nsec);
+        latencies.sort_unstable();
+        let memory = fs::read_to_string("/proc/self/status")?;
+        let peak = memory
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .ok_or("capture workload RSS missing")?;
+        println!(
+            "journaled_capture iterations=20 prefixes=3 concurrency=1 elapsed_ns={elapsed} cpu_ns={cpu} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 kernel_drops=unmeasured {peak}",
+            latencies[9], latencies[18], latencies[19]
+        );
+        Ok(())
     }
     async fn inspect_rules() -> Result<warper_service::linux::rule_inventory::Inventory, Failure> {
         let jobs = warper_service::native::Workers::new(1)?;
@@ -913,6 +1172,7 @@ mod linux {
         let foreign_name = foreign.name()?;
         let result=async {
             journaled_tun_lifecycle(context.clone(),&foreign).await?;
+            measure_captures(context.clone(), &foreign_name).await?;
             let foreign_identity=inspect_link(&foreign_name).await?;
             if foreign_identity.kind!=warper_service::linux::link_lookup::Kind::Tun
                 || foreign_identity.mtu.get()!=1400 {return Err("foreign fixture TUN inspection differs".into());}
