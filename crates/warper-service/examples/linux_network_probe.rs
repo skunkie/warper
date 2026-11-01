@@ -943,6 +943,7 @@ mod linux {
     async fn exchange(
         tun: Arc<warper_service::linux::tun::PacketPort>,
         networking: Networking,
+        native: &mut Option<warper_service::linux::tun::Owner>,
     ) -> Result<(), Failure> {
         let Networking {
             runtime,
@@ -969,6 +970,7 @@ mod linux {
         };
         tokio::pin!(rejected);
         let mut application_done = false;
+        let mut rejection_done = false;
         let started = tokio::time::Instant::now();
         let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
         let (packet_owner, _) = tokio::sync::watch::channel(false);
@@ -981,12 +983,21 @@ mod linux {
         let mut input = 0u64;
         let mut output = 0u64;
         let mut joined = 0;
+        // Retain/join native publication outside the cancellable packet loop.
+        // The real runtime owner already exists before any capture route.
+        let publication = channels.publication.clone();
+        let capture = capture_change(native, move |native, request| {
+            native.publish_capture(publication, request)
+        })
+        .await;
         let outcome = async {
-            // The internal policy/handler and retained runtime owner exist
-            // before the fixture publishes its acknowledged kernel route.
-            ip(&["route", "add", "198.18.0.2/32", "dev", NAME])?;
+            capture?;
             inspect_capture_route().await?;
             loop {
+                let changes = native
+                    .as_mut()
+                    .ok_or("packet fixture capture owner missing")?
+                    .capture_changes()?;
                 tokio::select! {
                     result=&mut app,if !application_done=>{
                         result?;
@@ -994,10 +1005,26 @@ mod linux {
                         receipt.wait(request()).await?;
                         application_done=true;
                     },
-                    result=&mut rejected,if application_done=>{
+                    result=&mut rejected,if application_done && !rejection_done=>{
                         result?;
+                        rejection_done=true;
                         println!("PASS live quiescent mapping resets new kernel TCP without accepting another flow");
-                        break;
+                    },
+                    reason=changes.wait(request())=>return Err(format!("capture invalidated during controlled traffic: {reason:?}").into()),
+                    ()=tokio::time::sleep(Duration::from_millis(1)),if rejection_done && joined==1=>{
+                        if channels.publication.retained_flows()!=0 {continue;}
+                        // With no flow owners and a completed kernel reset, drain
+                        // the bounded output before native route withdrawal.
+                        match tokio::time::timeout(Duration::from_millis(2),channels.packets.recv()).await {
+                            Ok(Some(packet))=>{
+                                if send_waits.len()==1024 {return Err("fixture packet measurement limit".into());}
+                                let before=tokio::time::Instant::now();
+                                tun.send(&packet,request()).await?;
+                                send_waits.push(before.elapsed().as_nanos());output+=1;
+                            },
+                            Ok(None)=>return Err("host stopped before capture retirement".into()),
+                            Err(_)=>break,
+                        }
                     },
                     packet=tun.recv(&mut buffer,request())=>{
                         let length=packet?;
@@ -1014,6 +1041,13 @@ mod linux {
                     flow=channels.tcp.recv()=>{
                         let flow=flow.ok_or("host acceptance owner stopped")?;
                         if flow.metadata.source.ip()!="198.18.0.1".parse::<std::net::IpAddr>()? || flow.metadata.destination!=DESTINATION.parse::<SocketAddr>()? {return Err("kernel application tuple differs".into());}
+                        let mut receipt=channels.admission.quiesce()?;
+                        receipt.wait(request()).await?;
+                        if channels.publication.retained_flows()==0 {return Err("accepted flow lost its lifetime reservation".into());}
+                        let blocked=capture_change(native,|native,request|native.withdraw_capture(request)).await;
+                        if !matches!(blocked.as_ref().err().and_then(|error|error.downcast_ref::<warper_service::linux::tun::Error>()),Some(warper_service::linux::tun::Error::CaptureFlowsActive)) {
+                            return Err("capture withdrawal ignored a quiescent accepted flow".into());
+                        }
                         relays.admit(flow.into_core())?;
                     },
                     completion=relays.next(),if relays.retained()>0=>{
@@ -1022,32 +1056,28 @@ mod linux {
                     },
                 }
             }
-            if joined == 0 {
-                let completion = tokio::time::timeout(Duration::from_secs(1), relays.next())
-                    .await??
-                    .ok_or("missing final relay completion")?;
-                if completion.outcome.is_err()
-                    || completion.transferred.sent != PAYLOAD as u64
-                    || completion.transferred.received != 16384 + 9
-                {
-                    return Err(format!(
-                        "final relay failed: {:?}, sent={}, received={}",
-                        completion.outcome,
-                        completion.transferred.sent,
-                        completion.transferred.received
-                    )
-                    .into());
-                }
-                joined += 1;
-            }
             Ok::<_, Failure>(())
         };
         let result = tokio::time::timeout(Duration::from_secs(8), outcome)
             .await
             .map_err(|error| Box::new(error) as Failure)
             .and_then(|result| result);
-        let relay_report = relays.shutdown().await;
         let mut cleanup = Vec::new();
+        if result.is_ok() {
+            // Native cleanup is joined while the quiescent policy still exists.
+            if let Err(error) =
+                capture_change(native, |native, request| native.withdraw_capture(request)).await
+            {
+                cleanup.push(error);
+            } else if !channels.publication.is_published() {
+                cleanup.push("capture retired after the runtime mapping disappeared".into());
+            } else {
+                println!(
+                    "PASS journaled capture drains accepted flows and retires before runtime shutdown"
+                );
+            }
+        }
+        let relay_report = relays.shutdown().await;
         if channels.shutdown.send(()).is_err() {
             cleanup.push("host shutdown owner lost".into());
         }
@@ -1187,13 +1217,15 @@ mod linux {
                 || inspect_link(&foreign_name).await?!=foreign_identity {return Err("native TUN identity inspection differs".into());}
             println!("PASS native TUN name/index/MTU inspection and foreign identity preservation");
             drop(native);
-            let (mut native_owner, port)=owned_packet_port(context.clone()).await?;
+            let (native_owner, port)=owned_packet_port(context.clone()).await?;
+            let index=native_owner.index().ok_or("packet owner index missing")?;
+            let mut native_owner=Some(native_owner);
             let endpoints=plan.endpoints().map(|(_,endpoint)|endpoint).collect();
-            let connector=protected_connector(context.clone(),endpoints,native_owner.index().ok_or("packet owner index missing")?,plan.flow_capacity()).await?;
+            let connector=protected_connector(context.clone(),endpoints,index,plan.flow_capacity()).await?;
             let networking=plan.instantiate(Seed::generate()?,Arc::new(connector))?;
             let tun=Arc::new(port);
             let mut workers=peers().await?;
-            let outcome=exchange(tun.clone(),networking).await;
+            let outcome=exchange(tun.clone(),networking,&mut native_owner).await;
             if outcome.is_err() {workers.abort_all();}
             let mut cleanup=Vec::new();
             let deadline=tokio::time::Instant::now()+Duration::from_secs(1);
@@ -1215,8 +1247,12 @@ mod linux {
             drop(tun);
             let jobs=warper_service::native::Workers::new(1)?;
             let (join_owner,_)=tokio::sync::watch::channel(false);
-            let mut closing=jobs.try_reserve()?.start(move||native_owner.close());
-            if let Err(error)=join_native(&mut closing,&join_owner).await? {cleanup.push(Box::new(error) as Failure);}
+            if let Some(mut native_owner)=native_owner {
+                let mut closing=jobs.try_reserve()?.start(move||native_owner.close());
+                if let Err(error)=join_native(&mut closing,&join_owner).await? {cleanup.push(Box::new(error) as Failure);}
+            } else {
+                cleanup.push("packet fixture native owner lost".into());
+            }
             let absent=nix::net::if_::if_nameindex()?.iter().all(|interface|interface.name().to_bytes()!=NAME.as_bytes());
             if !absent || before!=ip(&["-j","link","show","dev",&foreign_name])? {cleanup.push("native TUN cleanup or foreign preservation failed".into());}
             preserve(outcome,cleanup)?;

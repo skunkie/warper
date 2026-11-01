@@ -2245,3 +2245,22 @@ length and three zero bytes in policy selection order. The maximum payload is
 permits fresh allocation. Routing/Captured/RoutesRetiring require a nonempty
 batch, address and device identity. Retiring/Retired may retain batch history;
 recorded data alone never authorizes touching a named/reused device or route.
+
+### Controlled traffic through journaled static capture
+
+The native application fixture now publishes its actual selected /32 through
+the retained production capture owner, rather than an `ip route add` command.
+The real runtime task is retained before publication, and native publication
+is joined outside the cancellable packet loop. Capture changes are supervised
+while kernel TCP traverses the production host, protected connector, SOCKS5 and
+relay adapters. The original numeric destination and exact request/response
+bytes remain asserted.
+
+The fixture quiesces after accepting its one stream, verifies that withdrawal
+rejects its still-live flow reference, then completes duplex data and FIN.
+After the controlled rejected SYN, joined relay and zero retained flows, it
+continues packet handling until a bounded two-millisecond output quiet interval.
+It joins native withdrawal before stopping the still-published runtime mapping.
+This controlled quiet interval is not a general kernel drain guarantee or DNS
+response grace policy. Error-driven forced flow draining, uncertain mutation
+recovery and the production service supervisor remain separate gates.

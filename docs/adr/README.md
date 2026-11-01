@@ -33,7 +33,7 @@ need their own record.
 | [0019](0019-journaled-initial-tun-lifecycle.md) | Accepted scoped native lifecycle | Durable preparation, fresh descriptor ownership and verified TUN retirement |
 | [0020](0020-journaled-initial-ipv4-address.md) | Accepted scoped address transaction | Journaled exclusive IPv4 /32 assignment on an owned down TUN |
 | [0021](0021-linux-bound-tcp-egress.md) | Accepted scoped protected TCP connector | Source/device-bound TCP under competing capture routing |
-| [0022](0022-journaled-static-ipv4-capture.md) | Proposed; native gate pending | Journaled exclusive static IPv4 capture batches |
+| [0022](0022-journaled-static-ipv4-capture.md) | Accepted scoped static IPv4 capture | Journaled exclusive static IPv4 capture batches |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or

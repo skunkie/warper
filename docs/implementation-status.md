@@ -325,14 +325,27 @@ actual TUN/SOCKS TCP with independently preserved host state. Evidence is under
 `target/evidence/phase-1/privileged-control-ci/run-41343062611/`. It neither changes rules nor
 closes capture publication, monitored consistency, retirement or recovery.
 
-ADR 0022 proposes the initial journaled static IPv4 capture batch boundary.
+ADR 0022 accepts the scoped journaled static IPv4 capture batch boundary.
 The owner now records full intent before exclusive kernel adds, verifies ACKs
 and fresh monitored metadata, retains runtime ownership across failures, and
 fences exact route withdrawal with quiescence/zero flow references. Changed
 route keys are preserved. WTUN v4 keeps conservative legacy decoding with
-bounded canonical batch records. Local parser/conflict tests pass; the new
-private native lifecycle fixture remains unverified until its CI execution.
-Evidence belongs under `target/evidence/phase-1/journaled-capture/`. The actual
-application-flow fixture still publishes its route with `ip`; production-route
-traffic integration, partial/uncertain failure injection, crash recovery,
-complete native budget admission and full daemon lifecycle remain open.
+bounded canonical batch records. The [owner-dispatched lifecycle gate](https://github.com/skunkie/warper/actions/runs/41344128654)
+passes at `2c6a268`, including twenty three-prefix cycles, changed-route
+preservation, joined retirement and independently preserved host state.
+Artifacts are retained under
+`target/evidence/phase-1/privileged-control-ci/run-41344128654/`.
+Evidence belongs under `target/evidence/phase-1/journaled-capture/`. The
+application-flow fixture now uses this owner as described below; actual new
+traffic evidence, partial/uncertain failure injection, crash recovery, complete
+native budget admission and full daemon lifecycle remain open.
+
+The actual kernel TCP fixture now uses journaled capture publication, retains
+the runtime before kernel routing, supervises capture changes, and quiesces with
+a live accepted stream. It asserts that native withdrawal rejects that flow,
+then preserves duplex bytes/FIN, drains the controlled output and joins native
+withdrawal before runtime shutdown. Local compilation/checks establish harness
+readiness only; this integrated traffic gate remains unverified until fresh
+isolated CI. Evidence belongs under
+`target/evidence/phase-1/journaled-capture-traffic/`. Forced error-driven flow
+draining, crash reconciliation and the real daemon remain open.

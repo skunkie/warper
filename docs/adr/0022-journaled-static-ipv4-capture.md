@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0022. Journaled static IPv4 capture batches
 
-- Status: proposed; native capture lifecycle gate pending.
+- Status: accepted scoped static IPv4 capture lifecycle; service integration pending.
 - Date: 2026-11-01
 - Related: ADR 0016, ADR 0019, NET-01, NET-05 and Phase 1.
 
@@ -81,8 +81,18 @@ foreign conflict fields, duplicate/incomplete readback and request metadata.
 The isolated native fixture measures twenty serial lifecycles, each publishing
 three prefixes including nested routes. It checks repeated publication and the quiescence fence, preserves a changed route
 key and joins withdrawal before dropping the real runtime. It uses the existing
-independent host-preservation harness. Its new execution is unverified until
-fresh owner-dispatched CI; no privileged acceptance is inferred from compilation.
+independent host-preservation harness. The [owner-dispatched gate](https://github.com/skunkie/warper/actions/runs/41344128654)
+passes at `2c6a268`, including all twenty lifecycles and independently preserved
+host state. Artifacts are retained under
+`target/evidence/phase-1/privileged-control-ci/run-41344128654/`.
+This accepts only that scoped lifecycle, not crash recovery or a running service.
 Raw evidence belongs under `target/evidence/phase-1/journaled-capture/`.
 Reconsider when custom rules, host conflict semantics or native budget/latency
 requirements exceed this deliberately narrow boundary.
+
+The subsequent application fixture uses the same production owner for its real
+TCP /32 capture route. It tests quiescence/retirement fencing with a retained
+accepted stream, completes duplex data/FIN, supervises capture changes and joins
+withdrawal while the runtime mapping remains published. Its controlled output
+quiet interval is not a general service drain or DNS grace guarantee. Fresh
+native execution remains required before accepting that traffic integration.
