@@ -20,6 +20,8 @@ use warper_control::runtime::{
     connection::{BootId, ConnectionStore},
 };
 
+mod process;
+
 const RECORD_LEN: usize = 88;
 const PROCFS: u64 = 0x9fa0;
 const NSFS: u64 = 0x6e736673;
@@ -160,6 +162,16 @@ pub enum Classification {
     ForeignNamespace,
 }
 
+/// Native observation relative to one recorded process identity. No observation
+/// alone authorizes adopting or deleting a journaled resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessState {
+    Alive,
+    Exited,
+    Reused,
+    PreviousBoot,
+}
+
 /// Retained native evidence. It cannot be constructed from serialized IDs.
 ///
 /// ```compile_fail
@@ -215,6 +227,21 @@ impl Context {
     pub fn classify(&self, recorded: &RecordedOwner) -> Classification {
         classify(&self.recorded, recorded)
     }
+    /// Read-only native liveness observation. Call in a retained worker; a
+    /// decoded record alone supplies neither scope nor recovery authority.
+    pub fn owner_process(&self, recorded: &RecordedOwner) -> Result<ProcessState, Error> {
+        self.revalidate()?;
+        let state = match self.classify(recorded) {
+            Classification::ForeignBoot => ProcessState::PreviousBoot,
+            Classification::ForeignNamespace | Classification::ConflictingOwner => {
+                return Err(Error::ContextChanged);
+            }
+            Classification::Current => ProcessState::Alive,
+            Classification::PreviousInstance => process::inspect(recorded.process)?,
+        };
+        self.revalidate()?;
+        Ok(state)
+    }
 }
 impl fmt::Debug for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -239,6 +266,17 @@ fn classify(current: &RecordedOwner, recorded: &RecordedOwner) -> Classification
 fn inspect_scope() -> Result<Scope, Error> {
     warper_control::namespace::require_initial_user_namespace()
         .map_err(|error| Error::Runtime(warper_control::runtime::Error::Admission(error)))?;
+    let proc = open_proc()?;
+    let network = namespace(&proc, "net")?;
+    let pid = namespace(&proc, "pid")?;
+    let process = read_process(&proc, "self/stat", std::process::id())?;
+    Ok(Scope {
+        network,
+        pid,
+        process,
+    })
+}
+fn open_proc() -> Result<OwnedFd, Error> {
     let proc = open(
         "/proc",
         OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -248,11 +286,12 @@ fn inspect_scope() -> Result<Scope, Error> {
     if fstatfs(&proc).map_err(os_error)?.f_type as u64 != PROCFS {
         return Err(Error::InvalidEvidence);
     }
-    let network = namespace(&proc, "net")?;
-    let pid = namespace(&proc, "pid")?;
+    Ok(proc)
+}
+fn read_process(proc: &OwnedFd, path: &str, expected: u32) -> Result<Process, Error> {
     let input = openat2(
-        &proc,
-        "self/stat",
+        proc,
+        path,
         OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
         ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_MAGICLINKS,
@@ -279,13 +318,9 @@ fn inspect_scope() -> Result<Scope, Error> {
     if length > MAX_STAT {
         return Err(Error::InvalidEvidence);
     }
-    let process = parse_stat(&bytes[..length], std::process::id())?;
-    Ok(Scope {
-        network,
-        pid,
-        process,
-    })
+    parse_stat(&bytes[..length], expected)
 }
+
 fn namespace(proc: &OwnedFd, name: &str) -> Result<NamespacePin, Error> {
     let directory = openat2(
         proc,

@@ -361,3 +361,13 @@ repeated cancellation and continued reset handling. Evidence belongs under
 still join relays/native I/O, release queued handles, drain packets/grace and
 withdraw capture before stopping the mapping. Full daemon/recovery gates remain
 open.
+
+Native context now supplies read-only recorded-process observation with PIDFD
+polling and bounded verified-procfs start ticks, including PID reuse, previous
+boot separation and current-instance/foreign-scope fencing. Missing evidence
+with a live descriptor remains uncertain. Local self and boundary tests pass;
+a private root context peer adds real SIGKILL/reap and runtime reacquisition
+for the next native run. Evidence belongs under
+`target/evidence/phase-1/native-process-observation/`; the new privileged gate
+remains unverified until CI. Abandoned journal reconciliation still needs
+object/key absence, revision comparison and committed retirement.

@@ -76,3 +76,25 @@ Retain artifacts under `target/evidence/phase-1/native-journal-context/`.
 This establishes an owner component, not a complete platform journal, physical
 path or mutation driver. Reconsider for required recovery across PID/network
 namespaces, unsupported procfs/stat layouts or a changed kernel namespace ABI.
+
+## Recorded-owner process observation
+
+The context now provides a read-only native process observation after fresh
+scope revalidation. Same-scope previous instances use a close-on-exec PIDFD,
+zero-wait polling and bounded verified-procfs start ticks to distinguish live,
+exited and reused process identities. Missing evidence with a live descriptor
+remains an error. Previous boots are separate; foreign namespaces and
+conflicting current-instance claims are rejected before PID interpretation.
+No process is signaled and no stored object is adopted or deleted.
+
+The adapter follows the [Linux PIDFD interface](https://man7.org/linux/man-pages/man2/pidfd_open.2.html):
+flags zero select the process/thread group, close-on-exec is verified, and
+zero-wait polling recognizes termination and reaping without reading or signaling
+the descriptor. It never requests a thread-only descriptor.
+
+Local self/start-tick and invalid-PID tests exercise the private primitive.
+The native fixture checks live/current-instance fencing, then uses a controlled
+root context peer, SIGKILL/reap and runtime reacquisition to verify public exited
+observation. That new privileged execution remains pending fresh CI. Recovery
+still requires protected journal comparison, object/key absence and committed
+retirement; liveness alone supplies no cleanup authority.

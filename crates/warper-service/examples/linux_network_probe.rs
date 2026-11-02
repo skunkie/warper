@@ -36,6 +36,7 @@ mod linux {
     use warper_stack::{Seed, host::MTU};
 
     mod physical;
+    mod process_owner;
 
     type Failure = Box<dyn std::error::Error + Send + Sync>;
     const NAME: &str = "warper-probe";
@@ -142,7 +143,9 @@ mod linux {
         Failure,
     > {
         use warper_control::runtime::{RuntimeLease, connection::ConnectionStore};
-        use warper_service::linux::context::{Classification, Context, RecordedOwner};
+        use warper_service::linux::context::{
+            Classification, Context, ProcessState, RecordedOwner,
+        };
         let lease = Arc::new(RuntimeLease::acquire()?);
         let retained_lease = Arc::downgrade(&lease);
         let connection = ConnectionStore::open(&lease)?;
@@ -155,6 +158,28 @@ mod linux {
         let other = Context::capture(lease.clone(), &reopened)?;
         if other.classify(&recorded) != Classification::PreviousInstance {
             return Err("previous native instance became current".into());
+        }
+        if context.owner_process(&recorded)? != ProcessState::Alive
+            || other.owner_process(&recorded)? != ProcessState::Alive
+        {
+            return Err("live native owner was misclassified as absent".into());
+        }
+        let mut changed = recorded.encode();
+        changed[83] ^= 1;
+        let changed = RecordedOwner::decode(&changed)?;
+        if context.owner_process(&changed)
+            != Err(warper_service::linux::context::Error::ContextChanged)
+            || other.owner_process(&changed)? != ProcessState::Reused
+        {
+            return Err("recorded process identity bypassed native instance fencing".into());
+        }
+        let mut prior_boot = recorded.encode();
+        prior_boot[8] ^= 1;
+        prior_boot[9] |= 1;
+        if context.owner_process(&RecordedOwner::decode(&prior_boot)?)?
+            != ProcessState::PreviousBoot
+        {
+            return Err("previous boot record was interpreted as a current process".into());
         }
         drop(other);
         drop(reopened);
@@ -1135,7 +1160,10 @@ mod linux {
     }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         isolated(mount, net)?;
-        let (context, runtime_lease) = native_context()?;
+        let jobs = warper_service::native::Workers::new(1)?;
+        let (bootstrap_owner, _) = tokio::sync::watch::channel(false);
+        let mut bootstrap = jobs.try_reserve()?.start(native_context);
+        let (context, runtime_lease) = join_native(&mut bootstrap, &bootstrap_owner).await??;
         let context = Arc::new(context);
         // Complete deliberate rule changes before preparing protected paths.
         // Restoring visible rules does not promise unchanged kernel lookup state.
@@ -1356,7 +1384,11 @@ mod linux {
         if let Err(error) = warper_control::runtime::RuntimeLease::acquire() {
             cleanup.push(Box::new(error) as Failure);
         }
-        preserve(result, cleanup)
+        preserve(result, cleanup)?;
+        process_owner::exercise(mount, net).await
+    }
+    pub async fn context_peer(mount: &str, net: &str) -> Result<(), Failure> {
+        process_owner::peer(mount, net).await
     }
     pub async fn physical_peer(mount: &str, net: &str) -> Result<(), Failure> {
         physical::peer(mount, net).await
@@ -1421,6 +1453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         [mode] if mode == "--require-initial-root" => linux::root(),
         [mode, mount, net] if mode == "--exercise" => linux::exercise(mount, net).await,
         [mode, mount, net] if mode == "--physical-peer" => linux::physical_peer(mount, net).await,
+        [mode, mount, net] if mode == "--context-peer" => linux::context_peer(mount, net).await,
         _ => Err("use the disposable namespace acceptance harness".into()),
     }
 }

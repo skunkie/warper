@@ -2286,3 +2286,24 @@ closing the receiver or stopping the runtime. It is a bounded cleanup tool, not
 a kernel delivery/drain acknowledgment or DNS response-grace barrier. Only after
 flow references and packet/grace work retire may the supervisor withdraw native
 capture and stop the handler. No CLI state or authenticated command is added.
+
+### Native recorded-owner process observation
+
+A context can inspect the process identity in a recorded owner only after fresh
+runtime/boot/namespace/process revalidation. A different boot is reported as
+PreviousBoot; foreign namespaces or conflicting current-instance ownership fail
+without interpreting foreign PID numbers. Current identity is Alive. For a
+previous instance in the same scope, open a native close-on-exec PIDFD and poll
+without waiting. ESRCH or a terminated process descriptor reports Exited;
+otherwise read the bounded verified-procfs stat and compare start ticks. A
+changed start identifies PID reuse. Missing/unreadable evidence while the PIDFD
+remains live is uncertainty, never process death. No signals are sent.
+
+The operation has no mutation, retries, tasks, subprocesses or caller paths. It
+retains one transient PIDFD plus fixed procfs/stat handles and at most 4097 stat
+bytes; existing native-context revalidation costs also apply. Run it in a
+retained native worker: synchronous filesystem/syscall waits have no hard
+cancellation guarantee. PID numbers are interpreted only in the verified PID
+namespace. This is an observation, not authority to delete or adopt a recorded
+TUN/route. Recovery still needs protected journal comparison, proven object
+absence, fresh request checks and committed retirement.

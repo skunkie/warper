@@ -787,3 +787,9 @@ while keeping packet/reset handling and the policy alive. Application/queued
 stream references stay charged until final drop. The supervisor must join
 relays and native I/O, release unread streams and drain/discard bounded packets
 before withdrawing capture. This adds no user option or authenticated command.
+
+Internal recorded-owner process inspection accepts no caller paths or signal
+operation. It revalidates native context, uses PIDFD/procfs observations in the
+recorded PID scope and distinguishes previous boots. PID reuse or process exit
+alone does not authorize deleting or adopting a TUN or route. These observations
+add no configuration option and must run in retained native workers.
