@@ -2614,3 +2614,23 @@ plan reservation; physical TCP queues remain bounded by the connector's stream
 ceiling and verified per-stream queue limits. This component does not admit
 control clients, install configuration or persist Connect/Disconnect intent;
 the daemon controller composes those independent ownership budgets.
+
+## Linux control endpoint restart recovery
+
+New endpoint publication writes a fixed 160-byte WCTL version 1 intent. It pins
+the persistent lock's device/inode identity, a Prepared or Bound stage, and
+(for Bound) the socket pathname inode's full recorded metadata. Prepared is
+synced before bind; Bound is synced after final socket mode and before listen.
+Each owned verification also compares the expected intent bytes. Legacy empty,
+torn, unsupported or changed intent is not automatically adopted.
+
+`endpoint::recover(&mut RuntimeLease)` requires uniquely owned runtime access
+and a lease that has never attempted endpoint publication. Publication marks
+that lease permanently; extracting its Arc after listener drop does not replace
+fresh flock acquisition. Retained service/context work therefore prevents a
+fresh eligible owner. Recovery verifies protected paths, lock identity and the
+recorded socket metadata before removing only the proven stale objects. It
+never removes the persistent lock. A Bound record with an absent socket can
+finish interrupted retirement; repeated recovery without either object is a
+no-op. Prepared plus an existing unidentified socket, a socket without intent,
+legacy intent and any foreign metadata remain explicit recovery conflicts.

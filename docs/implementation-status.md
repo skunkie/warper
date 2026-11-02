@@ -540,3 +540,15 @@ after the final supervisor lease drops. Artifacts are under
 is under `target/evidence/phase-1/network-supervisor/`. The authenticated daemon
 controller, durable operation dispatch, service CLI/installation, stale endpoint
 recovery and full client-detach/lifecycle acceptance remain open.
+
+Control endpoint restart recovery now uses a bounded WCTL v1 intent with the
+persistent lock identity and a frozen socket pathname identity. Publication
+syncs Prepared before bind and Bound before listen. Recovery requires unique,
+never-published runtime ownership; an Arc extracted from an old endpoint cannot
+replace fresh flock acquisition. Local fixtures prove known stale retirement,
+idempotence, foreign/changed/shared state preservation, legacy refusal and
+record boundaries. The native fixture adds actual SIGKILL/reap and fresh
+publication after recovery. Its privileged exact-commit evidence remains
+unverified. Evidence belongs under
+`target/evidence/phase-1/control-endpoint-recovery/`. This supplies a safe
+bootstrap boundary; the daemon, control dispatch and CLI remain incomplete.

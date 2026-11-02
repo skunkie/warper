@@ -10,8 +10,10 @@ use std::{
     fs::File,
     io,
     os::fd::{AsRawFd, OwnedFd},
+    os::unix::fs::FileExt,
     os::unix::net::UnixStream,
     sync::Arc,
+    sync::atomic::Ordering,
 };
 
 use rustix::{
@@ -22,8 +24,13 @@ use rustix::{
     },
 };
 
-use super::{RuntimeLease, named, require_same};
+use super::{RuntimeLease, named};
 use crate::{Access, OwnerPolicy, Role};
+
+mod record;
+mod recovery;
+use record::{Identity, LENGTH, Record};
+pub use recovery::{Recovery, recover};
 
 const SOCKET: &str = "control.sock";
 const INTENT: &str = "control.intent";
@@ -34,6 +41,8 @@ pub enum Error {
     Runtime(super::Error),
     Conflict,
     ChangedState,
+    RecoveryRequired,
+    ReacquisitionRequired,
     Io(io::ErrorKind),
     Peer(crate::Error),
 }
@@ -43,6 +52,12 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::Runtime(_) => "SystemConfiguration: control runtime ownership failed",
             Self::Conflict => "Conflict: control endpoint or intent already exists",
+            Self::RecoveryRequired => {
+                "RecoveryRequired: endpoint intent or socket ownership cannot be verified"
+            }
+            Self::ReacquisitionRequired => {
+                "Conflict: endpoint recovery requires fresh unique runtime acquisition"
+            }
             Self::ChangedState => "Conflict: owned control endpoint state changed",
             Self::Io(_) => "SystemConfiguration: control endpoint operation failed",
             Self::Peer(_) => "PermissionDenied: control peer authentication failed",
@@ -86,7 +101,10 @@ pub struct ControlEndpoint {
     listener: Option<OwnedFd>,
     socket: Option<OwnedFd>,
     socket_mode: Option<u32>,
-    intent: OwnedFd,
+    intent: File,
+    intent_stamp: Identity,
+    record: Record,
+    intent_written: bool,
     lease: Arc<RuntimeLease>,
 }
 
@@ -96,6 +114,9 @@ impl ControlEndpoint {
     pub fn bind(lease: impl Into<Arc<RuntimeLease>>) -> Result<Self, Failure> {
         let lease = lease.into();
         lease.revalidate().map_err(Error::Runtime)?;
+        if lease.endpoint_bound.swap(true, Ordering::AcqRel) {
+            return Err(Error::ReacquisitionRequired.into());
+        }
         match named(&lease.directory, SOCKET) {
             Ok(_) => return Err(Error::Conflict.into()),
             Err(super::Error::Io(io::ErrorKind::NotFound)) => {}
@@ -120,11 +141,17 @@ impl ControlEndpoint {
                 os_error(error)
             }
         })?;
+        let intent = File::from(intent);
+        let intent_stamp = Identity::of(&fstat(&intent).map_err(os_error)?);
+        let record = Record::prepared(&fstat(&lease.lock).map_err(os_error)?);
         let mut endpoint = Self {
             listener: None,
             socket: None,
             socket_mode: None,
             intent,
+            intent_stamp,
+            record,
+            intent_written: false,
             lease,
         };
         let result = endpoint.publish();
@@ -163,9 +190,7 @@ impl ControlEndpoint {
     }
 
     fn publish(&mut self) -> Result<(), Error> {
-        self.verify_intent()?;
-        rustix::fs::fsync(&self.intent).map_err(os_error)?;
-        self.sync_directory()?;
+        self.write_intent(self.record)?;
         let listener = socket_with(
             AddressFamily::UNIX,
             SocketType::STREAM,
@@ -216,7 +241,11 @@ impl ControlEndpoint {
         .map_err(os_error)?;
         self.socket_mode = Some(0o666);
         self.verify_socket(true)?;
-        self.sync_directory()?;
+        let mut bound = self.record;
+        bound.socket = Some(Identity::of(
+            &fstat(self.socket.as_ref().ok_or(Error::ChangedState)?).map_err(os_error)?,
+        ));
+        self.write_intent(bound)?;
         listen(&listener, BACKLOG).map_err(os_error)?;
         self.listener = Some(listener);
         self.verify()
@@ -230,12 +259,47 @@ impl ControlEndpoint {
 
     fn verify_intent(&self) -> Result<(), Error> {
         let metadata = fstat(&self.intent).map_err(os_error)?;
-        super::validate_lock(&metadata, self.lease.owner).map_err(|_| Error::ChangedState)?;
-        require_same(
-            &metadata,
-            &named(&self.lease.directory, INTENT).map_err(Error::Runtime)?,
-        )
-        .map_err(|_| Error::ChangedState)
+        if rustix::fs::FileType::from_raw_mode(metadata.st_mode)
+            != rustix::fs::FileType::RegularFile
+            || metadata.st_uid != self.lease.owner
+            || metadata.st_mode & 0o7777 != 0o600
+            || metadata.st_nlink != 1
+            || Identity::of(&metadata) != self.intent_stamp
+            || Identity::of(&named(&self.lease.directory, INTENT).map_err(Error::Runtime)?)
+                != self.intent_stamp
+        {
+            return Err(Error::ChangedState);
+        }
+        if self.intent_written {
+            if metadata.st_size != LENGTH as i64 {
+                return Err(Error::ChangedState);
+            }
+            let mut bytes = [0; LENGTH];
+            self.intent
+                .read_exact_at(&mut bytes, 0)
+                .map_err(|error| Error::Io(error.kind()))?;
+            if bytes != self.record.encode() {
+                return Err(Error::ChangedState);
+            }
+        } else if metadata.st_size != 0 {
+            return Err(Error::ChangedState);
+        }
+        Ok(())
+    }
+    fn write_intent(&mut self, record: Record) -> Result<(), Error> {
+        self.lease.revalidate().map_err(Error::Runtime)?;
+        self.verify_intent()?;
+        self.intent
+            .write_all_at(&record.encode(), 0)
+            .map_err(|error| Error::Io(error.kind()))?;
+        self.intent
+            .sync_all()
+            .map_err(|error| Error::Io(error.kind()))?;
+        self.sync_directory()?;
+        self.record = record;
+        self.intent_written = true;
+        self.intent_stamp = Identity::of(&fstat(&self.intent).map_err(os_error)?);
+        self.verify_intent()
     }
 
     fn verify_socket(&self, final_mode: bool) -> Result<(), Error> {
@@ -249,11 +313,16 @@ impl ControlEndpoint {
         {
             return Err(Error::ChangedState);
         }
-        require_same(
-            &metadata,
-            &named(&self.lease.directory, SOCKET).map_err(Error::Runtime)?,
-        )
-        .map_err(|_| Error::ChangedState)
+        let current = Identity::of(&metadata);
+        if Identity::of(&named(&self.lease.directory, SOCKET).map_err(Error::Runtime)?) != current
+            || self
+                .record
+                .socket
+                .is_some_and(|recorded| recorded != current)
+        {
+            return Err(Error::ChangedState);
+        }
+        Ok(())
     }
 
     fn retire(&mut self) -> Result<(), Error> {

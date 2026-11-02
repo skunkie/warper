@@ -30,6 +30,7 @@ mod linux {
     };
     type Failure = Box<dyn std::error::Error>;
 
+    mod endpoint_fixture;
     mod session_fixture;
 
     struct Client(Child);
@@ -346,23 +347,14 @@ mod linux {
         ) {
             return Err("second root instance acquired ownership".into());
         }
+        let endpoint = ControlEndpoint::bind(lease)?;
+        endpoint_fixture::changed_permissions(endpoint)?;
+        let lease = RuntimeLease::acquire()?;
         let mut store = OwnerStore::open(&lease)?;
         if store.read(&lease)?.revision() != 0 {
             return Err("fixture must start with empty enrollment".into());
         }
         let endpoint = ControlEndpoint::bind(lease)?;
-        // The ordinary owner must inspect the protected endpoint itself,
-        // including rejecting changed permissions before sending any payload.
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            "/run/warper/control.sock",
-            fs::Permissions::from_mode(0o600),
-        )?;
-        Client::start(1000, "unsafe-endpoint")?.join()?;
-        fs::set_permissions(
-            "/run/warper/control.sock",
-            fs::Permissions::from_mode(0o666),
-        )?;
         let (admin, _other) = UnixStream::pair()?;
         let enrolled = store.enroll(endpoint.runtime(), &admin, 0, Some(1000))?;
         if enrolled.revision() != 1 {
@@ -475,6 +467,7 @@ mod linux {
             return Err("owned endpoint did not retire".into());
         }
         drop(RuntimeLease::acquire()?);
+        endpoint_fixture::crash_recovery(mount_fd, net_fd)?;
         println!(
             "PASS root ownership, bootstrap enrollment, actual owner/foreign peers, policy replacement, pending recovery, persistence and endpoint retirement"
         );
@@ -491,6 +484,9 @@ mod linux {
             }
             [mode, mount_fd, net_fd] if mode == "--exercise" => exercise(mount_fd, net_fd),
             [mode, client_mode] if mode == "--client" => client(client_mode),
+            [mode, mount_fd, net_fd] if mode == "--endpoint-child" => {
+                endpoint_fixture::child(mount_fd, net_fd)
+            }
             _ => Err("use the controlled privileged harness".into()),
         }
     }

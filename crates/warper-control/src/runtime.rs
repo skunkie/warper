@@ -61,6 +61,7 @@ pub struct RuntimeLease {
     lock: OwnedFd,
     owner: u32,
     managed_claim: AtomicBool,
+    endpoint_bound: AtomicBool,
 }
 
 impl RuntimeLease {
@@ -140,6 +141,7 @@ impl RuntimeLease {
             lock,
             owner,
             managed_claim: AtomicBool::new(false),
+            endpoint_bound: AtomicBool::new(false),
         };
         lease.validate_state()?;
         Ok(lease)
@@ -635,5 +637,51 @@ mod endpoint_tests {
             );
             assert_eq!(fs::read(path).unwrap(), b"foreign fixture state");
         }
+    }
+
+    #[test]
+    #[ignore = "controlled endpoint publication/admission/retirement workload"]
+    fn endpoint_publication_workload() {
+        let fixture = Fixture::new();
+        let policy = OwnerPolicy::new(Some(fixture.owner)).unwrap();
+        let before_cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let started = std::time::Instant::now();
+        let mut waits = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let before = std::time::Instant::now();
+            let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+            let mut client =
+                UnixStream::connect(fixture.path.join("run/warper/control.sock")).unwrap();
+            let mut accepted = endpoint.accept(&policy).unwrap().unwrap();
+            client.write_all(&[1]).unwrap();
+            let mut byte = [0];
+            accepted.stream.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [1]);
+            accepted.stream.write_all(&[2]).unwrap();
+            client.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [2]);
+            drop(accepted);
+            drop(client);
+            endpoint.close().unwrap();
+            waits.push(before.elapsed().as_nanos());
+        }
+        waits.sort_unstable();
+        let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let cpu_ns = (i128::from(after.tv_sec) - i128::from(before_cpu.tv_sec)) * 1_000_000_000
+            + i128::from(after.tv_nsec)
+            - i128::from(before_cpu.tv_nsec);
+        let elapsed_ns = started.elapsed().as_nanos();
+        let memory = fs::read_to_string("/proc/self/status").unwrap();
+        let peak = memory
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .unwrap();
+        println!(
+            "endpoint_publication scope=private_fixture lifecycle_count=100 clients=1 payload_bytes=200 elapsed_ns={elapsed_ns} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} failures=0 kernel_drops=unmeasured {peak}",
+            waits[49], waits[94], waits[98]
+        );
+        assert!(!fixture.path.join("run/warper/control.sock").exists());
+        assert!(!fixture.path.join("run/warper/control.intent").exists());
+        assert!(fixture.lock_path().exists());
     }
 }
