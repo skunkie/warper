@@ -255,6 +255,7 @@ def inner(args):
     Path("/run/warper").mkdir(mode=0o755)
     Path("/run/dbus").mkdir(mode=0o755)
     Path("/var/lib/warper").mkdir(mode=0o700)
+    Path("/etc/warper").mkdir(mode=0o700)
     Path("/etc/resolv.conf").write_text("nameserver 127.0.0.1\noptions timeout:1 attempts:1\n")
     Path("/etc/passwd").write_text("root:x:0:0:fixture:/root:/bin/false\nowner:x:1000:1000:fixture:/nonexistent:/bin/false\nforeign:x:1001:1001:fixture:/nonexistent:/bin/false\n")
     Path("/etc/group").write_text("root:x:0:\nowner:x:1000:\nforeign:x:1001:\n")

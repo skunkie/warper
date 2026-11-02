@@ -2392,3 +2392,37 @@ in-memory accessor is an observable configuration RPC. Protected atomic storage,
 administrative installation, generation fencing and redacted views remain
 separate boundaries. Version-one defaults must remain stable; incompatible
 normalization/default changes require a new version or explicit migration.
+
+## Protected managed configuration storage
+
+The Linux `warper_control::runtime::managed::ManagedStore` is synchronous fixed
+storage under the retained runtime lease, not an installation handler. It opens
+only root-owned `/etc/warper` mode 0700 beneath verified root-owned nonwritable
+parents, without symlink or mount traversal into the final directory. Creation
+belongs to installation. It never searches home directories or accepts a path.
+
+Reuse the network journal's bounded atomic storage mechanics with distinct
+fixed slots, magic and limits; do not change its on-disk format or capacity.
+The managed slot uses `configuration` and `configuration.pending`, and a `WCFG`
+version-one 24-byte envelope: magic[4], version u32=1, generation u64>0, payload
+length u32, reserved u32=0, followed by 1..=1 MiB of managed data. Files are
+root-owned regular mode 0600, single-link, without symlink or mount traversal.
+Payload semantics/`WMCF` decoding belong to service preparation before mutation.
+
+`read/inspect/replace/resync/inspect_pending/discard_pending` retain the network
+journal's revision comparison, inode/metadata/byte observation, exclusive staging,
+fsync/rename/fsync, uncertain-commit and explicit recovery rules. Tokens belong
+to one opened slot; a network token cannot discard managed state or vice versa.
+Pending bytes are never promoted. A stale observation or foreign replacement is
+preserved as conflict, including changed parent directories. Debug/errors redact
+all data. Each slot's input/pending/readback allocations are bounded by its own
+capacity and must be included in the eventual supervisor's native budget.
+
+Service handlers must freshly authorize administrators, validate managed data,
+serialize installation while disconnected, and fence the expected generation
+before calling replacement. The low-level runtime lease is not peer enrollment
+or administrative installation authority. No handler or CLI becomes reachable
+merely because this storage primitive exists. Blocking calls retain their worker
+and runtime references after observer cancellation; filesystem waits have no hard
+wall deadline. Native privileged evidence is required separately from local
+fixed-root filesystem tests.

@@ -24,6 +24,7 @@ mod linux {
             endpoint::ControlEndpoint,
             enrollment::OwnerStore,
             journal::{Error as JournalError, NetworkJournal},
+            managed::ManagedStore,
         },
         unix,
     };
@@ -214,6 +215,70 @@ mod linux {
         Ok(())
     }
 
+    fn managed_storage(lease: &RuntimeLease) -> Result<(), Failure> {
+        let mut managed = ManagedStore::open(lease)?;
+        if managed.read(lease)?.is_some() {
+            return Err("private managed slot was not initially empty".into());
+        }
+        // These are synthetic opaque storage bytes. Semantic WMCF validation
+        // belongs to service preparation; this fixture tests the native store.
+        let first = managed.replace(lease, 0, b"invented approved managed bytes")?;
+        if first.revision() != 1
+            || managed.replace(lease, 0, b"stale managed bytes") != Err(JournalError::Conflict)
+        {
+            return Err("native managed generation fencing differs".into());
+        }
+        let metadata = fs::metadata("/etc/warper/configuration")?;
+        if metadata.uid() != 0 || metadata.mode() & 0o7777 != 0o600 || metadata.nlink() != 1 {
+            return Err("managed file protection differs".into());
+        }
+        for uid in [1000, 1001] {
+            Client::start(uid, "private-config")?.join()?;
+        }
+        drop(managed);
+        let mut managed = ManagedStore::open(lease)?;
+        if managed.read(lease)? != Some(first.clone()) {
+            return Err("managed reopen differs".into());
+        }
+        let mut network = NetworkJournal::open(lease)?;
+        let network_before = network.read(lease)?;
+        for path in [
+            "/etc/warper/configuration.pending",
+            "/var/lib/warper/network.pending",
+        ] {
+            fs::write(path, b"partial invented intent")?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        if managed.read(lease) != Err(JournalError::RecoveryRequired) {
+            return Err("pending managed bytes did not block reads".into());
+        }
+        let foreign_token = network
+            .inspect_pending(lease)?
+            .ok_or("network token missing")?;
+        if managed.discard_pending(lease, foreign_token) != Err(JournalError::Conflict) {
+            return Err("network token could discard managed staging".into());
+        }
+        let token = managed
+            .inspect_pending(lease)?
+            .ok_or("managed token missing")?;
+        if token.committed() != Some(&first) {
+            return Err("managed inspection changed committed state".into());
+        }
+        managed.discard_pending(lease, token)?;
+        let token = network
+            .inspect_pending(lease)?
+            .ok_or("network staging was changed")?;
+        network.discard_pending(lease, token)?;
+        if managed.read(lease)? != Some(first) || network.read(lease)? != network_before {
+            return Err("managed recovery changed committed slot state".into());
+        }
+        managed.replace(lease, 1, b"invented replacement managed bytes")?;
+        println!(
+            "PASS root managed storage generations, private owner/foreign reads, reopen and isolated pending discard"
+        );
+        Ok(())
+    }
+
     fn configure(stream: &UnixStream) -> Result<(), Failure> {
         stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -221,6 +286,15 @@ mod linux {
         Ok(())
     }
     fn client(mode: &str) -> Result<(), Failure> {
+        if mode == "private-config" {
+            if !matches!(nix::unistd::geteuid().as_raw(), 1000 | 1001) {
+                return Err("private-config fixture requires an ordinary controlled UID".into());
+            }
+            return match fs::read("/etc/warper/configuration") {
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+                _ => Err("ordinary client could read protected managed bytes".into()),
+            };
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -380,6 +454,7 @@ mod linux {
         drop(old_owner);
         connection_intent(endpoint.runtime())?;
         network_journal(endpoint.runtime())?;
+        managed_storage(endpoint.runtime())?;
         let reopened = OwnerStore::open(endpoint.runtime())?;
         if reopened.read(endpoint.runtime())?.revision() != 3 {
             return Err("protected owner snapshot did not persist".into());

@@ -3,6 +3,13 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
+const MAX_FILE: usize = HEADER + MAX_PAYLOAD;
+fn encode(snapshot: &Snapshot) -> Vec<u8> {
+    super::encode(snapshot, Slot::Network)
+}
+fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
+    super::decode(bytes, Slot::Network)
+}
 use crate::runtime::tests::Fixture;
 use rustix::fs::open;
 use std::{
@@ -10,7 +17,7 @@ use std::{
     os::unix::fs::{PermissionsExt, symlink},
 };
 
-fn store(fixture: &Fixture) -> NetworkJournal {
+fn store(fixture: &Fixture) -> FixedStore {
     fs::create_dir_all(fixture.path.join("var/lib/warper")).unwrap();
     for (name, mode) in [
         ("var", 0o755),
@@ -25,7 +32,7 @@ fn store(fixture: &Fixture) -> NetworkJournal {
         Mode::empty(),
     )
     .unwrap();
-    NetworkJournal::new(StateDirectory::open_at(root, fixture.owner).unwrap()).unwrap()
+    FixedStore::new(StateDirectory::open_at(root, fixture.owner).unwrap()).unwrap()
 }
 fn path(fixture: &Fixture) -> std::path::PathBuf {
     fixture.path.join("var/lib/warper/network.journal")
@@ -64,7 +71,7 @@ fn durable_revisioned_snapshots_survive_reopen_and_refuse_stale_replacement() {
     let reopened = store(&fixture);
     assert_eq!(reopened.read(&lease), Ok(Some(second)));
     assert_eq!(format!("{first:?}"), "JournalSnapshot(<redacted>)");
-    assert_eq!(format!("{reopened:?}"), "NetworkJournal(<redacted>)");
+    assert_eq!(format!("{reopened:?}"), "FixedStore(<redacted>)");
 }
 
 #[test]
@@ -401,3 +408,5 @@ fn a_same_length_staged_rewrite_never_becomes_committed_metadata() {
     assert!(!path(&fixture).exists());
     assert!(pending(&fixture).exists());
 }
+
+mod managed;

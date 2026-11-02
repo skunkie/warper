@@ -17,7 +17,9 @@ pub mod connection;
 pub mod endpoint;
 pub mod enrollment;
 pub mod journal;
+pub mod managed;
 mod state;
+mod storage;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

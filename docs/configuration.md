@@ -815,3 +815,13 @@ print either section. Encoded snapshots contain secrets and must never appear
 in logs, ordinary status replies or unprotected storage. This library format
 is not yet an implemented import command or authorized managed store. Its exact
 layout and canonical validation are in the implementation contract.
+
+The initial Linux managed storage primitive opens fixed `/etc/warper`, which
+installation must create root-owned mode 0700 beneath protected parents. It
+stores `configuration` and `configuration.pending` as root-owned mode-0600,
+single-link regular files. The separate `WCFG` version-one outer envelope
+records a generation and at most 1 MiB of approved data. Expected-generation
+replacement uses exclusive staging, file/directory sync and atomic rename;
+pending or uncertain state requires explicit inspection/resync/discard without
+promotion. This low-level store does not authorize installation, decode WMCF or
+decide whether a session is disconnected; the service must enforce those gates.

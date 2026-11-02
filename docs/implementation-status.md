@@ -406,3 +406,13 @@ platform names, unsupported-backend validation before reads, and expansion over
 node/byte budgets. Evidence belongs under
 `target/evidence/phase-1/managed-snapshot/`. Protected atomic storage, generation
 fencing, authorized installation and the import CLI remain open.
+
+The Linux managed store now has a fixed `/etc/warper` slot with a distinct
+generation envelope and 1 MiB capacity, sharing the journal's bounded atomic
+storage implementation. Local fixed-root tests cover capacity, revision fencing,
+slot magic/token separation, pending preservation, uncertain sync and replaced
+parents. The private privileged fixture adds real root metadata, ordinary
+owner/foreign read denial, reopen and pending recovery; that new gate remains
+unverified until exact-commit CI. Evidence belongs under
+`target/evidence/phase-1/managed-store/`. Service-side validation, administrative
+installation and disconnected-session serialization remain open.

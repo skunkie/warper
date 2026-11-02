@@ -16,13 +16,18 @@ pub(super) enum Error {
 }
 pub(super) struct StateDirectory {
     anchor: OwnedFd,
-    var: OwnedFd,
-    lib: OwnedFd,
+    parents: Vec<(&'static str, OwnedFd)>,
     pub(super) directory: OwnedFd,
     pub(super) owner: u32,
 }
 impl StateDirectory {
     pub(super) fn open(lease: &RuntimeLease) -> Result<Self, Error> {
+        Self::open_location(lease, false)
+    }
+    pub(super) fn open_configuration(lease: &RuntimeLease) -> Result<Self, Error> {
+        Self::open_location(lease, true)
+    }
+    fn open_location(lease: &RuntimeLease, configuration: bool) -> Result<Self, Error> {
         lease.revalidate().map_err(Error::Runtime)?;
         if !nix::unistd::geteuid().is_root() {
             return Err(Error::Runtime(super::Error::PrivilegeRequired));
@@ -33,35 +38,54 @@ impl StateDirectory {
             Mode::empty(),
         )
         .map_err(os_error)?;
-        Self::open_at(anchor, 0)
+        Self::open_at_location(anchor, 0, configuration)
     }
+    #[cfg(test)]
     pub(super) fn open_at(anchor: OwnedFd, owner: u32) -> Result<Self, Error> {
+        Self::open_at_location(anchor, owner, false)
+    }
+    pub(super) fn open_at_location(
+        anchor: OwnedFd,
+        owner: u32,
+        configuration: bool,
+    ) -> Result<Self, Error> {
         check_directory(&fstat(&anchor).map_err(os_error)?, owner, false)?;
-        let var = directory(&anchor, "var", false)?;
-        check_directory(&fstat(&var).map_err(os_error)?, owner, false)?;
-        let lib = directory(&var, "lib", false)?;
-        check_directory(&fstat(&lib).map_err(os_error)?, owner, false)?;
-        let directory = directory(&lib, "warper", true)?;
+        let names: &[&str] = if configuration {
+            &["etc"]
+        } else {
+            &["var", "lib"]
+        };
+        let mut parents = Vec::with_capacity(names.len());
+        for &name in names {
+            let parent = parents.last().map_or(&anchor, |(_, fd)| fd);
+            let fd = directory(parent, name, false)?;
+            check_directory(&fstat(&fd).map_err(os_error)?, owner, false)?;
+            parents.push((name, fd));
+        }
+        let parent = parents.last().map_or(&anchor, |(_, fd)| fd);
+        let directory = directory(parent, "warper", true)?;
         check_directory(&fstat(&directory).map_err(os_error)?, owner, true)?;
         Ok(Self {
             anchor,
-            var,
-            lib,
+            parents,
             directory,
             owner,
         })
     }
     pub(super) fn verify(&self) -> Result<(), Error> {
         check_directory(&fstat(&self.anchor).map_err(os_error)?, self.owner, false)?;
-        for (parent, name, fd, protected) in [
-            (&self.anchor, "var", &self.var, false),
-            (&self.var, "lib", &self.lib, false),
-            (&self.lib, "warper", &self.directory, true),
-        ] {
+        let mut parent = &self.anchor;
+        for (name, fd, protected) in self
+            .parents
+            .iter()
+            .map(|(name, fd)| (*name, fd, false))
+            .chain(std::iter::once(("warper", &self.directory, true)))
+        {
             let metadata = fstat(fd).map_err(os_error)?;
             check_directory(&metadata, self.owner, protected)?;
             require_same(&metadata, &named(parent, name).map_err(Error::Runtime)?)
                 .map_err(|_| Error::UnsafeState)?;
+            parent = fd;
         }
         Ok(())
     }

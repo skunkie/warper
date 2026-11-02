@@ -1017,3 +1017,11 @@ pending storage, idempotence and fresh allocation. Reproduce only on a disposabl
 Linux VM with the existing harness; never run these mutations against live host
 resolver/bus/state. Evidence is nested under the same exact-commit CI artifact
 in `tun-recovery/`. Compilation is not privileged acceptance.
+
+The control fixture also exercises the fixed root-owned `/etc/warper` managed
+slot in its private `/etc` mount: generation fencing, ordinary owner/foreign
+read denial, reopened state, pending-token separation from the network journal
+and explicit discard without promotion. Its synthetic opaque payload tests
+storage, not semantic WMCF installation or a running service. The harness creates
+the protected directory after mounting private state; never create these paths
+on the developer host to run this probe.
