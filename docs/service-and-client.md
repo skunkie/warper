@@ -271,8 +271,13 @@ YAML does not change the approved generation until an explicit installation.
 The initial CLI import must supply its complete configuration/material; no
 secret-preserving partial edit API exists yet.
 
-The proposed Phase 5 editor uses a staged draft: edit fields or import YAML,
+The Phase 5 GUI uses a staged, form-based draft: edit configurable fields,
 validate locally, review changes, then Apply through the authorized service.
+It has three conditional backend forms (SOCKS5, SSH and WireGuard), repeatable
+backend entries, static/domain/mixed routing choices, and shared tunnel, DNS,
+IPv6 and Advanced timeout/limit settings. It has no YAML upload or raw YAML
+editor; YAML import/export belongs to the native CLI. Only implemented
+capabilities may be enabled; Phase 1 admits static IPv4 SOCKS5/TCP.
 Apply compares the base generation and initially requires a disconnected
 session. The UI never opens internal root-owned state. An approved configuration
 view must redact secrets; configured credentials appear as configured, with
