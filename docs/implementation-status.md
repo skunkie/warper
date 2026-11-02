@@ -439,3 +439,10 @@ artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41391328712/`.
 The control session handler and full network supervisor still need to retain
 these leases; this does not establish connected readiness or a service CLI.
+
+Control framing now checks the actual monotonic deadline before every I/O poll,
+so ready/resumed I/O cannot consume or emit bytes after expiry while runtime
+timer readiness is still rounded to a later clock tick. Controlled-clock read
+and write regressions fail without this fix. Evidence belongs under
+`target/evidence/phase-1/control-frame-deadlines/`; this does not add session
+handlers or daemon readiness.

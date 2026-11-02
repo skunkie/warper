@@ -5,7 +5,12 @@
 //! Bounded versioned local-control frames. Authenticate peers before use.
 //! Any framing failure poisons the stream; callers must close it, not retry I/O.
 
-use std::{fmt, io};
+use std::{
+    fmt,
+    future::{Future, poll_fn},
+    io,
+    task::Poll,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::watch,
@@ -196,7 +201,7 @@ impl Frame {
         tokio::select! { biased;
             ()=cancelled(cancel)=>Err(Error::Cancelled),
             ()=sleep_until(deadline)=>Err(Error::Deadline),
-            result=Self::read_inner(reader, max_encoded)=>result,
+            result=before_deadline(deadline, Self::read_inner(reader, max_encoded))=>result,
         }
     }
     pub async fn write<W: AsyncWrite + Unpin>(
@@ -223,7 +228,7 @@ impl Frame {
         tokio::select! { biased;
             ()=cancelled(cancel)=>Err(Error::Cancelled),
             ()=sleep_until(deadline)=>Err(Error::Deadline),
-            result=self.write_inner(writer)=>result,
+            result=before_deadline(deadline, self.write_inner(writer))=>result,
         }
     }
 
@@ -322,6 +327,23 @@ fn check_body(kind: Kind, body: &[u8]) -> Result<(), Error> {
     };
     if valid { Ok(()) } else { Err(Error::Malformed) }
 }
+async fn before_deadline<T>(
+    deadline: Instant,
+    work: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::pin!(work);
+    poll_fn(|context| {
+        // Timer registration is rounded to runtime clock ticks. Check the
+        // actual deadline before every I/O poll, including resumed partial I/O.
+        if Instant::now() >= deadline {
+            Poll::Ready(Err(Error::Deadline))
+        } else {
+            work.as_mut().poll(context)
+        }
+    })
+    .await
+}
+
 async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     loop {
         if *cancel.borrow() {
@@ -733,5 +755,121 @@ mod tests {
             Frame::read(&mut input, Instant::now(), &mut cancel).await,
             Err(Error::Deadline)
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_ready_io_does_not_consume_or_emit_bytes() {
+        let (_owner, mut cancel) = watch::channel(false);
+        let header = encode_header(Kind::Hello, 1, 0).unwrap();
+        let mut input = header.as_slice();
+        assert!(matches!(
+            Frame::read(&mut input, Instant::now(), &mut cancel).await,
+            Err(Error::Deadline)
+        ));
+        assert_eq!(input, header);
+        let mut output = Vec::new();
+        let frame = Frame::new(Kind::Hello, 1, vec![]).unwrap();
+        assert_eq!(
+            frame.write(&mut output, Instant::now(), &mut cancel).await,
+            Err(Error::Deadline)
+        );
+        assert!(output.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resumed_read_checks_submillisecond_deadline_before_consuming_input() {
+        use std::task::Poll;
+        let (mut reader, mut writer) = tokio::io::duplex(64);
+        let (_owner, mut cancel) = watch::channel(false);
+        let deadline = Instant::now() + Duration::from_micros(250);
+        let mut reading = Box::pin(Frame::read(&mut reader, deadline, &mut cancel));
+        poll_fn(|context| {
+            assert!(reading.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(Duration::from_micros(300)).await;
+        let header = encode_header(Kind::Hello, 1, 0).unwrap();
+        writer.write_all(&header).await.unwrap();
+        assert!(matches!(reading.await, Err(Error::Deadline)));
+        let mut unchanged = [0; HEADER_LEN];
+        reader.read_exact(&mut unchanged).await.unwrap();
+        assert_eq!(unchanged, header);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resumed_write_checks_submillisecond_deadline_before_emitting_output() {
+        use tokio::io::ReadBuf;
+        let (mut writer, mut reader) = tokio::io::duplex(1);
+        writer.write_all(b"x").await.unwrap();
+        let frame = Frame::new(Kind::Hello, 1, vec![]).unwrap();
+        let (_owner, mut cancel) = watch::channel(false);
+        let deadline = Instant::now() + Duration::from_micros(250);
+        let mut writing = Box::pin(frame.write(&mut writer, deadline, &mut cancel));
+        poll_fn(|context| {
+            assert!(writing.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(Duration::from_micros(300)).await;
+        assert_eq!(reader.read_u8().await.unwrap(), b'x');
+        assert_eq!(writing.await, Err(Error::Deadline));
+        let mut byte = [0];
+        let mut buffer = ReadBuf::new(&mut byte);
+        poll_fn(|context| {
+            assert!(
+                std::pin::Pin::new(&mut reader)
+                    .poll_read(context, &mut buffer)
+                    .is_pending(),
+                "expired write must not emit even a header prefix"
+            );
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "controlled control-frame latency/throughput workload"]
+    async fn control_frame_workload() {
+        let (_owner, mut cancel) = watch::channel(false);
+        let mut samples = Vec::with_capacity(100);
+        let started = std::time::Instant::now();
+        #[cfg(target_os = "linux")]
+        let cpu_before = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        for id in 1..=100 {
+            let frame = Frame::new(Kind::InstallConfig, id, vec![b'x'; 65544]).unwrap();
+            let (mut writer, mut reader) = tokio::io::duplex(1024);
+            let mut sending = cancel.clone();
+            let before = std::time::Instant::now();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let (sent, received) = tokio::join!(
+                frame.write(&mut writer, deadline, &mut sending),
+                Frame::read(&mut reader, deadline, &mut cancel)
+            );
+            sent.unwrap();
+            let received = received.unwrap();
+            assert_eq!(received.request_id(), id);
+            assert_eq!(received.body(), frame.body());
+            samples.push(before.elapsed().as_nanos());
+        }
+        let elapsed = started.elapsed().as_nanos();
+        samples.sort_unstable();
+        println!(
+            "control_frames iterations=100 concurrency=1 encoded_bytes=6556400 elapsed_ns={elapsed} p50_ns={} p95_ns={} p99_ns={} transport=duplex_1024 drops=0 kernel_drops=unmeasured",
+            samples[49], samples[94], samples[98]
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+            let cpu = (i128::from(after.tv_sec) - i128::from(cpu_before.tv_sec)) * 1_000_000_000
+                + i128::from(after.tv_nsec)
+                - i128::from(cpu_before.tv_nsec);
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let memory = status
+                .lines()
+                .find(|line| line.starts_with("VmHWM:"))
+                .unwrap();
+            println!("cpu_ns={cpu} {memory}");
+        }
     }
 }

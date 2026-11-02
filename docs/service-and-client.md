@@ -236,6 +236,8 @@ other states require None. State names are finalized with the service handlers.
 
 Each async frame read/write uses one injected absolute deadline and cancellation
 receiver covering header, body and flush. Closed cancellation channels cancel.
+Check the actual monotonic deadline before every I/O poll, including resumed
+partial I/O; timer readiness alone does not permit bytes after expiry.
 Malformed, cancelled, partial or timed-out streams must be closed, never resumed
 or replayed. Configured `max_control_message_bytes` counts the header and generation
 metadata too; `read_limited/write_limited` enforce that budget before body
