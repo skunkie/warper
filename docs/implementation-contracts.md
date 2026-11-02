@@ -2528,6 +2528,18 @@ workers and service metadata need separate reservations in the supervisor.
 Handlers must construct only one bounded reply at a time. This boundary does
 not supply event subscriptions or operation-history admission.
 
+Reconfiguration updates that same admission owner; it never creates a second
+quota pool. Each outstanding frame retains its original encoded-byte charge and
+its client lease through queued/native work, even if the session disconnects.
+A smaller plan admits nothing beyond its client, request and byte limits until
+old charges drain. Previously admitted buffers remain bounded by the previous
+plan and their original deadlines; a smaller limit does not claim to free or
+cancel them. An expansion accounts for old and new charges together. Session
+readers obtain their next frame size from the actual request reservation rather
+than caching the size from connection admission. Reply capacity remains reserved
+for the entire client lease. Closing or poisoned accounting cannot reopen through
+reconfiguration or a late release.
+
 ## Linux retained packet pump
 
 `linux::packet::Pump` owns the original `Arc<PacketPort>`, host ingress and host

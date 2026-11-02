@@ -94,6 +94,8 @@ async fn retained_dispatch_keeps_request_capacity_after_session_drop() {
         .unwrap();
     let retained = first.authorize(&policy).unwrap();
     drop(first);
+    assert!(matches!(admission.try_client(), Err(Error::Full)));
+    drop(retained);
     let (mut second, mut peer, policy) = pair(&admission);
     Frame::new(Kind::Hello, 1, vec![])
         .unwrap()
@@ -103,8 +105,6 @@ async fn retained_dispatch_keeps_request_capacity_after_session_drop() {
     {
         let receive = second.receive(&policy, deadline(), &mut cancel);
         tokio::pin!(receive);
-        pending(receive.as_mut()).await;
-        drop(retained);
         receive.await.unwrap();
     }
     drop(second.authorize(&policy).unwrap());
@@ -167,4 +167,48 @@ async fn abandoned_wait_and_malformed_frame_release_request_capacity() {
         .await
         .unwrap();
     drop(third.authorize(&policy).unwrap());
+}
+
+#[tokio::test]
+async fn existing_session_uses_reconfigured_frame_limit_before_body_allocation() {
+    let admission = Admission::new(Plan::new(1, 1, 128, 174).unwrap());
+    let (mut session, mut peer, policy) = pair(&admission);
+    let (_owner, mut cancel) = watch::channel(false);
+    Frame::new(Kind::Hello, 1, vec![])
+        .unwrap()
+        .write(&mut peer, deadline(), &mut cancel)
+        .await
+        .unwrap();
+    session
+        .receive(&policy, deadline(), &mut cancel)
+        .await
+        .unwrap();
+    let request = session.authorize(&policy).unwrap();
+    session
+        .respond(
+            request.reply(Kind::HelloReply, vec![7; 16]).unwrap(),
+            deadline(),
+            &mut cancel,
+        )
+        .await
+        .unwrap();
+    Frame::read(&mut peer, deadline(), &mut cancel)
+        .await
+        .unwrap();
+    drop(request);
+    admission
+        .reconfigure(Plan::new(1, 1, 68, 114).unwrap())
+        .unwrap();
+    Frame::new(Kind::InstallConfig, 2, vec![0; 64])
+        .unwrap()
+        .write(&mut peer, deadline(), &mut cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        session.receive(&policy, deadline(), &mut cancel).await,
+        Err(SessionError::Frame(
+            warper_control::wire::Error::InvalidLength
+        ))
+    );
+    assert!(session.is_closed());
 }

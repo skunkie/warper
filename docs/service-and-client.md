@@ -265,7 +265,7 @@ active request ID and command kind; HelloReply carries the actual instance ID.
 Any protocol/authorization failure or failed/dropped I/O closes the stream.
 An application ErrorReply after Hello may keep the connection open. These are
 session rules for the unreleased version-two prototype, not a new frame layout.
-The service still needs concrete handlers, global admission and a supervisor;
+The service still needs asynchronous handler dispatch and task supervision;
 closing a session never implicitly disconnects networking.
 
 ### Control API and managed material

@@ -5,15 +5,11 @@
 //! Linux framed request ownership. Command execution belongs to the service.
 
 use std::fmt;
-use tokio::{
-    net::UnixStream,
-    sync::{OwnedSemaphorePermit, watch},
-    time::Instant,
-};
+use tokio::{net::UnixStream, sync::watch, time::Instant};
 
 use crate::{
     Access, OwnerPolicy, Role,
-    admission::{self, ClientPermit},
+    admission::{self, ClientPermit, RequestPermit},
     unix,
     wire::{self, Frame, Kind},
 };
@@ -63,7 +59,7 @@ impl std::error::Error for Error {}
 pub struct AuthorizedRequest {
     frame: Frame,
     role: Role,
-    _reservation: Option<OwnedSemaphorePermit>,
+    _reservation: Option<RequestPermit>,
 }
 impl AuthorizedRequest {
     pub fn frame(&self) -> &Frame {
@@ -93,7 +89,7 @@ pub struct Session {
     active: Option<(Kind, u64)>,
     hello_done: bool,
     last_id: u64,
-    pending_reservation: Option<OwnedSemaphorePermit>,
+    pending_reservation: Option<RequestPermit>,
     client: Option<ClientPermit>,
 }
 impl Session {
@@ -123,7 +119,11 @@ impl Session {
         instance: [u8; 16],
         client: ClientPermit,
     ) -> Result<Self, Error> {
-        let mut session = Self::new(stream, instance, client.max_encoded())?;
+        let mut session = Self::new(
+            stream,
+            instance,
+            client.max_encoded().map_err(Error::Admission)?,
+        )?;
         session.client = Some(client);
         Ok(session)
     }
@@ -154,6 +154,9 @@ impl Session {
             ),
             None => None,
         };
+        if let Some(reservation) = &reservation {
+            self.max_encoded = reservation.max_encoded();
+        }
         let frame = Frame::read_limited(&mut stream, deadline, cancel, self.max_encoded)
             .await
             .map_err(Error::Frame)?;

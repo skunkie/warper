@@ -588,3 +588,13 @@ exact-commit privileged evidence remains unverified. Evidence belongs under
 `target/evidence/phase-1/controller-dispatch/`. The async daemon, control task
 supervision, administrative CLI/recovery, installation and full daemon/CLI
 acceptance remain open.
+
+Control admission now applies changed plans to the existing quota owner rather
+than replacing its pool. Outstanding frames retain their original byte charges
+and client leases across session exit and queued work. Limit reductions wait
+for those charges to drain; increases account for both old and new sizes.
+Existing sessions obtain the current frame limit from their next reservation.
+Controlled tests cover shrinking and expanding plans, retained client capacity,
+closed/poisoned accounting and frame-limit refresh before body allocation.
+Evidence is under `target/evidence/phase-1/control-reconfiguration/`. The daemon
+must still compose this admission owner with its session and native-task queues.
