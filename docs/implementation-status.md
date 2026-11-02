@@ -530,8 +530,13 @@ Local tests cover task readiness/observer loss, capacity isolation, pure deadlin
 validation and bounded abort/join under a noncooperative-worker fault. The
 native fixture adds canceled startup without journal mutation, rollback after
 activation on an unusable physical backend path, retained approval fencing and
-actual kernel TCP/FIN followed by explicit service stop. Its exact-commit native
-evidence remains unverified. Evidence belongs under
-`target/evidence/phase-1/network-supervisor/`. The authenticated daemon
+actual kernel TCP/FIN followed by explicit service stop. The
+[owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41473128483)
+passes at `8f86089`: all three isolated fixtures finish without timeout and
+preserve independently observed host state. The supervisor fixture verifies
+retirement with no retained host streams, then permits managed replacement
+after the final supervisor lease drops. Artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41473128483/`; local evidence
+is under `target/evidence/phase-1/network-supervisor/`. The authenticated daemon
 controller, durable operation dispatch, service CLI/installation, stale endpoint
 recovery and full client-detach/lifecycle acceptance remain open.
