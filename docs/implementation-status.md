@@ -506,14 +506,14 @@ uncertainty/failure, cancellation, idle renewal, owner/channel loss, invalid
 input and always-ready fairness. The native TCP/FIN fixture now runs this pump
 through route withdrawal and retains the stopped receiver owner until explicit
 host shutdown is joined. The
-[owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41464723946)
-passes at `9d64743`: all three isolated fixtures finish without timeout and
+[owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41466656225)
+passes at `227a20f`: all three isolated fixtures finish without timeout and
 preserve independently observed host state. The controlled 64 KiB TCP/FIN run
 also records a fixed write-wait histogram, byte counts, CPU, peak RSS and drop
 counters. Artifacts are under
-`target/evidence/phase-1/privileged-control-ci/run-41464723946/`; local evidence
+`target/evidence/phase-1/privileged-control-ci/run-41466656225/`; local evidence
 is under `target/evidence/phase-1/packet-pump/` and
-`target/evidence/phase-1/packet-pump-lifetime/`. That run's separate macOS
-WireGuard experiment test failed; it does not establish a green whole workflow.
+`target/evidence/phase-1/packet-pump-lifetime/`. The complete CI matrix
+also passes at that revision, including macOS and both Linux native targets.
 Full network supervision, startup readiness, failure rollback and daemon/control
 integration remain open.
