@@ -517,3 +517,21 @@ is under `target/evidence/phase-1/packet-pump/` and
 also passes at that revision, including macOS and both Linux native targets.
 Full network supervision, startup readiness, failure rollback and daemon/control
 integration remain open.
+
+The Linux network supervisor now retains the approved configuration through
+native transitions, protected backend connectors, runtime/packet task results
+and joined relay work. Startup waits for task polling before capture; Connected
+requires acknowledged capture and live owners. Stop quiesces admission, bounds
+graceful drain, forces remaining flows within the shared deadline and retires
+routes before stopping the packet/runtime owners and closing the TUN. Failed
+withdrawal or unresolved native work keeps ownership retained for cleanup.
+Expected relay exhaustion rejects only the new flow and records its outcome.
+Local tests cover task readiness/observer loss, capacity isolation, pure deadline
+validation and bounded abort/join under a noncooperative-worker fault. The
+native fixture adds canceled startup without journal mutation, rollback after
+activation on an unusable physical backend path, retained approval fencing and
+actual kernel TCP/FIN followed by explicit service stop. Its exact-commit native
+evidence remains unverified. Evidence belongs under
+`target/evidence/phase-1/network-supervisor/`. The authenticated daemon
+controller, durable operation dispatch, service CLI/installation, stale endpoint
+recovery and full client-detach/lifecycle acceptance remain open.

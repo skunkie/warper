@@ -63,7 +63,7 @@ struct Approved {
     generation: u64,
     snapshot: Snapshot,
     // Keep instance ownership until the last supervisor/worker lease drops.
-    _context: Arc<Context>,
+    context: Arc<Context>,
     _ownership: Arc<Ownership>,
 }
 
@@ -72,6 +72,9 @@ pub struct ConfigurationLease(Arc<Approved>);
 impl ConfigurationLease {
     pub fn generation(&self) -> u64 {
         self.0.generation
+    }
+    pub(super) fn context(&self) -> Arc<Context> {
+        self.0.context.clone()
     }
     pub fn config(&self) -> &Config {
         self.0.snapshot.config()
@@ -107,7 +110,7 @@ impl Configurations {
                     Arc::new(Approved {
                         generation: stored.revision(),
                         snapshot,
-                        _context: context.clone(),
+                        context: context.clone(),
                         _ownership: ownership.clone(),
                     })
                 })
@@ -149,7 +152,7 @@ impl Configurations {
         self.approved = Some(Arc::new(Approved {
             generation,
             snapshot,
-            _context: self.context.clone(),
+            context: self.context.clone(),
             _ownership: self.ownership.clone(),
         }));
         Ok(generation)
@@ -250,6 +253,13 @@ mod tests {
             assert!(matches!(
                 validate(encoded(&sample).expose()),
                 Err(Error::Control(_))
+            ));
+        }
+        for timeout in ["connect_ms", "shutdown_ms"] {
+            let sample = format!("{sample}\ntimeouts: {{{timeout}: 30001}}\n");
+            assert!(matches!(
+                validate(encoded(&sample).expose()),
+                Err(Error::Preflight(crate::preflight::Error::InvalidLimits))
             ));
         }
         let sample = sample.replace("127.0.0.1:1080", "proxy.example.test:1080");

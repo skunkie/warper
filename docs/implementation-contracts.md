@@ -2563,3 +2563,54 @@ quiescence and route withdrawal. After the native withdrawal acknowledgment it
 can cancel/join packet work, then stop/join the runtime and retire the TUN. A
 pump stop does not withdraw routes, prove flow drain, declare connected
 readiness or provide a general shutdown barrier on its own.
+
+## Linux network supervisor
+
+`linux::network::Network` is constructed from an approved configuration lease.
+It derives its context from that same lease, validates the pure networking plan
+and reserves one native worker before mutation. Phase 1 startup and shutdown
+budgets must be positive and no greater than 30 seconds. The supervisor retains
+the configuration through all native work, packet/runtime tasks and cleanup.
+Its cancellation channel belongs to the service, never a client connection.
+
+Startup journals and activates a fresh TUN, prepares protected physical backend
+paths, instantiates the admitted stack/relays, and polls both retained packet
+and runtime tasks before publishing capture. A task that finishes during its
+first poll cannot acknowledge startup. Connected is published only after the
+native capture acknowledgment and a final live-task check. The service must
+continue supervising runtime, packet and capture-monitor failures afterward.
+Individual relay failures remain per-flow outcomes; worker failure stops the
+network owner. Relay-capacity exhaustion drops only the newly accepted stream
+and increments bounded rejection counters; it does not stop established flows.
+Selected-backend failure never retries traffic directly.
+
+All blocking transitions use one retained native task slot. Its result returns
+the original owner even on operation failure. Observer cancellation/expiry
+leaves the accepted native task in the supervisor; cleanup first joins it with
+an independent service deadline. Panic/lost native ownership requires recovery.
+An unresolved native task prevents releasing its runtime, packet or mapping
+owners. `Network` itself stays retained when cleanup cannot establish retirement;
+`cleanup` retries owned work without replaying application payload.
+
+Stop first quiesces admission. An explicit stop permits existing accepted flows
+to drain for at most one quarter of the shutdown budget; failure stops skip
+this grace.
+It then cancels remaining driver/relay flows, drops queued accepted streams and
+joins relay work within that first-half deadline. Capture withdrawal requires
+zero retained flow references and keeps the packet pump and mapping alive.
+Only after acknowledged withdrawal does cleanup stop/join packet work, stop/
+join the runtime, release the original packet port and explicitly retire the
+TUN. A failed withdrawal leaves those owners retained and admission quiescent.
+Reports preserve the initial failure and separate cleanup-stage failures.
+
+Each native result and asynchronous task completion retains its own approved
+configuration lease until joined. Backend connector ownership pins the same
+lease through every relay task. Emergency owner drop aborts async tasks but
+does not claim journaled cleanup or retirement.
+
+The supervisor owns at most two asynchronous owner tasks, one native job and
+the preflight flow ceiling of relay tasks. Payload buffers retain the existing
+plan reservation; physical TCP queues remain bounded by the connector's stream
+ceiling and verified per-stream queue limits. This component does not admit
+control clients, install configuration or persist Connect/Disconnect intent;
+the daemon controller composes those independent ownership budgets.

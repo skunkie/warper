@@ -27,7 +27,7 @@ use warper_service::linux::{
 const SAMPLE: &str = "tunnel: {ip: 198.18.0.1}\nprotocols: [{socks5: {host: '127.0.0.1:1080', ips: [198.18.0.2/32]}}]";
 const SOCKET: &str = "/run/warper/configuration-peer.sock";
 
-fn encoded(sample: &str) -> Result<warper_config::schema::Secret<Vec<u8>>, Failure> {
+pub(super) fn encoded(sample: &str) -> Result<warper_config::schema::Secret<Vec<u8>>, Failure> {
     let paths = Paths::new(
         &Account {
             uid: 1000,

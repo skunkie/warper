@@ -427,6 +427,15 @@ All values below are positive integers; none accepts an unlimited sentinel. Reje
 | `max_control_buffered_bytes_total` | 8388608 | Aggregate control buffers, separate from data-plane buffers |
 | `max_control_operations` | 256 | Retained operation records; active operations are not silently evicted |
 
+The Phase 1 Linux network supervisor requires `timeouts.connect_ms` and
+`timeouts.shutdown_ms` to be between 1 and 30000 milliseconds. Managed approval
+rejects higher values before storage. Startup shares one absolute connect
+deadline across native preparation and capture publication. Shutdown reserves
+at most one quarter of its budget for graceful flow drain, the first half for
+flow cancellation/join, and the remaining time for native withdrawal and owner
+retirement. Expiry leaves unverified ownership retained for cleanup/recovery;
+it never reports a completed Disconnect.
+
 The Phase 1 Linux control admission adapter supports 1–64 clients and 1–64
 in-flight requests. Its encoded message ceiling is 68 bytes through the wire
 maximum (1 MiB plus 28 bytes). It reserves 46 reply bytes per client and one

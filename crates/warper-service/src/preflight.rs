@@ -10,6 +10,7 @@ use std::{
     fmt,
     net::{IpAddr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 use warper_backends::socks5::{Credentials, Socks5};
 use warper_config::schema::{
@@ -98,6 +99,7 @@ impl Plan {
         if platform != Platform::Linux {
             return Err(Error::UnsupportedPlatform);
         }
+        validate_native_deadlines(config.timeouts.connect, config.timeouts.shutdown)?;
         let address = config.tunnel.ipv4;
         if address.is_unspecified()
             || address.is_loopback()
@@ -339,6 +341,21 @@ pub struct Networking {
 impl fmt::Debug for Plan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Plan(<redacted>)")
+    }
+}
+
+/// Bounds shared by pure approval and the native supervisor.
+pub(crate) fn validate_native_deadlines(
+    startup: Duration,
+    shutdown: Duration,
+) -> Result<(), Error> {
+    if [startup, shutdown]
+        .iter()
+        .any(|wait| *wait < Duration::from_millis(1) || *wait > Duration::from_secs(30))
+    {
+        Err(Error::InvalidLimits)
+    } else {
+        Ok(())
     }
 }
 

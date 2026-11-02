@@ -36,6 +36,7 @@ mod linux {
     mod configuration_installation;
     mod physical;
     mod process_owner;
+    mod supervised_network;
 
     pub fn configuration_peer() -> Result<(), Failure> {
         configuration_installation::peer()
@@ -1215,6 +1216,7 @@ mod linux {
             if !absent || before!=ip(&["-j","link","show","dev",&foreign_name])? {cleanup.push("native TUN cleanup or foreign preservation failed".into());}
             preserve(outcome,cleanup)?;
             println!("PASS journaled TUN packet port, collision preservation, explicit retirement and joined peers");
+            supervised_network::exercise(context.clone(),runtime_lease.clone()).await?;
             Ok(())
         }.await;
         drop(foreign);

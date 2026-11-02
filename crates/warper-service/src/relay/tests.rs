@@ -453,3 +453,63 @@ async fn surfaced_worker_panic_cancels_and_joins_the_other_selected_backend() {
     assert_eq!(report.cancelled, 1);
     assert_eq!(report.aborted, 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn shared_shutdown_deadline_aborts_and_joins_a_noncooperative_worker() {
+    use std::sync::atomic::AtomicBool;
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    struct Case {
+        id: &'static str,
+        caller_timeout: Duration,
+        configured_timeout: Duration,
+        expected_elapsed: Duration,
+    }
+    for case in [
+        Case {
+            id: "caller budget",
+            caller_timeout: Duration::from_millis(1),
+            configured_timeout: Duration::from_millis(10),
+            expected_elapsed: Duration::from_millis(1),
+        },
+        Case {
+            id: "configured budget",
+            caller_timeout: Duration::from_millis(10),
+            configured_timeout: Duration::from_millis(1),
+            expected_elapsed: Duration::from_millis(1),
+        },
+    ] {
+        let (mut relays, _backend, _app, _flow, _target) = create(
+            Limits {
+                shutdown_timeout: case.configured_timeout,
+                ..Limits::default()
+            },
+            None,
+            false,
+        );
+        let dropped = Arc::new(AtomicBool::new(false));
+        let worker_guard = dropped.clone();
+        // Fault injection bypasses the normally cancellation-safe transfer to
+        // prove the supervisor deadline also joins an uncooperative worker.
+        relays.tasks.spawn(async move {
+            let _guard = Dropped(worker_guard);
+            pending::<Completion>().await
+        });
+        tokio::task::yield_now().await;
+        let start = Instant::now();
+        let report = relays.shutdown_until(start + case.caller_timeout).await;
+        assert_eq!(start.elapsed(), case.expected_elapsed, "{}", case.id);
+        assert_eq!(
+            report.shutdown_error,
+            Some(ShutdownError::Deadline),
+            "{}",
+            case.id
+        );
+        assert_eq!(report.aborted, 1, "{}", case.id);
+        assert!(dropped.load(Ordering::Acquire), "{}", case.id);
+    }
+}

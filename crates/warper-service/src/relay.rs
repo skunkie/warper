@@ -236,9 +236,20 @@ impl Relays {
         // send_replace also preserves cancellation when no receiver remains.
         self.cancel.send_replace(true);
     }
-    pub async fn shutdown(mut self) -> Report {
-        self.stop();
+    pub async fn shutdown(self) -> Report {
         let deadline = Instant::now().checked_add(self.limits.shutdown_timeout);
+        self.shutdown_at(deadline).await
+    }
+    /// Share the supervisor deadline without extending the configured timeout.
+    /// Expiry aborts and joins all remaining workers.
+    pub async fn shutdown_until(self, deadline: Instant) -> Report {
+        let deadline = Instant::now()
+            .checked_add(self.limits.shutdown_timeout)
+            .map(|configured| configured.min(deadline));
+        self.shutdown_at(deadline).await
+    }
+    async fn shutdown_at(mut self, deadline: Option<Instant>) -> Report {
+        self.stop();
         let Some(deadline) = deadline else {
             self.report.shutdown_error = Some(ShutdownError::InvalidClock);
             self.abort_remaining().await;
