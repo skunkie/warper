@@ -372,16 +372,18 @@ for the next native run. Evidence belongs under
 passes at `5adcf1b`, including real SIGKILL/reap and runtime reacquisition with
 independently preserved host state. Artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41384228624/`.
-Abandoned journal reconciliation still needs
-object/key absence, revision comparison and committed retirement.
+Abandoned journal reconciliation now has scoped native evidence below.
 
 The initial driver now has abandoned-journal retirement under native context
 checks. It preserves live/uncertain owners and foreign or surviving keys, and
 commits only ended ownership under the observed revision without native deletes.
 A fresh-state recovery executable and owner-dispatched CI step cover actual
 SIGKILL at prepared/allocated/enabled/captured stages, pending intent, foreign
-claims, idempotence and fresh allocation. Local checks establish harness
-readiness; the new privileged gate remains unverified until CI. Evidence
-belongs under `target/evidence/phase-1/abandoned-tun-recovery/`. Desired-state
+claims, idempotence and fresh allocation. The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41387832176)
+passes at `25f8933`, including request expiry/cancellation and independently
+preserved host state. A modeled prior boot preserves current foreign state;
+actual reboot recovery is not established. Artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41387832176/`; local evidence
+is under `target/evidence/phase-1/abandoned-tun-recovery/`. Desired-state
 restart, stale control endpoint recovery and full service supervision remain
 open.

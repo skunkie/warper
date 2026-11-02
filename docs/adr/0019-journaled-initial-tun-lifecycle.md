@@ -129,7 +129,11 @@ already retired record are explicit idempotent observations.
 
 A separate runnable recovery probe uses fresh private state and real SIGKILL
 at four lifecycle stages, then tests foreign interface/route claims, pending
-intent, request expiry, repeated recovery and fresh TUN allocation. Its first
-privileged execution remains pending the exact committed owner-dispatched run.
+intent, request expiry/cancellation, repeated recovery and fresh TUN allocation.
+The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41387832176)
+passes at `25f8933`, with independently preserved host state. A modeled prior
+boot also preserves a currently live foreign interface; this is not a VM reboot.
+Raw artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41387832176/`.
 This does not implement desired-state/control-endpoint/resolver recovery or
 complete daemon startup.
