@@ -387,3 +387,12 @@ actual reboot recovery is not established. Artifacts are under
 is under `target/evidence/phase-1/abandoned-tun-recovery/`. Desired-state
 restart, stale control endpoint recovery and full service supervision remain
 open.
+
+The ordinary-client credential reader now opens and validates the same regular
+file descriptor, checks invoking-user/root ownership and private permissions,
+bounds reads independently of metadata, and rejects observed descriptor changes.
+It preserves UTF-8 content while removing exactly one final LF/CRLF. Controlled
+file/FIFO/symlink, size, permission, decoding and read-failure tests exercise the
+boundary. Evidence belongs under
+`target/evidence/phase-1/client-secret-import/`. This does not yet provide the
+managed format/store, authorized installation or import CLI.

@@ -2334,3 +2334,28 @@ commit changes nothing, and commit uncertainty is surfaced. Filesystem waits
 still have no hard cancellation guarantee, so native jobs must be retained and
 joined. This operation does not implement desired-state restart, control-socket
 recovery, resolver recovery or connected readiness.
+
+## Ordinary-client credential file reader
+
+`warper_config::credential::read_secret(&Path) -> Result<Secret<String>, Error>`
+performs synchronous Unix file I/O with the client's current effective UID.
+It never consults sudo environment fields, changes credentials, expands paths,
+connects to a backend or approves service installation. Schema path resolution
+precedes this call. Privileged handlers must never call it on RPC paths.
+
+Open nonblocking, then inspect the descriptor: require a regular file owned by
+that UID or root with no group/other permissions. A symlink is allowed because
+validation and reads refer to the opened file. Bound input to 16 KiB including
+an optional final newline, with one overflow sentinel; metadata alone is not
+size authority. Compare descriptor identity, UID/GID, mode, length and mtime/
+ctime including nanoseconds after reading. Observed changes reject the import;
+this is not an exclusive lock or a guarantee against concurrent writers.
+
+Remove exactly one final LF or CRLF, require nonempty UTF-8, and retain every
+other character. Return only redacted secret Debug output and typed errors
+without file paths, contents or underlying OS error text. Backend-specific
+validation follows import. The reader allocates at most a bounded input buffer
+and its UTF-8 result; callers account for retained copies separately. Filesystem
+waits have no hard wall deadline: asynchronous clients retain/join a blocking
+worker rather than canceling and losing its task. Protected serialization,
+credential references, storage and the import CLI remain separate work.
