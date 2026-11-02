@@ -486,7 +486,10 @@ configuration validation rejects unsupported admission limits before storage.
 Local Unix peers and controlled clocks exercise capacity exhaustion, retained
 ownership, abandonment, malformed frames, cancellation and exact deadlines.
 Evidence belongs under `target/evidence/phase-1/control-admission/`. The native
-root/owner session fixture now uses this admission path; exact-commit native
-regression evidence remains pending. Concrete handlers, kernel queue/native
+root/owner session fixture now uses this admission path. The
+[owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41456708777)
+passes at `99afd63`; control, real-TUN traffic and crash recovery all finish
+without timeout and preserve independently observed host state. Artifacts are
+under `target/evidence/phase-1/privileged-control-ci/run-41456708777/`. Concrete handlers, kernel queue/native
 resource accounting, operation/event admission and the daemon supervisor remain
 open.
