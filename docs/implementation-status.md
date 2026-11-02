@@ -462,3 +462,11 @@ independently preserved host state. Local evidence is under
 `target/evidence/phase-1/privileged-control-ci/run-41395848365/`.
 Concrete service handlers, global
 client/buffer admission and a running daemon remain open.
+
+The native TUN direction guard now checks the actual monotonic deadline before
+every device I/O poll rather than relying only on rounded timer readiness.
+Controlled-clock tests cover ready and resumed submillisecond I/O, preserve
+cancellation precedence and verify direction capacity is released on expiry.
+The resumed regression fails without this fix. Evidence belongs under
+`target/evidence/phase-1/packet-direction-deadlines/`; the new exact-commit
+real-TUN regression gate remains unverified until CI.

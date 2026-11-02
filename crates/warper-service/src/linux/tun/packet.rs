@@ -7,12 +7,13 @@
 use super::{Context, MTU};
 use std::{
     fmt,
-    future::Future,
+    future::{Future, poll_fn},
     io,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    task::Poll,
 };
 use tun_rs::AsyncDevice;
 use warper_core::transport::Request;
@@ -99,10 +100,23 @@ impl Direction {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| Error::Busy)?;
         let _reservation = Reservation(self);
+        let deadline = request.deadline;
+        tokio::pin!(io);
+        let guarded = poll_fn(|context| {
+            // Runtime timers round to clock ticks. A late-ready device must not
+            // consume or emit a packet before that rounded timer wakes us.
+            if tokio::time::Instant::now() >= deadline {
+                Poll::Ready(Err(Error::Deadline))
+            } else {
+                io.as_mut()
+                    .poll(context)
+                    .map(|result| result.map_err(|error| Error::Io(error.kind())))
+            }
+        });
         tokio::select! {biased;
             _=request.cancellation.wait_for(|cancelled|*cancelled)=>Err(Error::Cancelled),
             ()=tokio::time::sleep_until(request.deadline)=>Err(Error::Deadline),
-            result=io=>result.map_err(|error|Error::Io(error.kind())),
+            result=guarded=>result,
         }
     }
 }
@@ -194,5 +208,65 @@ mod tests {
         assert_eq!(received(MTU as usize), Ok(MTU as usize));
         assert_eq!(written_packet(1279, 1280), Err(Error::PartialWrite));
         assert_eq!(written_packet(1280, 1280), Ok(()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn packet_deadline_expires_before_ready_io_is_polled() {
+        let direction = Direction::default();
+        let (owner, _) = watch::channel(false);
+        let polls = std::cell::Cell::new(0);
+        let operation = Request {
+            deadline: Instant::now(),
+            cancellation: owner.subscribe(),
+        };
+        assert_eq!(
+            direction
+                .run(operation, async {
+                    polls.set(polls.get() + 1);
+                    Ok(1)
+                })
+                .await,
+            Err(Error::Deadline)
+        );
+        assert_eq!(
+            polls.get(),
+            0,
+            "expired packet operation must not reach the device"
+        );
+        assert_eq!(direction.run(request(&owner), async { Ok(1) }).await, Ok(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn packet_deadline_covers_resumed_submillisecond_io() {
+        use std::{future::poll_fn, task::Poll};
+        let direction = Direction::default();
+        let (owner, _) = watch::channel(false);
+        let polls = std::cell::Cell::new(0);
+        let operation = Request {
+            deadline: Instant::now() + Duration::from_micros(250),
+            cancellation: owner.subscribe(),
+        };
+        let io = poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            if polls.get() == 1 {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(1))
+            }
+        });
+        let mut running = Box::pin(direction.run(operation, io));
+        poll_fn(|context| {
+            assert!(running.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(Duration::from_micros(300)).await;
+        assert_eq!(running.await, Err(Error::Deadline));
+        assert_eq!(
+            polls.get(),
+            1,
+            "resumed device I/O must not be polled after expiry"
+        );
+        assert_eq!(direction.run(request(&owner), async { Ok(1) }).await, Ok(1));
     }
 }

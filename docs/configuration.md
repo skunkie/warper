@@ -739,6 +739,9 @@ committed activation, one bounded packet port can use the original descriptor.
 It cannot reconfigure the TUN or publish routes. Shutdown must join packet work
 and drop the port before explicit descriptor retirement; a live port returns
 PacketPortActive without pretending cleanup succeeded.
+Packet waits check the actual monotonic deadline before each device poll,
+including resumed readiness, and release their direction reservation on expiry.
+An uncertain/partial send is never retried automatically.
 
 The initial Linux protected TCP connector admits at most 64 numeric IPv4
 endpoints and 16 simultaneous setup/stream owners. It supports unstacked

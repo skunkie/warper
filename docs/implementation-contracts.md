@@ -2019,7 +2019,9 @@ reject packets exceeding the 1280-byte MTU. Zero-length reads, oversized
 packets, short writes and native failures remain typed/redacted. Send accepts
 only nonempty packets up to MTU and never retries a partial write. One total
 Request deadline and cancellation/owner loss bound each asynchronous wait;
-dropping the future releases its direction reservation and retains no task.
+the actual monotonic deadline is checked before every device I/O poll, including
+resumed readiness before a rounded runtime timer wakes. Expired I/O is not polled.
+Dropping the future releases its direction reservation and retains no task.
 Failure/cancellation never authorizes replay of a potentially delivered packet.
 The caller owns framing/family validation and bounded packet queues.
 
