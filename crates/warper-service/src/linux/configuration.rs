@@ -27,6 +27,7 @@ pub enum Error {
     Storage(StorageError),
     Managed(warper_config::managed::Error),
     Preflight(crate::preflight::Error),
+    Control(warper_control::admission::Error),
     Busy,
     Conflict,
 }
@@ -37,6 +38,7 @@ impl fmt::Display for Error {
             Self::Storage(error) => error.fmt(formatter),
             Self::Managed(error) => error.fmt(formatter),
             Self::Preflight(error) => error.fmt(formatter),
+            Self::Control(error) => error.fmt(formatter),
             Self::Authentication(_) => formatter.write_str(
                 "PermissionDenied: configuration installation requires an administrator",
             ),
@@ -196,6 +198,14 @@ fn authorize_admin(peer: &UnixStream) -> Result<(), Error> {
 
 fn validate(encoded: &[u8]) -> Result<Snapshot, Error> {
     let snapshot = Snapshot::decode(encoded, Platform::Linux).map_err(Error::Managed)?;
+    let limits = &snapshot.config().limits;
+    warper_control::admission::Plan::new(
+        limits.max_control_clients,
+        limits.max_control_inflight_requests,
+        limits.max_control_message_bytes,
+        limits.max_control_buffered_bytes_total,
+    )
+    .map_err(Error::Control)?;
     // Drop the pure plan after validating bounds and credentials; a later
     // network owner prepares its own plan while retaining ConfigurationLease.
     Plan::prepare(snapshot.config(), Platform::Linux).map_err(Error::Preflight)?;
@@ -230,6 +240,18 @@ mod tests {
         assert!(matches!(validate(b"invalid"), Err(Error::Managed(_))));
         let sample = "tunnel: {ip: 198.18.0.1}\nprotocols: [{socks5: {host: '127.0.0.1:1080', ips: [198.18.0.2/32]}}]";
         validate(encoded(sample).expose()).unwrap();
+        for limits in [
+            "max_control_clients: 65",
+            "max_control_inflight_requests: 65",
+            "max_control_message_bytes: 67",
+            "max_control_buffered_bytes_total: 1",
+        ] {
+            let sample = format!("{sample}\nlimits: {{{limits}}}\n");
+            assert!(matches!(
+                validate(encoded(&sample).expose()),
+                Err(Error::Control(_))
+            ));
+        }
         let sample = sample.replace("127.0.0.1:1080", "proxy.example.test:1080");
         assert!(matches!(
             validate(encoded(&sample).expose()),

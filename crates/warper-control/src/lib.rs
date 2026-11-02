@@ -11,6 +11,8 @@
 
 use std::{fmt, io};
 
+#[cfg(target_os = "linux")]
+pub mod admission;
 pub mod namespace;
 #[cfg(target_os = "linux")]
 pub mod runtime;

@@ -2498,3 +2498,32 @@ Closing a control stream does not cancel service work or release networking.
 
 This boundary supplies framing, handshake, correlation and fresh-policy dispatch,
 not concrete command handlers, a daemon executable or client availability proof.
+
+### Linux control admission
+
+The service constructs one `admission::Admission` from a pure validated `Plan`
+and uses `Session::admitted` for every accepted client. The primitive
+`Session::new` remains available for callers that provide their own admission.
+Client and request ceilings are independently capped at 64. The encoded message
+ceiling is between 68 bytes and the wire maximum. Checked arithmetic reserves
+46 encoded reply bytes per client, then divides the remaining configured
+control buffer budget into whole maximum-message request reservations. At
+least one request must fit; effective request concurrency may be below the
+configured ceiling (seven with the current defaults).
+
+A non-cloneable client permit retains its admission owner. `receive` verifies
+Observe access, then acquires a request reservation before reading a header or
+allocating its body. Waiting shares the frame's absolute deadline and
+cancellation; cancellation/expiry/abandonment closes the session. Admission
+closure wakes waiters and rejects new permits without canceling admitted work.
+The reservation moves with `AuthorizedRequest`, so dropping the client session
+cannot release capacity while a retained worker still holds its frame. Failed
+framing/authorization releases the reservation. Handlers move the whole request
+into retained work and avoid unaccounted copies of its borrowed body.
+
+The buffer calculation covers logical encoded request buffers and one bounded
+reply per client. It does not claim a process RSS limit: allocator overhead,
+Unix socket kernel queues, protected storage copies, operation records, native
+workers and service metadata need separate reservations in the supervisor.
+Handlers must construct only one bounded reply at a time. This boundary does
+not supply event subscriptions or operation-history admission.

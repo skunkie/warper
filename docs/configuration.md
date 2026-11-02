@@ -427,6 +427,18 @@ All values below are positive integers; none accepts an unlimited sentinel. Reje
 | `max_control_buffered_bytes_total` | 8388608 | Aggregate control buffers, separate from data-plane buffers |
 | `max_control_operations` | 256 | Retained operation records; active operations are not silently evicted |
 
+The Phase 1 Linux control admission adapter supports 1–64 clients and 1–64
+in-flight requests. Its encoded message ceiling is 68 bytes through the wire
+maximum (1 MiB plus 28 bytes). It reserves 46 reply bytes per client and one
+maximum-size encoded buffer per admitted request. The effective request count
+is the smaller of the configured count and the number that fits the remaining
+control buffer budget; at least one must fit. Defaults admit up to seven
+simultaneous retained requests and 16 clients. Unsupported limits produce a
+typed resource error before managed configuration installation. Kernel queues,
+metadata, storage copies and retained operation records require separate
+supervisor accounting; this adapter alone does not establish a daemon-wide
+memory bound.
+
 Do not evict an active committed route to admit a new one. DNS/route queue exhaustion returns a defined failure (SERVFAIL for a parsed DNS request); new TCP admission fails, excess UDP datagrams are dropped with a counter, and UI logs use a bounded drop-oldest ring. TCP buffers use backpressure within budgets. Charge one allocation to one budget owner; account for actual capacities rather than advertised payload length. Set and document additional stack-internal limits in the post-feasibility contracts.
 
 DNS answers retain their original or normally aged TTLs. Zero-TTL answers are never cached for reuse, and `dns_route_grace_ms` never raises a wire/cache TTL. For each exposed address contribution, retain its route until at least `handoff_time + max(remaining_dependency_ttl_ms, dns_route_grace_ms)`, then also honor active-flow references. Use the minimum remaining TTL along that contribution's alias/service/address path; a hint uses its containing service record's path. A response reference pins all required routes while output is queued; before handoff, recheck/renew coverage atomically, then exchange that reference for the timed lease without a gap. Concurrent answers may extend retention, while failed/cancelled responses add no new grace lease. A connection arriving only after all lease/grace/flow references expire remains outside the coverage guarantee.

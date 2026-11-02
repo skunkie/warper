@@ -475,3 +475,18 @@ after FIN through the real TUN, plus control and crash-recovery regressions.
 All three isolated runs report no timeout and independently preserved host
 state. Artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41397467021/`.
+
+Linux control admission now independently bounds client ownership and retained
+request buffers. Pure planning caps clients/requests at 64 and derives effective
+request concurrency from the configured encoded-message and aggregate buffer
+limits. Admitted sessions reserve before reading, and dispatched requests keep
+their reservation after session drop until retained work releases it. Closing
+admission wakes waiting reads without canceling accepted work. Managed
+configuration validation rejects unsupported admission limits before storage.
+Local Unix peers and controlled clocks exercise capacity exhaustion, retained
+ownership, abandonment, malformed frames, cancellation and exact deadlines.
+Evidence belongs under `target/evidence/phase-1/control-admission/`. The native
+root/owner session fixture now uses this admission path; exact-commit native
+regression evidence remains pending. Concrete handlers, kernel queue/native
+resource accounting, operation/event admission and the daemon supervisor remain
+open.

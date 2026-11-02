@@ -527,7 +527,12 @@ async fn responses_require_dispatch_and_closed_sessions_cannot_be_reused() {
 #[tokio::test]
 #[ignore = "controlled Unix control-session latency/CPU workload"]
 async fn session_workload() {
-    let (mut session, mut client, policy) = pair();
+    let admission = warper_control::admission::Admission::new(
+        warper_control::admission::Plan::new(16, 64, 1_048_576, 8_388_608).unwrap(),
+    );
+    let (server, mut client) = UnixStream::pair().unwrap();
+    let mut session = Session::admitted(server, [7; 16], admission.try_client().unwrap()).unwrap();
+    let policy = OwnerPolicy::new(Some(nix::unistd::geteuid().as_raw())).unwrap();
     hello(&mut session, &mut client, &policy, 1).await;
     let before_cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let started = std::time::Instant::now();
@@ -559,7 +564,7 @@ async fn session_workload() {
         .find(|line| line.starts_with("VmHWM:"))
         .unwrap();
     println!(
-        "control_session iterations=100 concurrency=1 encoded_bytes=6600 elapsed_ns={elapsed} cpu_ns={cpu} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 kernel_drops=unmeasured {memory}",
+        "control_session admitted=true iterations=100 concurrency=1 encoded_bytes=6600 elapsed_ns={elapsed} cpu_ns={cpu} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 kernel_drops=unmeasured {memory}",
         samples[49], samples[94], samples[98]
     );
     drop(session);

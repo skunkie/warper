@@ -12,6 +12,7 @@ use std::{
 use tokio::{net::UnixStream, sync::watch};
 use warper_control::{
     OwnerPolicy, Role,
+    admission::{Admission, Plan},
     runtime::{
         connection::ConnectionStore, endpoint::ControlEndpoint, enrollment::OwnerStore,
         managed::ManagedStore,
@@ -77,6 +78,7 @@ pub(super) fn exercise(endpoint: &ControlEndpoint) -> Result<(), Failure> {
         return Err("session fixture requires no network intent".into());
     }
     let instance = connection.instance_id();
+    let admission = Admission::new(Plan::new(2, 1, 1024, 2048)?);
     for (uid, mode, role) in [
         (1000, "session-owner", Role::Owner),
         (0, "session-admin", Role::Administrator),
@@ -96,8 +98,12 @@ pub(super) fn exercise(endpoint: &ControlEndpoint) -> Result<(), Failure> {
         }
         accepted.stream.set_nonblocking(true)?;
         let mut session = runtime.block_on(async {
-            Session::new(UnixStream::from_std(accepted.stream)?, instance, 1024)
-                .map_err(|error| Box::new(error) as Failure)
+            Session::admitted(
+                UnixStream::from_std(accepted.stream)?,
+                instance,
+                admission.try_client()?,
+            )
+            .map_err(|error| Box::new(error) as Failure)
         })?;
         let (_owner, mut cancel) = watch::channel(false);
         for kind in [Kind::Hello, Kind::Status, Kind::InspectRecovery] {

@@ -5,10 +5,16 @@
 //! Linux framed request ownership. Command execution belongs to the service.
 
 use std::fmt;
-use tokio::{net::UnixStream, sync::watch, time::Instant};
+use tokio::{
+    net::UnixStream,
+    sync::{OwnedSemaphorePermit, watch},
+    time::Instant,
+};
 
 use crate::{
-    Access, OwnerPolicy, Role, unix,
+    Access, OwnerPolicy, Role,
+    admission::{self, ClientPermit},
+    unix,
     wire::{self, Frame, Kind},
 };
 
@@ -18,6 +24,7 @@ const MAX_MESSAGE_BYTES: usize = 20 + wire::MAX_BODY;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidLimits,
+    Admission(admission::Error),
     InvalidInstance,
     Closed,
     Sequence,
@@ -29,6 +36,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Admission(error) => error.fmt(formatter),
             Self::InvalidLimits => {
                 formatter.write_str("ResourceLimit: invalid control session message limit")
             }
@@ -55,6 +63,7 @@ impl std::error::Error for Error {}
 pub struct AuthorizedRequest {
     frame: Frame,
     role: Role,
+    _reservation: Option<OwnedSemaphorePermit>,
 }
 impl AuthorizedRequest {
     pub fn frame(&self) -> &Frame {
@@ -84,6 +93,8 @@ pub struct Session {
     active: Option<(Kind, u64)>,
     hello_done: bool,
     last_id: u64,
+    pending_reservation: Option<OwnedSemaphorePermit>,
+    client: Option<ClientPermit>,
 }
 impl Session {
     pub fn new(stream: UnixStream, instance: [u8; 16], max_encoded: usize) -> Result<Self, Error> {
@@ -101,7 +112,20 @@ impl Session {
             active: None,
             hello_done: false,
             last_id: 0,
+            pending_reservation: None,
+            client: None,
         })
+    }
+
+    /// Use the service's shared admission owner, retaining its client capacity.
+    pub fn admitted(
+        stream: UnixStream,
+        instance: [u8; 16],
+        client: ClientPermit,
+    ) -> Result<Self, Error> {
+        let mut session = Self::new(stream, instance, client.max_encoded())?;
+        session.client = Some(client);
+        Ok(session)
     }
 
     /// Admission policy is checked before frame allocation. Load fresh protected
@@ -121,12 +145,22 @@ impl Session {
         let mut stream = self.stream.take().ok_or(Error::Closed)?;
         unix::authenticate_client(&stream, policy, Access::Observe)
             .map_err(Error::Authentication)?;
+        let reservation = match &self.client {
+            Some(client) => Some(
+                client
+                    .request(deadline, cancel)
+                    .await
+                    .map_err(Error::Admission)?,
+            ),
+            None => None,
+        };
         let frame = Frame::read_limited(&mut stream, deadline, cancel, self.max_encoded)
             .await
             .map_err(Error::Frame)?;
         // Taking the stream before await makes abandonment terminal, including
         // dropping this future from an outer select after a partial header.
         self.pending = Some(frame);
+        self.pending_reservation = reservation;
         self.stream = Some(stream);
         Ok(())
     }
@@ -155,7 +189,11 @@ impl Session {
         };
         self.last_id = frame.request_id();
         self.active = Some((frame.kind(), frame.request_id()));
-        Ok(AuthorizedRequest { frame, role })
+        Ok(AuthorizedRequest {
+            frame,
+            role,
+            _reservation: self.pending_reservation.take(),
+        })
     }
 
     pub async fn respond(
@@ -203,6 +241,7 @@ impl Session {
     fn fail<T>(&mut self, error: Error) -> Result<T, Error> {
         self.stream = None;
         self.pending = None;
+        self.pending_reservation = None;
         self.active = None;
         Err(error)
     }
