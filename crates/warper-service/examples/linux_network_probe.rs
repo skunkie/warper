@@ -886,14 +886,18 @@ mod linux {
             mut relays,
             ..
         } = networking;
-        let pump = warper_service::linux::packet::Pump::new(
+        let mut pump = warper_service::linux::packet::Pump::new(
             tun.clone(),
             channels.ingress.clone(),
             channels.packets,
             Duration::from_secs(2),
         )?;
         let (pump_stop, pump_cancellation) = tokio::sync::watch::channel(false);
-        let mut pump_task = tokio::spawn(pump.run(pump_cancellation));
+        let mut pump_task = tokio::spawn(async move {
+            let result = pump.run(pump_cancellation).await;
+            (pump, result)
+        });
+        let mut stopped_pump = None;
         let mut pump_joined = false;
         let owner = tokio::spawn(runtime.run());
         let app = application();
@@ -958,9 +962,14 @@ mod linux {
                     result=&mut pump_task=>{
                         pump_joined=true;
                         match result {
-                            Ok(Err(error))=>return Err(Box::new(error) as Failure),
+                            Ok((pump,result))=>{
+                                stopped_pump=Some(pump);
+                                return match result {
+                                    Err(error)=>Err(Box::new(error) as Failure),
+                                    Ok(_)=>Err("packet pump stopped before native withdrawal".into()),
+                                };
+                            },
                             Err(error)=>return Err(Box::new(error) as Failure),
-                            Ok(Ok(_))=>return Err("packet pump stopped before native withdrawal".into()),
                         }
                     },
                     flow=channels.tcp.recv()=>{
@@ -1007,10 +1016,15 @@ mod linux {
             None
         } else {
             match pump_task.await {
-                Ok(Ok(report)) => Some(report),
-                Ok(Err(error)) => {
-                    cleanup.push(Box::new(error) as Failure);
-                    None
+                Ok((pump, result)) => {
+                    stopped_pump = Some(pump);
+                    match result {
+                        Ok(report) => Some(report),
+                        Err(error) => {
+                            cleanup.push(Box::new(error) as Failure);
+                            None
+                        }
+                    }
                 }
                 Err(error) => {
                     cleanup.push(Box::new(error) as Failure);
@@ -1033,6 +1047,7 @@ mod linux {
                 None
             }
         };
+        drop(stopped_pump);
         if relay_report.first_flow_failure.is_some()
             || relay_report.first_worker_failure.is_some()
             || relay_report.shutdown_error.is_some()

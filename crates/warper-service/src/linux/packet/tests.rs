@@ -71,14 +71,14 @@ fn host() -> (Runtime, runtime::Channels) {
 fn task(
     port: Arc<FakePort>,
     ingress: Ingress,
-    output: mpsc::Receiver<Vec<u8>>,
+    mut output: mpsc::Receiver<Vec<u8>>,
     cancel: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<Result<Report, Failure>> {
     tokio::spawn(async move {
         drive(
             port.as_ref(),
             ingress,
-            output,
+            &mut output,
             Duration::from_secs(1),
             cancel,
         )
@@ -281,7 +281,7 @@ async fn always_ready_directions_yield_within_a_bounded_packet_batch() {
     assert_eq!(report.ingress_drops, 7);
 
     let port = BurstPort(AtomicUsize::new(0));
-    let (sender, packets) = mpsc::channel(16);
+    let (sender, mut packets) = mpsc::channel(16);
     for _ in 0..16 {
         sender.send(vec![1; 40]).await.unwrap();
     }
@@ -289,7 +289,7 @@ async fn always_ready_directions_yield_within_a_bounded_packet_batch() {
     {
         let writer = write(
             &port,
-            packets,
+            &mut packets,
             Duration::from_secs(1),
             cancellation,
             &mut report,
@@ -332,4 +332,42 @@ async fn invalid_input_and_native_read_failure_stop_both_directions() {
         assert_eq!(failure.cause, Error::Native(expected));
         assert_eq!(failure.report.captured_packets, 0);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stopped_packet_driver_retains_host_output_until_explicit_runtime_shutdown() {
+    let (runtime, mut channels) = host();
+    let mut host = tokio::spawn(runtime.run());
+    let (port, _incoming, _sent) = port(None);
+    let (stop, cancellation) = watch::channel(false);
+
+    // Exercise the actual host receiver, not a synthetic output channel.
+    // The separate read future is idle; the supervisor explicitly stops it.
+    {
+        let running = drive(
+            port.as_ref(),
+            channels.ingress.clone(),
+            &mut channels.packets,
+            Duration::from_secs(1),
+            cancellation,
+        );
+        tokio::pin!(running);
+        std::future::poll_fn(|context| {
+            assert!(running.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        stop.send(true).unwrap();
+        running.await.unwrap();
+    }
+    // A stopped driver still owns the receiver so host termination can remain
+    // an explicit service decision rather than accidental EgressClosed.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), &mut host)
+            .await
+            .is_err(),
+        "stopping packet I/O must preserve explicit runtime shutdown ownership"
+    );
+    channels.shutdown.send(()).unwrap();
+    host.await.unwrap().unwrap();
 }

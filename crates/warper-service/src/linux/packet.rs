@@ -87,11 +87,13 @@ impl Pump {
 
     /// Retain and join this future's owning task. Stop after route withdrawal;
     /// neither cancellation nor dropping packet ownership performs native cleanup.
-    pub async fn run(self, cancellation: watch::Receiver<bool>) -> Result<Report, Failure> {
+    /// Retain this pump after the run finishes until host shutdown is joined;
+    /// its output receiver must not accidentally terminate the host runtime.
+    pub async fn run(&mut self, cancellation: watch::Receiver<bool>) -> Result<Report, Failure> {
         drive(
             self.port.as_ref(),
-            self.ingress,
-            self.output,
+            self.ingress.clone(),
+            &mut self.output,
             self.write_timeout,
             cancellation,
         )
@@ -140,7 +142,7 @@ impl PacketOutput for Egress {
 async fn drive(
     port: &impl PacketIo,
     ingress: Ingress,
-    output: impl PacketOutput,
+    output: &mut impl PacketOutput,
     write_timeout: Duration,
     mut cancellation: watch::Receiver<bool>,
 ) -> Result<Report, Failure> {
@@ -252,7 +254,7 @@ async fn read(
 }
 async fn write(
     port: &impl PacketIo,
-    mut output: impl PacketOutput,
+    output: &mut impl PacketOutput,
     write_timeout: Duration,
     mut cancellation: watch::Receiver<bool>,
     report: &mut Report,

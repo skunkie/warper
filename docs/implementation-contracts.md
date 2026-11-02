@@ -2533,8 +2533,10 @@ not supply event subscriptions or operation-history admission.
 `linux::packet::Pump` owns the original `Arc<PacketPort>`, host ingress and host
 packet egress. Its owner runs the pump in one retained task and joins it before
 retiring the native TUN owner. The pump polls an independent reader and writer
-inside that task; neither direction spawns detached work. Each yields after
-at most eight ready packets so sustained I/O cannot starve its sibling or
+inside that task; neither direction spawns detached work. `run` borrows the
+pump, so stopping packet I/O retains the host output receiver until explicit
+runtime shutdown is joined. Only then may the supervisor drop the pump. Each
+yields after at most eight ready packets so sustained I/O cannot starve its sibling or
 supervisor cancellation. A failure in either
 direction cancels and joins the other, preserving a secondary failure alongside
 the initial cause and bounded counters. Dropping the external cancellation
