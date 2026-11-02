@@ -13,6 +13,7 @@ pub mod context;
 pub mod egress;
 pub mod link_lookup;
 mod netlink;
+pub mod packet;
 pub mod route_inventory;
 pub mod route_lookup;
 pub mod rule_inventory;

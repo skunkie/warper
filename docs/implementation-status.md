@@ -493,3 +493,18 @@ without timeout and preserve independently observed host state. Artifacts are
 under `target/evidence/phase-1/privileged-control-ci/run-41456708777/`. Concrete handlers, kernel queue/native
 resource accounting, operation/event admission and the daemon supervisor remain
 open.
+
+The Linux service packet pump now owns independent original-device read/write
+futures inside one retained task. Direction failures cancel and join the
+sibling, and explicit stop differs from lost supervisor ownership. Read-idle
+deadlines renew; writes have a bounded terminal deadline and no replay. Bounded
+ingress exhaustion counts drops, pending-output cancellation counts discards,
+and fixed histograms replace per-packet measurement allocations. Both ready
+directions yield after at most eight packets to preserve supervisor progress.
+Local in-memory transport tests exercise duplex bytes, exhaustion, write
+uncertainty/failure, cancellation, idle renewal, owner/channel loss, invalid
+input and always-ready fairness. The native TCP/FIN fixture now runs this pump
+through route withdrawal and joins it before stopping the host runtime; its
+exact-commit native evidence remains pending. Evidence belongs under
+`target/evidence/phase-1/packet-pump/`. Full network supervision, startup
+readiness, failure rollback and daemon/control integration remain open.

@@ -886,6 +886,15 @@ mod linux {
             mut relays,
             ..
         } = networking;
+        let pump = warper_service::linux::packet::Pump::new(
+            tun.clone(),
+            channels.ingress.clone(),
+            channels.packets,
+            Duration::from_secs(2),
+        )?;
+        let (pump_stop, pump_cancellation) = tokio::sync::watch::channel(false);
+        let mut pump_task = tokio::spawn(pump.run(pump_cancellation));
+        let mut pump_joined = false;
         let owner = tokio::spawn(runtime.run());
         let app = application();
         tokio::pin!(app);
@@ -913,10 +922,6 @@ mod linux {
             deadline: started + Duration::from_secs(8),
             cancellation: packet_owner.subscribe(),
         };
-        let mut send_waits = Vec::with_capacity(1024);
-        let mut buffer = [0; MTU + 1];
-        let mut input = 0u64;
-        let mut output = 0u64;
         let mut joined = 0;
         // Retain/join native publication outside the cancellable packet loop.
         // The real runtime owner already exists before any capture route.
@@ -948,30 +953,15 @@ mod linux {
                     reason=changes.wait(request())=>return Err(format!("capture invalidated during controlled traffic: {reason:?}").into()),
                     ()=tokio::time::sleep(Duration::from_millis(1)),if rejection_done && joined==1=>{
                         if channels.publication.retained_flows()!=0 {continue;}
-                        // With no flow owners and a completed kernel reset, drain
-                        // the bounded output before native route withdrawal.
-                        match tokio::time::timeout(Duration::from_millis(2),channels.packets.recv()).await {
-                            Ok(Some(packet))=>{
-                                if send_waits.len()==1024 {return Err("fixture packet measurement limit".into());}
-                                let before=tokio::time::Instant::now();
-                                tun.send(&packet,request()).await?;
-                                send_waits.push(before.elapsed().as_nanos());output+=1;
-                            },
-                            Ok(None)=>return Err("host stopped before capture retirement".into()),
-                            Err(_)=>break,
+                        break;
+                    },
+                    result=&mut pump_task=>{
+                        pump_joined=true;
+                        match result {
+                            Ok(Err(error))=>return Err(Box::new(error) as Failure),
+                            Err(error)=>return Err(Box::new(error) as Failure),
+                            Ok(Ok(_))=>return Err("packet pump stopped before native withdrawal".into()),
                         }
-                    },
-                    packet=tun.recv(&mut buffer,request())=>{
-                        let length=packet?;
-                        if length==0 || length>MTU {return Err("TUN packet exceeds declared bounds".into());}
-                        channels.ingress.try_inject(&buffer[..length])?;input+=1;
-                    },
-                    packet=channels.packets.recv()=>{
-                        let packet=packet.ok_or("host packet owner stopped")?;
-                        if send_waits.len() == 1024 {return Err("fixture packet measurement limit".into());}
-                        let before=tokio::time::Instant::now();
-                        tun.send(&packet,request()).await?;
-                        send_waits.push(before.elapsed().as_nanos());output+=1;
                     },
                     flow=channels.tcp.recv()=>{
                         let flow=flow.ok_or("host acceptance owner stopped")?;
@@ -1012,6 +1002,22 @@ mod linux {
                 );
             }
         }
+        pump_stop.send_replace(true);
+        let packet_report = if pump_joined {
+            None
+        } else {
+            match pump_task.await {
+                Ok(Ok(report)) => Some(report),
+                Ok(Err(error)) => {
+                    cleanup.push(Box::new(error) as Failure);
+                    None
+                }
+                Err(error) => {
+                    cleanup.push(Box::new(error) as Failure);
+                    None
+                }
+            }
+        };
         let relay_report = relays.shutdown().await;
         if channels.shutdown.send(()).is_err() {
             cleanup.push("host shutdown owner lost".into());
@@ -1035,6 +1041,9 @@ mod linux {
         }
         preserve(result, cleanup)?;
         let host_report = host_report.ok_or("host runtime report missing")?;
+        let packet_report = packet_report.ok_or("packet pump report missing")?;
+        let input = packet_report.captured_packets;
+        let output = packet_report.sent_packets;
         if joined != 1
             || relay_report.finished != 1
             || relay_report.failed != 0
@@ -1055,13 +1064,9 @@ mod linux {
             .lines()
             .find(|line| line.starts_with("VmHWM:"))
             .ok_or("packet workload RSS missing")?;
-        send_waits.sort_unstable();
-        let n = send_waits.len();
         println!(
-            "owned_packet_port flows=1 mtu=1280 request_bytes={PAYLOAD} response_bytes=16393 captured={input} returned={output} elapsed_ns={elapsed} cpu_ns={cpu_ns} send_wait_p50_ns={} send_wait_p95_ns={} send_wait_p99_ns={} kernel_drops=unmeasured {peak}",
-            send_waits[n / 2],
-            send_waits[n * 95 / 100],
-            send_waits[n * 99 / 100]
+            "owned_packet_pump flows=1 mtu=1280 request_bytes={PAYLOAD} response_bytes=16393 captured={input} returned={output} elapsed_ns={elapsed} cpu_ns={cpu_ns} ingress_drops={} discarded_output={} write_wait_buckets={:?} kernel_drops=unmeasured {peak}",
+            packet_report.ingress_drops, packet_report.discarded_output, packet_report.write_waits,
         );
         println!(
             "PASS actual kernel TCP/TUN to production host/SOCKS5/relay adapters; {input} captured and {output} returned packets; exact 64 KiB, duplex and response after FIN"

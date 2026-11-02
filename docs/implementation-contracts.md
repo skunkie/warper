@@ -2527,3 +2527,37 @@ Unix socket kernel queues, protected storage copies, operation records, native
 workers and service metadata need separate reservations in the supervisor.
 Handlers must construct only one bounded reply at a time. This boundary does
 not supply event subscriptions or operation-history admission.
+
+## Linux retained packet pump
+
+`linux::packet::Pump` owns the original `Arc<PacketPort>`, host ingress and host
+packet egress. Its owner runs the pump in one retained task and joins it before
+retiring the native TUN owner. The pump polls an independent reader and writer
+inside that task; neither direction spawns detached work. Each yields after
+at most eight ready packets so sustained I/O cannot starve its sibling or
+supervisor cancellation. A failure in either
+direction cancels and joins the other, preserving a secondary failure alongside
+the initial cause and bounded counters. Dropping the external cancellation
+sender is an ownership failure; explicit cancellation is an orderly stop.
+Dropping the run future is not a substitute for joining its task.
+
+The reader retains one 1281-byte sentinel buffer, passes at most 1280 bytes to
+bounded host ingress, and counts queue-full drops without retry or direct
+forwarding. Read waits renew after a 30-second idle deadline; idle is not a
+network failure. All other native read failures stop the pump. The writer owns
+at most one output packet, performs one original-device send with a positive
+write deadline no greater than 30 seconds, and never retries an uncertain or
+failed send. Cancellation may discard that pending packet, which is counted.
+Closed host ingress/egress and native errors surface to the supervisor.
+
+The existing `Plan::buffers().tun_io` reservation covers the sentinel buffer and
+one pending output packet; fixed counters and task metadata need supervisor
+accounting. The pump reports captured/sent bytes and packets, queue-full drops,
+discarded output and a fixed logarithmic write-wait histogram. It retains no
+payload in diagnostics or unbounded per-packet timing samples.
+
+The supervisor keeps this pump and the runtime mapping alive during flow
+quiescence and route withdrawal. After the native withdrawal acknowledgment it
+can cancel/join packet work, then stop/join the runtime and retire the TUN. A
+pump stop does not withdraw routes, prove flow drain, declare connected
+readiness or provide a general shutdown barrier on its own.
