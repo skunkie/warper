@@ -468,5 +468,10 @@ every device I/O poll rather than relying only on rounded timer readiness.
 Controlled-clock tests cover ready and resumed submillisecond I/O, preserve
 cancellation precedence and verify direction capacity is released on expiry.
 The resumed regression fails without this fix. Evidence belongs under
-`target/evidence/phase-1/packet-direction-deadlines/`; the new exact-commit
-real-TUN regression gate remains unverified until CI.
+`target/evidence/phase-1/packet-direction-deadlines/`. The
+[owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41397467021)
+passes at `79f427e`, including exact 64 KiB TCP, duplex traffic and response
+after FIN through the real TUN, plus control and crash-recovery regressions.
+All three isolated runs report no timeout and independently preserved host
+state. Artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41397467021/`.
