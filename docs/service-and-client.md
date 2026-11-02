@@ -232,7 +232,13 @@ OperationReply carries operation ID, state u8 (0..4) and error code u16.
 ErrorReply is a nonzero error code u16. Codes are None=0, Unsupported=1,
 PermissionDenied=2, Malformed=3, Busy=4, Conflict=5, RecoveryRequired=6,
 Timeout=7 and Failed=8. Failed operation state 3 requires a nonzero code;
-other states require None. State names are finalized with the service handlers.
+other states require None. The initial Linux handler states are Disconnected=0,
+Preparing=1, Connected=2, Disconnecting=3, Failed=4 and RecoveryRequired=5.
+Operation states are Accepted=0, Running=1, Succeeded=2, Failed=3 and
+Superseded=4. Operation success records its completion point; subsequent network
+failure is separately reflected in session state. Losing a client wait does not
+cancel an accepted operation. These names do not add a daemon before its
+executable handlers and lifecycle acceptance exist.
 
 Each async frame read/write uses one injected absolute deadline and cancellation
 receiver covering header, body and flush. Closed cancellation channels cancel.
