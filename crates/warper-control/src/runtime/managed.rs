@@ -8,6 +8,46 @@ pub use super::storage::{Error, PendingInspection, Snapshot};
 use super::{RuntimeLease, storage::FixedStore};
 pub const MAX_PAYLOAD: usize = 1_048_576;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimError {
+    Runtime(super::Error),
+    Busy,
+}
+impl std::fmt::Display for ClaimError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Runtime(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Busy => formatter.write_str("Busy: approved configuration ownership is retained"),
+        }
+    }
+}
+impl std::error::Error for ClaimError {}
+
+/// One approved-configuration manager per exclusive runtime. Share an Arc of
+/// this guard with approved leases so manager drop cannot bypass their fence.
+pub struct Ownership {
+    lease: std::sync::Arc<RuntimeLease>,
+}
+impl Ownership {
+    pub fn acquire(lease: std::sync::Arc<RuntimeLease>) -> Result<Self, ClaimError> {
+        use std::sync::atomic::Ordering;
+
+        lease.revalidate().map_err(ClaimError::Runtime)?;
+        lease
+            .managed_claim
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ClaimError::Busy)?;
+        Ok(Self { lease })
+    }
+}
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        self.lease
+            .managed_claim
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Synchronous storage under a retained runtime lease. No caller path exists.
 /// Callers retain/join blocking workers, including after observer timeout.
 ///
@@ -54,5 +94,40 @@ impl ManagedStore {
 impl std::fmt::Debug for ManagedStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ManagedStore(<redacted>)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::tests::Fixture;
+    use std::sync::Arc;
+
+    #[test]
+    fn retained_configuration_ownership_blocks_reclaim_and_keeps_runtime_locked() {
+        let fixture = Fixture::new();
+        let lease = Arc::new(fixture.acquire().unwrap());
+        let weak = Arc::downgrade(&lease);
+        let ownership = Arc::new(Ownership::acquire(lease.clone()).unwrap());
+        assert!(matches!(
+            Ownership::acquire(lease.clone()),
+            Err(ClaimError::Busy)
+        ));
+        let retained = ownership.clone();
+        drop(ownership);
+        assert!(matches!(
+            Ownership::acquire(lease.clone()),
+            Err(ClaimError::Busy)
+        ));
+        drop(retained);
+        let reclaimed = Ownership::acquire(lease.clone()).unwrap();
+        drop(lease);
+        assert!(matches!(
+            fixture.acquire(),
+            Err(super::super::Error::AlreadyRunning)
+        ));
+        drop(reclaimed);
+        assert!(weak.upgrade().is_none());
+        drop(fixture.acquire().unwrap());
     }
 }

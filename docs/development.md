@@ -1025,3 +1025,11 @@ and explicit discard without promotion. Its synthetic opaque payload tests
 storage, not semantic WMCF installation or a running service. The harness creates
 the protected directory after mounting private state; never create these paths
 on the developer host to run this probe.
+
+The TUN API fixture's retained bootstrap worker also exercises the native
+configuration installation owner before any network mutation. It tests a
+controlled UID-1000 Unix peer, root installation, preflight rejection before
+storage, Busy while approved leases remain, stale generations, reopened state
+and external replacement rejection. This is native API evidence, not a running
+control session or CLI. Its owned peer process has bounded waits and is reaped
+on both success and failure.

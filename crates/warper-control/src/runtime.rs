@@ -5,7 +5,7 @@
 //! Fixed Linux runtime ownership. No listener, enrollment or network mutation.
 //! The persistent lock name must never be unlinked during ordinary shutdown.
 
-use std::{fmt, io, os::fd::OwnedFd};
+use std::{fmt, io, os::fd::OwnedFd, sync::atomic::AtomicBool};
 
 use rustix::fs::{
     AtFlags, FileType, FlockOperation, Mode, OFlags, ResolveFlags, Stat, flock, fstat, open,
@@ -60,6 +60,7 @@ pub struct RuntimeLease {
     directory: OwnedFd,
     lock: OwnedFd,
     owner: u32,
+    managed_claim: AtomicBool,
 }
 
 impl RuntimeLease {
@@ -138,6 +139,7 @@ impl RuntimeLease {
             directory,
             lock,
             owner,
+            managed_claim: AtomicBool::new(false),
         };
         lease.validate_state()?;
         Ok(lease)

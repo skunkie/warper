@@ -418,3 +418,18 @@ regressions with independently preserved host state. Artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41389748795/`; local evidence is
 under `target/evidence/phase-1/managed-store/`. Service-side validation, administrative
 installation and disconnected-session serialization remain open.
+
+Native configuration ownership now decodes and pure-preflights approved data
+before storage and requires a fresh administrative peer for installation. An
+immutable generation lease retains context/runtime ownership and blocks
+replacement through preparation/network/cleanup until its final drop. Local
+runtime-claim tests also prove manager reacquisition stays blocked while a
+retained guard exists and that it keeps instance ownership locked. Local
+tests cover malformed/unavailable proposals and actual unprivileged peer
+authentication. The native fixture adds the full install API with a controlled
+ordinary peer, stale generations, retained/cloned leases, blocked manager reopen
+until final lease drop, reopened approved state and external
+replacement rejection; that new gate remains unverified until exact-commit CI.
+Evidence belongs under `target/evidence/phase-1/configuration-ownership/`.
+The control session handler and full network supervisor still need to retain
+these leases; this does not establish connected readiness or a service CLI.

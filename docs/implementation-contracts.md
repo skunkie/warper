@@ -2426,3 +2426,36 @@ merely because this storage primitive exists. Blocking calls retain their worker
 and runtime references after observer cancellation; filesystem waits have no hard
 wall deadline. Native privileged evidence is required separately from local
 fixed-root filesystem tests.
+
+## Linux approved configuration ownership
+
+`warper_service::linux::configuration::Configurations` owns the fixed managed
+store and an immutable approved snapshot under `Arc<Context>`. A single-owner
+claim belongs to the exclusive runtime lease and is retained by the manager and
+all approved configuration leases. Dropping/reopening a manager cannot bypass
+outstanding leases, even through another native context sharing that runtime.
+The claim releases only after its final guard drops and keeps the runtime lock
+held throughout. All operations
+are synchronous retained-worker operations; no background task or network is
+started here. Open decodes WMCF and runs pure service preflight before exposing
+stored material. Missing data is generation zero with no default configuration.
+
+Each `lease()` first revalidates protected storage, then returns a cloneable
+`ConfigurationLease` retaining its approved generation, typed data and native
+context/runtime ownership. The
+supervisor must retain this lease from preparation through complete network
+retirement/cleanup, including failed startup and observer cancellation. Any
+outstanding lease makes installation Busy. Mutable manager access serializes
+admission; when only its own Arc remains, no external holder can begin a new
+clone. Dropping a client does not release a supervisor's lease.
+
+`install(peer, expected_generation, encoded)` revalidates native context and
+freshly authenticates the actual Unix peer as administrator before data handling.
+It refuses active leases, rechecks the observed protected generation and expected
+revision, decodes canonical managed data and runs pure service preflight before
+replacement. Only confirmed durable replacement publishes a new cached snapshot
+and generation. No raw paths are accepted. Uncertain storage stays blocked for
+explicit recovery, without claiming the proposal was applied or replaying it.
+`status()` and new leases recheck native/storage identity; external changed data
+is never silently adopted. This is a native installation boundary, not a control
+session handler, native-budget approval or connected/readiness declaration.

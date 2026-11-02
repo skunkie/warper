@@ -825,3 +825,11 @@ replacement uses exclusive staging, file/directory sync and atomic rename;
 pending or uncertain state requires explicit inspection/resync/discard without
 promotion. This low-level store does not authorize installation, decode WMCF or
 decide whether a session is disconnected; the service must enforce those gates.
+
+The initial native installation owner now validates WMCF and pure service
+capabilities before storage, requires a fresh administrative Unix peer, and
+compares the expected generation. Its approved configuration lease pins both
+immutable material and runtime ownership. Preparation/network/cleanup work must
+retain that lease; installation returns Busy until all such leases are dropped.
+Status and new leases recheck protected state instead of adopting external edits.
+This boundary is not yet exposed by control sessions or an import command.

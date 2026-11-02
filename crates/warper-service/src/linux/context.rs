@@ -224,6 +224,9 @@ impl Context {
     pub(super) fn runtime(&self) -> &RuntimeLease {
         &self.lease
     }
+    pub(super) fn retain_runtime(&self) -> Arc<RuntimeLease> {
+        self.lease.clone()
+    }
     pub fn classify(&self, recorded: &RecordedOwner) -> Classification {
         classify(&self.recorded, recorded)
     }

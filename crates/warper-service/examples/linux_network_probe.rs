@@ -33,8 +33,13 @@ mod linux {
     mod fixture;
     pub(crate) use fixture::root;
     use fixture::{CombinedFailure, Failure, ip, isolated, join_native, preserve};
+    mod configuration_installation;
     mod physical;
     mod process_owner;
+
+    pub fn configuration_peer() -> Result<(), Failure> {
+        configuration_installation::peer()
+    }
 
     const NAME: &str = "warper-probe";
     const DESTINATION: &str = "198.18.0.2:443";
@@ -156,6 +161,11 @@ mod linux {
         ) {
             return Err("native context released runtime ownership early".into());
         }
+        let configuration_runtime = retained_lease
+            .upgrade()
+            .ok_or("configuration fixture lost runtime ownership")?;
+        configuration_installation::exercise(context.clone(), &configuration_runtime)?;
+        drop(configuration_runtime);
         let context = Arc::try_unwrap(context)
             .map_err(|_| "native context worker retained ownership after join")?;
         println!(
@@ -1351,6 +1361,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [mode] if mode == "--require-initial-root" => linux::root(),
+        [mode] if mode == "--configuration-peer" => {
+            tokio::task::spawn_blocking(linux::configuration_peer).await?
+        }
         [mode, mount, net] if mode == "--exercise" => linux::exercise(mount, net).await,
         [mode, mount, net] if mode == "--physical-peer" => linux::physical_peer(mount, net).await,
         [mode, mount, net] if mode == "--context-peer" => linux::context_peer(mount, net).await,
