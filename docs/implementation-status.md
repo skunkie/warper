@@ -553,8 +553,8 @@ publication after recovery. The
 passes at `85e2e6e`: all three isolated fixtures finish without timeout and
 preserve independently observed host state. Its control log verifies actual
 SIGKILL/reap, fresh-lock recovery, repeated retirement and fresh publication.
-Both Linux native build/test jobs pass. The macOS job could not acquire a
-hosted runner; that platform check remains unverified. Evidence is under
+The later native build/test matrix passes on both Linux architectures and
+macOS at `e3cffec` in the controller gate linked below. Evidence is under
 `target/evidence/phase-1/control-endpoint-recovery/`, including downloaded CI
 artifacts. This supplies a safe bootstrap boundary; the daemon, control dispatch
 and administrative CLI remain incomplete.
@@ -583,8 +583,13 @@ Boot policy preserves same-boot Disconnect, restores matching accepted Up only
 after reconciliation, and applies autoconnect separately on a fresh boot.
 Local history, boot-policy, capacity and error-category tests pass. A disposable
 native fixture adds actual owner replacement, pending-start cancellation,
-retained approval and kernel TCP/FIN through controller actions. That new
-exact-commit privileged evidence remains unverified. Evidence belongs under
+retained approval and kernel TCP/FIN through controller actions. The
+[owner-dispatched exact-commit gate](https://github.com/skunkie/warper/actions/runs/41509483848)
+passes at `e3cffec`: all three isolated fixtures finish without timeout and
+preserve independently observed host state. The controller log confirms real
+kernel-peer authorization, owner replacement, durable idempotence, one-record
+Disconnect, suppressed readiness, retained approval and kernel TCP/FIN. The full
+native build/test matrix also passes. Raw artifacts and local review are under
 `target/evidence/phase-1/controller-dispatch/`. The async daemon, control task
 supervision, administrative CLI/recovery, installation and full daemon/CLI
 acceptance remain open.
