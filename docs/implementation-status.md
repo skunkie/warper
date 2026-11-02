@@ -453,7 +453,12 @@ checked before read admission and freshly supplied after read completion for
 dispatch; handlers still need commit-boundary authorization after queuing.
 Controlled Unix peers cover owner permissions/revocation, malformed sequence,
 deadlines, partial reads and abandoned writes without replay. A private native
-root/owner fixture exercises the protected endpoint and administrative dispatch;
-that new gate remains unverified until exact-commit CI. Evidence belongs under
-`target/evidence/phase-1/control-sessions/`. Concrete service handlers, global
+root/owner fixture exercises the protected endpoint and administrative dispatch.
+The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41395848365)
+passes at `dddecb9`, including actual root/owner Hello and correlated status,
+administrative access, and existing control/TUN/crash-recovery regressions with
+independently preserved host state. Local evidence is under
+`target/evidence/phase-1/control-sessions/`; artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41395848365/`.
+Concrete service handlers, global
 client/buffer admission and a running daemon remain open.
