@@ -412,7 +412,9 @@ generation envelope and 1 MiB capacity, sharing the journal's bounded atomic
 storage implementation. Local fixed-root tests cover capacity, revision fencing,
 slot magic/token separation, pending preservation, uncertain sync and replaced
 parents. The private privileged fixture adds real root metadata, ordinary
-owner/foreign read denial, reopen and pending recovery; that new gate remains
-unverified until exact-commit CI. Evidence belongs under
-`target/evidence/phase-1/managed-store/`. Service-side validation, administrative
+owner/foreign read denial, reopen and pending recovery. The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41389748795)
+passes at `37ea223`, including the shared journal, TUN traffic and crash-recovery
+regressions with independently preserved host state. Artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41389748795/`; local evidence is
+under `target/evidence/phase-1/managed-store/`. Service-side validation, administrative
 installation and disconnected-session serialization remain open.
