@@ -16,15 +16,22 @@ pub enum Command {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceCommand {
-    Status,
-    Up,
-    Down,
+    Status { json: bool },
+    Up { wait: Wait },
+    Down { wait: Wait },
     Routes,
     Connections,
     Logs,
     Explain,
     InstallConfig,
     Recover,
+}
+
+/// Client observation policy; dropping observation never cancels accepted work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Wait {
+    None,
+    Milliseconds(u64),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +63,7 @@ impl std::error::Error for Error {}
 
 pub fn parse(args: &[OsString]) -> Result<Command, Error> {
     let Some((first, rest)) = args.split_first() else {
-        return Ok(Command::Service(ServiceCommand::Status));
+        return Ok(Command::Service(ServiceCommand::Status { json: false }));
     };
     match first.to_str() {
         Some("--help" | "-h") if rest.is_empty() => Ok(Command::Help),
@@ -73,16 +80,18 @@ pub fn parse(args: &[OsString]) -> Result<Command, Error> {
             let command = match first.to_str() {
                 Some("routes") => ServiceCommand::Routes,
                 Some("connections") => ServiceCommand::Connections,
-                _ => ServiceCommand::Status,
+                _ => ServiceCommand::Status {
+                    json: !rest.is_empty(),
+                },
             };
             Ok(Command::Service(command))
         }
         Some("up" | "down") => {
-            wait_options(rest)?;
+            let wait = wait_options(rest)?;
             Ok(Command::Service(if first == "up" {
-                ServiceCommand::Up
+                ServiceCommand::Up { wait }
             } else {
-                ServiceCommand::Down
+                ServiceCommand::Down { wait }
             }))
         }
         Some("logs") if rest.is_empty() || single_flag(rest, "--follow") => {
@@ -132,9 +141,12 @@ fn config_path(args: &[OsString]) -> Result<Option<PathBuf>, Error> {
     Ok(path)
 }
 
-fn wait_options(args: &[OsString]) -> Result<(), Error> {
-    if args.is_empty() || single_flag(args, "--no-wait") {
-        return Ok(());
+fn wait_options(args: &[OsString]) -> Result<Wait, Error> {
+    if args.is_empty() {
+        return Ok(Wait::Milliseconds(30_000));
+    }
+    if single_flag(args, "--no-wait") {
+        return Ok(Wait::None);
     }
     if args.len() == 2 && args[0] == "--wait-ms" {
         if let Some(value) = args[1].to_str()
@@ -142,7 +154,9 @@ fn wait_options(args: &[OsString]) -> Result<(), Error> {
             && value.bytes().all(|byte| byte.is_ascii_digit())
             && value.parse::<u64>().is_ok_and(|value| value > 0)
         {
-            return Ok(());
+            return Ok(Wait::Milliseconds(
+                value.parse().map_err(|_| Error::InvalidWait)?,
+            ));
         }
         return Err(Error::InvalidWait);
     }

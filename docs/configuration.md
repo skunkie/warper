@@ -7,15 +7,16 @@ SPDX-License-Identifier: MIT
 # Canonical Configuration and CLI Contract
 
 Status: offline YAML/schema/semantic validation and the `warper check-config`
-CLI are implemented; runtime preflight and service control remain unimplemented.
+CLI are implemented. Linux native status/up/down clients and static IPv4
+SOCKS5/TCP preflight exist; a running daemon and its handlers remain incomplete.
 Core implements offline path resolution and injectable invoking-account
 validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
 account lookup in `crates/warper-config/src/identity.rs`. Bounded YAML decoding
 is implemented in `warper-config::yaml`, following
 [ADR 0006](adr/0006-bounded-yaml-decoding.md). `warper-config::schema::Config::parse`
 applies the offline contract with injected paths and an explicit platform.
-`warper-cli` supplies the thin offline command. This document defines the initial
-schema.
+`warper-cli` supplies offline checks and the Linux control client. This document
+defines the initial schema.
 Update it, its examples, and fixtures together when a justified decision changes
 the contract.
 
@@ -551,12 +552,29 @@ deadline; the source reader performs no backend/DNS network operation.
 
 Successful inspection exits 0 and prints exactly
 `Configuration is valid (offline).` on stdout; it makes no availability,
-trust, cryptographic, or connectivity claim. Bare `warper` and the documented
-service commands currently exit 1 with `UnsupportedCapability`, without IPC,
-source reads, or network mutation. Malformed command forms exit 2. A failed
-stdout write becomes an output error; a failed diagnostic write retains the
-primary failure and its exit code. Only the offline command is implemented;
-service command execution and client debug logging remain unavailable.
+trust, cryptographic, or connectivity claim. On Linux, bare `warper`, `status`,
+`up` and `down` connect to the fixed protected control endpoint and verify its
+initial-user-namespace root peer before sending Hello. They negotiate wire
+version two and correlate every reply. Other service commands, and native
+service commands on other platforms, still return `UnsupportedCapability`.
+No daemon is installed by this client implementation. A missing service fails
+with exit 1; offline checks never attempt IPC.
+
+A control connection and each request/reply exchange have a five-second
+absolute deadline. Filesystem identity inspection remains synchronous and does
+not gain a hard kernel-I/O wall deadline. The client observes accepted operations
+at intervals of at least 100 ms, bounded by the requested wait deadline; its
+wait starts after Accepted. It never automatically resubmits Connect/Disconnect.
+A lost acceptance or observation failure prints the original operation ID and
+exits 1; status must be refreshed before an explicit new command. Successful
+waits report operation completion, rather than claiming that a historical
+completion proves current network readiness. `status --json` prints state,
+configuration_generation, owner_revision, configuration_present and
+desired_revision; plain status presents those same fields. Client logging and
+additional service commands remain unavailable.
+
+Malformed command forms exit 2. A failed stdout write becomes an output error;
+a failed diagnostic write retains the primary failure and its exit code.
 
 Import/configuration installation is a separate authorized operation. The
 native client reads selected files with user access and submits normalized

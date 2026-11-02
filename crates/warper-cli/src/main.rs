@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Offline command entry point. No networking engine is constructed here.
+//! Native client entry point. Network ownership remains in the service.
 
 use std::{io, process::ExitCode};
 

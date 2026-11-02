@@ -552,3 +552,15 @@ publication after recovery. Its privileged exact-commit evidence remains
 unverified. Evidence belongs under
 `target/evidence/phase-1/control-endpoint-recovery/`. This supplies a safe
 bootstrap boundary; the daemon, control dispatch and CLI remain incomplete.
+
+The Linux `warper` client now implements native status, Connect/Disconnect
+submission and bounded operation observation. It authenticates the fixed
+protected endpoint before Hello and preserves output/wait options, service
+instance and independent configuration/desired revisions. Lost acceptance,
+observer cancellation and wait expiry retain the operation identity without
+resubmission or a compensating Disconnect. Controlled duplex peers verify exact
+requests, acceptance-only detach, terminal outcomes, mismatched identities,
+service rejection and both I/O and pacing cancellation. Evidence is under
+`target/evidence/phase-1/native-cli/`. No daemon is installed or exercised by
+these client tests. Administrative import/enrollment/recovery commands, concrete
+handlers, operation history and full native daemon/CLI acceptance remain open.

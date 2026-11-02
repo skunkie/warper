@@ -450,7 +450,7 @@ fn executable_entry_points_keep_stdout_stderr_and_exit_codes_separate() {
         (vec!["--help"], 0, warper_cli::HELP, ""),
         (vec!["check-config", "--help"], 0, warper_cli::HELP, ""),
         (vec!["--version"], 0, warper_cli::VERSION, ""),
-        (vec!["status"], 1, "", "UnsupportedCapability:"),
+        (vec!["routes"], 1, "", "UnsupportedCapability:"),
         (vec!["sample-secret"], 2, "", "InvalidArguments:"),
     ] {
         let mut command = Process::new(env!("CARGO_BIN_EXE_warper"));
@@ -501,4 +501,44 @@ fn native_path_bytes_are_preserved_but_invalid_sudo_encoding_is_redacted() {
     let (code, _, stderr) = invoke(&args, &ForbiddenEnvironment, &mut ForbiddenSource);
     assert_eq!(code, 2);
     assert!(!stderr.contains("sample-secret"));
+}
+
+#[test]
+fn native_control_arguments_preserve_output_and_observation_policy() {
+    use warper_cli::args::Wait;
+    for (args, expected) in [
+        (vec![], ServiceCommand::Status { json: false }),
+        (
+            vec!["status", "--json"],
+            ServiceCommand::Status { json: true },
+        ),
+        (
+            vec!["up"],
+            ServiceCommand::Up {
+                wait: Wait::Milliseconds(30_000),
+            },
+        ),
+        (
+            vec!["up", "--no-wait"],
+            ServiceCommand::Up { wait: Wait::None },
+        ),
+        (
+            vec!["down", "--wait-ms", "123"],
+            ServiceCommand::Down {
+                wait: Wait::Milliseconds(123),
+            },
+        ),
+        (
+            vec!["up", "--wait-ms", "18446744073709551615"],
+            ServiceCommand::Up {
+                wait: Wait::Milliseconds(u64::MAX),
+            },
+        ),
+    ] {
+        assert_eq!(
+            args::parse(&arguments(&args)),
+            Ok(Command::Service(expected)),
+            "{args:?}"
+        );
+    }
 }

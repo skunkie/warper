@@ -1743,8 +1743,11 @@ dependencies = [
 name = "warper-cli"
 version = "0.0.0"
 dependencies = [
+ "rustix",
+ "tokio",
  "toml",
  "warper-config",
+ "warper-control",
  "warper-core",
 ]
 

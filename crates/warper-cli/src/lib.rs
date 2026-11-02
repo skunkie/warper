@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Thin offline CLI flow. Service control remains explicitly unavailable.
+//! Offline configuration checks and authenticated native service commands.
 
 use std::{
     ffi::OsString,
@@ -18,10 +18,12 @@ use warper_config::{
 use warper_core::configuration::paths::{self, IdentityProvider, Paths, invoking_account};
 
 pub mod args;
+#[cfg(target_os = "linux")]
+pub mod control;
 
 use args::{Command, ServiceCommand};
 
-pub const HELP: &str = "warper — selective tunnel client\n\nUsage:\n  warper check-config [--config PATH]\n  warper --help\n  warper --version\n\ncheck-config validates offline without opening credential/trust files.\nService control commands are unavailable in this build.\n";
+pub const HELP: &str = "warper — selective tunnel client\n\nUsage:\n  warper check-config [--config PATH]\n  warper --help\n  warper --version\n\ncheck-config validates offline without opening credential/trust files.\nLinux service control: status [--json], up/down [--wait-ms N | --no-wait].\nOther service commands remain unavailable in this build.\n";
 pub const VERSION: &str = concat!("warper ", env!("CARGO_PKG_VERSION"), "\n");
 
 pub struct SudoIdentity {
@@ -54,11 +56,12 @@ impl SourceReader for FileSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Output {
     Help,
     Version,
     ConfigValid,
+    Service(String),
 }
 
 #[derive(Debug)]
@@ -73,12 +76,19 @@ pub enum Error {
     UnsupportedCapability(ServiceCommand),
     UnsupportedPlatform,
     Output(io::ErrorKind),
+    #[cfg(target_os = "linux")]
+    Control(control::Error),
+    #[cfg(target_os = "linux")]
+    Admission(warper_control::runtime::client::Error),
+    Runtime(io::ErrorKind),
 }
 
 impl Error {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Arguments(_) | Self::SudoEncoding | Self::Config(_) => 2,
+            #[cfg(target_os = "linux")]
+            Self::Control(control::Error::InvalidWait) => 2,
             Self::Identity(paths::Error::InconsistentSudoIdentity) => 2,
             Self::Paths(
                 paths::Error::InvalidAccount
@@ -114,18 +124,25 @@ impl fmt::Display for Error {
             Self::Source(error) => write!(formatter, "ConfigurationSource at --config: {error}"),
             Self::Config(error) => fmt::Display::fmt(error, formatter),
             Self::UnsupportedCapability(_) => formatter.write_str(
-                "UnsupportedCapability: service control is not implemented in this build",
+                "UnsupportedCapability: requested service command is unavailable in this build",
             ),
             Self::UnsupportedPlatform => formatter.write_str(
                 "UnsupportedIntegration: offline source loading supports Linux and macOS",
             ),
             Self::Output(_) => formatter.write_str("Output: cannot write command result"),
+            #[cfg(target_os = "linux")]
+            Self::Control(error) => error.fmt(formatter),
+            #[cfg(target_os = "linux")]
+            Self::Admission(error) => error.fmt(formatter),
+            Self::Runtime(_) => formatter.write_str("Runtime: cannot start native client executor"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
+/// Execute offline commands with injected account and file boundaries.
+/// Native service commands are dispatched separately by `run_native`.
 pub fn execute(
     command: Command,
     environment: &impl Environment,
@@ -168,6 +185,7 @@ pub fn write_output(output: Output, stdout: &mut impl Write) -> Result<(), Error
         Output::Help => HELP,
         Output::Version => VERSION,
         Output::ConfigValid => "Configuration is valid (offline).\n",
+        Output::Service(ref text) => text,
     };
     stdout
         .write_all(text.as_bytes())
@@ -199,6 +217,21 @@ pub fn report_error(primary: Error, stderr: &mut impl Write) -> Failure {
 
 #[cfg(unix)]
 pub fn run_native(command: Command) -> Result<Output, Error> {
+    #[cfg(target_os = "linux")]
+    if let Command::Service(
+        command @ (ServiceCommand::Status { .. }
+        | ServiceCommand::Up { .. }
+        | ServiceCommand::Down { .. }),
+    ) = command
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| Error::Runtime(error.kind()))?;
+        return runtime
+            .block_on(control::native(command))
+            .map(Output::Service);
+    }
     execute(command, &NativeEnvironment, &mut FileSource)
 }
 
