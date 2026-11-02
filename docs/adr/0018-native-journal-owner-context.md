@@ -95,6 +95,8 @@ the descriptor. It never requests a thread-only descriptor.
 Local self/start-tick and invalid-PID tests exercise the private primitive.
 The native fixture checks live/current-instance fencing, then uses a controlled
 root context peer, SIGKILL/reap and runtime reacquisition to verify public exited
-observation. That new privileged execution remains pending fresh CI. Recovery
+observation. The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41384228624)
+passes at `5adcf1b`, with independently preserved host state. Artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41384228624/`. Recovery
 still requires protected journal comparison, object/key absence and committed
 retirement; liveness alone supplies no cleanup authority.

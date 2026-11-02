@@ -1008,3 +1008,12 @@ time drives TCP retries. The fixture's server/control/global bounds remain
 15/16/20 seconds. This extends the existing `--router-mtu-check` scope; there
 are no new flags. See contract section 24. General production migration/state,
 router trust and minimum-size IPv4 quotes remain unresolved.
+
+The owner-dispatched root job also builds `linux_recovery_probe` and runs it
+through `scripts/control_acceptance.py` in a separate fresh private state/mount/
+network/PID namespace fixture. It kills/reaps actual prepared, allocated, enabled
+and captured owners, then tests native absence reconciliation, foreign claims,
+pending storage, idempotence and fresh allocation. Reproduce only on a disposable
+Linux VM with the existing harness; never run these mutations against live host
+resolver/bus/state. Evidence is nested under the same exact-commit CI artifact
+in `tun-recovery/`. Compilation is not privileged acceptance.

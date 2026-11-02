@@ -793,3 +793,9 @@ operation. It revalidates native context, uses PIDFD/procfs observations in the
 recorded PID scope and distinguishes previous boots. PID reuse or process exit
 alone does not authorize deleting or adopting a TUN or route. These observations
 add no configuration option and must run in retained native workers.
+
+Internal abandoned-TUN reconciliation changes only the protected journal. It
+refuses live or uncertain owner evidence and surviving interface/route claims,
+then records ended ownership without deleting/adopting host objects. Prior boot
+identifiers are foreign to the current kernel. Pending storage requires explicit
+inspection/discard, not promotion. No CLI recovery command is exposed yet.

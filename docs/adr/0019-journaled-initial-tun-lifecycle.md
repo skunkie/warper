@@ -115,3 +115,21 @@ retirement and a surviving port's device/runtime lifetime pass in
 at `feaa91a`, with independently preserved host state. The capture route and
 loopback connector are still fixture-owned; production route/physical-path and
 daemon supervision gates remain open.
+
+## Abandoned initial ownership
+
+The driver now offers protected journal retirement after native owner evidence
+ends. Same-boot process death/reuse requires the recorded interface index and
+all prefix/metric keys absent; surviving/reused foreign objects are preserved
+as conflicts. Previous boots end old kernel ownership without adopting current
+identifiers. Recovery changes only the observed journal revision to Retired,
+retaining history, and never sends native deletion or opens a named device.
+Live/uncertain owners and pending storage remain blocked. No record and an
+already retired record are explicit idempotent observations.
+
+A separate runnable recovery probe uses fresh private state and real SIGKILL
+at four lifecycle stages, then tests foreign interface/route claims, pending
+intent, request expiry, repeated recovery and fresh TUN allocation. Its first
+privileged execution remains pending the exact committed owner-dispatched run.
+This does not implement desired-state/control-endpoint/resolver recovery or
+complete daemon startup.

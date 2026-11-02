@@ -190,6 +190,7 @@ jobs:
         run: |
           cargo build --locked -p warper-control --example control_privileged
           cargo build --locked -p warper-service --example linux_network_probe
+          cargo build --locked -p warper-service --example linux_recovery_probe
       - name: Exercise protected root state and real kernel peers in isolation
         shell: bash
         run: |
@@ -206,6 +207,14 @@ jobs:
             --probe "$PWD/target/debug/examples/linux_network_probe" \
             --evidence "$PWD/target/evidence/phase-1/privileged-control/tun-api" \
             2>&1 | tee target/evidence/phase-1/privileged-control/tun-api/controller.log
+      - name: Exercise real crash reconciliation in fresh private state
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control/tun-recovery
+          sudo -n -- python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/linux_recovery_probe" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control/tun-recovery" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/tun-recovery/controller.log
       - name: Retain privileged gate evidence even on failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

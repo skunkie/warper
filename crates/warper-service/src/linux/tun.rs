@@ -23,6 +23,8 @@ pub use transaction::{
     Cause as AddressCause, Delivery as AddressDelivery, Failure as AddressFailure,
 };
 pub use transaction::{Cause as NativeCause, Delivery as NativeDelivery, Failure as NativeFailure};
+mod recovery;
+pub use recovery::{RecoveryOutcome, recover_abandoned};
 mod record;
 pub use record::Stage;
 use record::{Identity, Record};
@@ -52,6 +54,8 @@ pub enum Error {
     NoRuntime,
     PacketPortActive,
     RecoveryRequired,
+    OwnerAlive,
+    RecoveryWait(NativeCause),
     InvalidRecord,
     Io(io::ErrorKind),
     CleanupUncertain,
@@ -92,6 +96,10 @@ impl fmt::Display for Error {
             Self::NoRuntime => "SystemConfiguration: native TUN allocation requires an I/O runtime",
             Self::PacketPortActive => "Conflict: packet work must retire before native TUN close",
             Self::InvalidState => "Conflict: invalid TUN lifecycle transition",
+            Self::OwnerAlive => "RecoveryRequired: recorded native owner is still alive",
+            Self::RecoveryWait(_) => {
+                "RecoveryRequired: abandoned owner inspection cancelled or expired"
+            }
             Self::RecoveryRequired => "RecoveryRequired: prior TUN state requires inspection",
             Self::InvalidRecord => "RecoveryRequired: invalid platform TUN journal",
             Self::Io(_) => "SystemConfiguration: native TUN operation failed",

@@ -2307,3 +2307,30 @@ cancellation guarantee. PID numbers are interpreted only in the verified PID
 namespace. This is an observation, not authority to delete or adopt a recorded
 TUN/route. Recovery still needs protected journal comparison, proven object
 absence, fresh request checks and committed retirement.
+
+### Abandoned initial TUN journal retirement
+
+Recovery runs under a fresh native context/runtime lease in a retained worker.
+It reads only the fixed protected network journal, decodes the bounded WTUN
+record and compares native owner scope/process evidence. No record and an
+already Retired record are explicit idempotent observations. A live owner,
+foreign same-boot namespace, conflicting instance or uncertain evidence blocks
+retirement without changing the journal or host state.
+
+For a departed/reused same-boot owner, a recorded interface index must be absent
+and all recorded main-table prefix/metric keys must be absent on every current
+interface. Reused/foreign objects and changed surviving route keys are preserved
+as conflicts. Prepared intent with no recorded index relies on the private,
+nonpersistent descriptor/retained-lease invariant after verified process death.
+A different native boot ends old kernel ownership; current objects with reused
+identifiers are foreign and are never inspected for deletion or adopted.
+
+After fresh context/request checks, commit only the Retired journal stage under
+its observed revision. Preserve the old bounded identity/prefix history. Never
+send a link/route deletion or open a named TUN during this recovery. Pending or
+uncertain storage remains blocked until explicit protected journal inspection/
+resync/discard; staged data is never promoted. Caller cancellation/expiry before
+commit changes nothing, and commit uncertainty is surfaced. Filesystem waits
+still have no hard cancellation guarantee, so native jobs must be retained and
+joined. This operation does not implement desired-state restart, control-socket
+recovery, resolver recovery or connected readiness.

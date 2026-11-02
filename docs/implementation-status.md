@@ -368,6 +368,20 @@ boot separation and current-instance/foreign-scope fencing. Missing evidence
 with a live descriptor remains uncertain. Local self and boundary tests pass;
 a private root context peer adds real SIGKILL/reap and runtime reacquisition
 for the next native run. Evidence belongs under
-`target/evidence/phase-1/native-process-observation/`; the new privileged gate
-remains unverified until CI. Abandoned journal reconciliation still needs
+`target/evidence/phase-1/native-process-observation/`. The [native liveness gate](https://github.com/skunkie/warper/actions/runs/41384228624)
+passes at `5adcf1b`, including real SIGKILL/reap and runtime reacquisition with
+independently preserved host state. Artifacts are under
+`target/evidence/phase-1/privileged-control-ci/run-41384228624/`.
+Abandoned journal reconciliation still needs
 object/key absence, revision comparison and committed retirement.
+
+The initial driver now has abandoned-journal retirement under native context
+checks. It preserves live/uncertain owners and foreign or surviving keys, and
+commits only ended ownership under the observed revision without native deletes.
+A fresh-state recovery executable and owner-dispatched CI step cover actual
+SIGKILL at prepared/allocated/enabled/captured stages, pending intent, foreign
+claims, idempotence and fresh allocation. Local checks establish harness
+readiness; the new privileged gate remains unverified until CI. Evidence
+belongs under `target/evidence/phase-1/abandoned-tun-recovery/`. Desired-state
+restart, stale control endpoint recovery and full service supervision remain
+open.

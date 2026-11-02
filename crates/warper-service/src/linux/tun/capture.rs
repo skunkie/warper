@@ -93,6 +93,23 @@ impl Plan {
         let inventory = route_inventory::inspect(request).map_err(Error::RouteInspection)?;
         self.verify_entries(index, inventory.entries(), committed, &wait)
     }
+    pub(super) fn inspect_absence(&self, request: Request) -> Result<(), Error> {
+        let inventory = route_inventory::inspect(request).map_err(Error::RouteInspection)?;
+        self.verify_absence(inventory.entries())
+    }
+    fn verify_absence(&self, entries: &[route_inventory::Entry]) -> Result<(), Error> {
+        if self.prefixes.iter().any(|prefix| {
+            entries.iter().any(|entry| {
+                entry.table.get() == 254
+                    && entry.network == prefix.network
+                    && entry.prefix_len == prefix.length
+                    && entry.metric == Some(self.metric)
+            })
+        }) {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
     fn verify_entries(
         &self,
         index: u32,
@@ -217,18 +234,7 @@ pub(super) fn remove(
             _ => return Err(Error::Conflict),
         }
     }
-    let inventory = route_inventory::inspect(request).map_err(Error::RouteInspection)?;
-    if plan.prefixes.iter().any(|prefix| {
-        inventory.entries().iter().any(|entry| {
-            entry.table.get() == 254
-                && entry.network == prefix.network
-                && entry.prefix_len == prefix.length
-                && entry.metric == Some(plan.metric)
-        })
-    }) {
-        return Err(Error::Conflict);
-    }
-    Ok(())
+    plan.inspect_absence(request)
 }
 
 #[cfg(test)]
@@ -389,5 +395,16 @@ mod tests {
         assert!(
             matches!(message(plan.prefixes[0], plan.metric, 9, false), RouteNetlinkMessage::DelRoute(value) if value == route)
         );
+    }
+    #[test]
+    fn recovery_requires_recorded_keys_absent_even_when_their_interface_or_metadata_changed() {
+        let plan = plan();
+        assert_eq!(plan.verify_absence(&[]), Ok(()));
+        let mut route = owned(plan.prefixes[0]);
+        route.interface = NonZeroU32::new(77);
+        route.exact = false;
+        assert_eq!(plan.verify_absence(&[route]), Err(Error::Conflict));
+        route.metric = Some(plan.metric + 1);
+        assert_eq!(plan.verify_absence(&[route]), Ok(()));
     }
 }

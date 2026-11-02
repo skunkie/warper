@@ -10,11 +10,7 @@ mod linux {
     use std::{
         fs, io,
         net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-        os::unix::{
-            fs::{FileTypeExt, MetadataExt, PermissionsExt},
-            net::UnixStream as NativeStream,
-        },
-        process::Command,
+        os::unix::fs::PermissionsExt,
         sync::Arc,
         time::Duration,
     };
@@ -25,7 +21,6 @@ mod linux {
     };
     use tun_rs::DeviceBuilder;
     use warper_config::schema::{Config, Platform};
-    use warper_control::{namespace, unix};
     #[cfg(test)]
     use warper_core::transport::{EndpointConnector, Error, OpenTcp, TcpStream as BoxedTcp};
     use warper_core::{
@@ -35,60 +30,16 @@ mod linux {
     use warper_service::preflight::{Networking, Plan};
     use warper_stack::{Seed, host::MTU};
 
+    mod fixture;
+    pub(crate) use fixture::root;
+    use fixture::{CombinedFailure, Failure, ip, isolated, join_native, preserve};
     mod physical;
     mod process_owner;
 
-    type Failure = Box<dyn std::error::Error + Send + Sync>;
     const NAME: &str = "warper-probe";
     const DESTINATION: &str = "198.18.0.2:443";
     const PAYLOAD: usize = 65536;
 
-    pub fn root() -> Result<(), Failure> {
-        namespace::require_initial_user_namespace()?;
-        let (a, _b) = NativeStream::pair()?;
-        unix::authenticate_service(&a)?;
-        Ok(())
-    }
-    fn isolated(mount: &str, net: &str) -> Result<(), Failure> {
-        root()?;
-        for (kind, anchor) in [("mnt", mount), ("net", net)] {
-            let fd: u32 = anchor.parse()?;
-            let path = format!("/proc/self/fd/{fd}");
-            let label = fs::read_link(&path)?;
-            let label = label.to_str().ok_or("invalid fixture namespace label")?;
-            let file = fs::File::open(&path)?;
-            if rustix::fs::fstatfs(&file)?.f_type as u64 != 0x6e736673
-                || !label.starts_with(&format!("{kind}:["))
-                || !label.ends_with(']')
-            {
-                return Err("fixture requires inherited namespace handles".into());
-            }
-            let old = file.metadata()?;
-            let current = fs::metadata(format!("/proc/thread-self/ns/{kind}"))?;
-            if old.dev() == current.dev() && old.ino() == current.ino() {
-                return Err("fixture requires private mount/network namespaces".into());
-            }
-        }
-        let device = fs::symlink_metadata("/dev/net/tun")?;
-        if !device.file_type().is_char_device()
-            || device.uid() != 0
-            || rustix::fs::major(device.rdev()) != 10
-            || rustix::fs::minor(device.rdev()) != 200
-        {
-            return Err("fixture requires a real protected TUN character device".into());
-        }
-        Ok(())
-    }
-    fn ip(args: &[&str]) -> Result<Vec<u8>, Failure> {
-        let output = Command::new("timeout")
-            .args(["--kill-after=1s", "2s", "ip"])
-            .args(args)
-            .output()?;
-        if !output.status.success() {
-            return Err("controlled ip operation failed".into());
-        }
-        Ok(output.stdout)
-    }
     async fn inspect_link(
         name: &str,
     ) -> Result<warper_service::linux::link_lookup::Observation, Failure> {
@@ -432,25 +383,6 @@ mod linux {
         );
         Ok(())
     }
-    async fn join_native<T: Send + 'static>(
-        task: &mut warper_service::native::Task<T>,
-        cancellation_owner: &tokio::sync::watch::Sender<bool>,
-    ) -> Result<T, Failure> {
-        // The independently bounded harness can terminate hung kernel work.
-        // A caller deadline here never discards the retained native job.
-        loop {
-            match task
-                .wait(Request {
-                    deadline: tokio::time::Instant::now() + Duration::from_secs(10),
-                    cancellation: cancellation_owner.subscribe(),
-                })
-                .await
-            {
-                Err(warper_service::native::Error::Deadline) => continue,
-                result => return Ok(result?),
-            }
-        }
-    }
     async fn protected_connector(
         context: Arc<warper_service::linux::context::Context>,
         endpoints: Vec<SocketAddr>,
@@ -595,38 +527,6 @@ mod linux {
         );
         let config = Config::parse(source.as_bytes(), &paths, Platform::Linux)?;
         Ok(Plan::prepare(&config, Platform::Linux)?)
-    }
-    #[derive(Debug)]
-    struct CombinedFailure {
-        primary: Failure,
-        cleanup: Vec<Failure>,
-    }
-    impl std::fmt::Display for CombinedFailure {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "{}; {} cleanup failure(s)",
-                self.primary,
-                self.cleanup.len()
-            )
-        }
-    }
-    impl std::error::Error for CombinedFailure {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&*self.primary)
-        }
-    }
-    fn preserve(primary: Result<(), Failure>, mut cleanup: Vec<Failure>) -> Result<(), Failure> {
-        let primary = match primary {
-            Err(error) => error,
-            Ok(()) if cleanup.is_empty() => return Ok(()),
-            Ok(()) => cleanup.remove(0),
-        };
-        if cleanup.is_empty() {
-            Err(primary)
-        } else {
-            Err(Box::new(CombinedFailure { primary, cleanup }))
-        }
     }
     async fn capture_change(
         owner: &mut Option<warper_service::linux::tun::Owner>,
@@ -1403,7 +1303,7 @@ mod linux {
                 vec!["cleanup failure".into()],
             )
             .unwrap_err();
-            let combined = error.downcast_ref::<CombinedFailure>().unwrap();
+            let combined = error.downcast_ref::<fixture::CombinedFailure>().unwrap();
             assert_eq!(combined.primary.to_string(), "initial probe failure");
             assert_eq!(combined.cleanup[0].to_string(), "cleanup failure");
             assert_eq!(
