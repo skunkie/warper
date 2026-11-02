@@ -238,6 +238,13 @@ mod linux {
             let name = foreign.name()?;
             let index = foreign.if_index()?;
             let mut forged = original_payload.clone();
+            // Named records require the requested and observed names to agree.
+            // Preserve that schema invariant so this reaches native identity
+            // checks rather than failing early as a malformed journal.
+            if forged[96] == Stage::Named as u8 {
+                forged[100..116].fill(0);
+                forged[100..100 + name.len()].copy_from_slice(name.as_bytes());
+            }
             forged[116..132].fill(0);
             forged[116..116 + name.len()].copy_from_slice(name.as_bytes());
             forged[132..136].copy_from_slice(&index.to_be_bytes());
@@ -246,8 +253,12 @@ mod linux {
             let after = journal
                 .read(&lease)?
                 .ok_or("foreign conflict removed the journal")?;
-            if result != Err(TunError::CleanupUncertain)
-                || after.revision() != revision
+            if result != Err(TunError::CleanupUncertain) {
+                return Err(
+                    format!("foreign interface recovery outcome differs: {result:?}").into(),
+                );
+            }
+            if after.revision() != revision
                 || after.payload() != forged
                 || foreign.if_index()? != index
                 || foreign.name()? != name
