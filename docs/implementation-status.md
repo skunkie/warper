@@ -538,8 +538,8 @@ retirement with no retained host streams, then permits managed replacement
 after the final supervisor lease drops. Artifacts are under
 `target/evidence/phase-1/privileged-control-ci/run-41473128483/`; local evidence
 is under `target/evidence/phase-1/network-supervisor/`. The authenticated daemon
-controller, durable operation dispatch, service CLI/installation, stale endpoint
-recovery and full client-detach/lifecycle acceptance remain open.
+controller, durable operation dispatch, administrative CLI/installation and full
+client-detach/lifecycle acceptance remain open.
 
 Control endpoint restart recovery now uses a bounded WCTL v1 intent with the
 persistent lock identity and a frozen socket pathname identity. Publication
@@ -548,10 +548,16 @@ never-published runtime ownership; an Arc extracted from an old endpoint cannot
 replace fresh flock acquisition. Local fixtures prove known stale retirement,
 idempotence, foreign/changed/shared state preservation, legacy refusal and
 record boundaries. The native fixture adds actual SIGKILL/reap and fresh
-publication after recovery. Its privileged exact-commit evidence remains
-unverified. Evidence belongs under
-`target/evidence/phase-1/control-endpoint-recovery/`. This supplies a safe
-bootstrap boundary; the daemon, control dispatch and CLI remain incomplete.
+publication after recovery. The
+[owner-dispatched privileged gate](https://github.com/skunkie/warper/actions/runs/41484467276)
+passes at `85e2e6e`: all three isolated fixtures finish without timeout and
+preserve independently observed host state. Its control log verifies actual
+SIGKILL/reap, fresh-lock recovery, repeated retirement and fresh publication.
+Both Linux native build/test jobs pass. The macOS job could not acquire a
+hosted runner; that platform check remains unverified. Evidence is under
+`target/evidence/phase-1/control-endpoint-recovery/`, including downloaded CI
+artifacts. This supplies a safe bootstrap boundary; the daemon, control dispatch
+and administrative CLI remain incomplete.
 
 The Linux `warper` client now implements native status, Connect/Disconnect
 submission and bounded operation observation. It authenticates the fixed
