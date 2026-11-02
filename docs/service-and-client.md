@@ -263,6 +263,25 @@ The service atomically stores approved data in a protected managed directory.
 Editing the original home file does not change the running service, and a
 daemon started at boot never searches root's home or relies on `SUDO_USER`.
 
+YAML remains the user-facing import format. The initial Linux service stores an
+internal versioned managed snapshot under `/etc/warper/configuration`: normalized
+YAML with explicit defaults and a separate credential section inside a protected
+generation envelope. It is not a file users edit directly. Editing the source
+YAML does not change the approved generation until an explicit installation.
+The initial CLI import must supply its complete configuration/material; no
+secret-preserving partial edit API exists yet.
+
+The proposed Phase 5 editor uses a staged draft: edit fields or import YAML,
+validate locally, review changes, then Apply through the authorized service.
+Apply compares the base generation and initially requires a disconnected
+session. The UI never opens internal root-owned state. An approved configuration
+view must redact secrets; configured credentials appear as configured, with
+deliberate replace/remove actions. Preserving a credential without reading it
+back requires generation-bound opaque references in a future editing contract,
+not returning the full managed snapshot to JavaScript. The current WMCF v1
+import contains complete credentials and does not implement those references.
+The GUI editor, redacted configuration view and editing RPC remain future work.
+
 Expose only narrow Tauri commands to local bundled UI assets. Do not expose
 generic IPC forwarding, shell execution, unrestricted filesystem access, or
 remote content with native privileges. Use explicit capabilities and CSP;
