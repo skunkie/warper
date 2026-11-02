@@ -2359,3 +2359,36 @@ and its UTF-8 result; callers account for retained copies separately. Filesystem
 waits have no hard wall deadline: asynchronous clients retain/join a blocking
 worker rather than canceling and losing its task. Protected serialization,
 credential references, storage and the import CLI remain separate work.
+
+## Initial managed SOCKS5 snapshot
+
+`warper_config::managed::Snapshot::import(source, paths, platform)` runs in the
+ordinary native client. Validate schema and at most 64 SOCKS5 backends before
+opening selected password files; other backend imports return typed unsupported
+capability. Resolve password files with the credential reader, then enforce
+SOCKS5's nonempty 255-byte UTF-8 user/password limits. No service or network
+mutation occurs. Import is synchronous and retains the reader's worker rules.
+
+`Snapshot::encode() -> Result<Secret<Vec<u8>>, Error>` emits a bounded `WMCF`
+version-one envelope; `Snapshot::decode(bytes, platform)` performs only bounded
+in-memory validation and opens no files. The 16-byte big-endian header contains
+magic[4], version u32=1, normalized YAML length u32, credential count u16 and
+reserved u16=0. Follow with that YAML, then ascending unique credential entries:
+protocol index u16 (zero-based), user byte length u16, password byte length u16,
+reserved u16=0, then UTF-8 user and password bytes. Each length is 1..255; every
+index must name an existing SOCKS5 backend. The whole envelope is at most 1 MiB.
+Reject unknown versions, reserved fields, duplicate/out-of-order entries,
+truncation, trailing data and over-limit input before using it.
+
+The configuration section materializes every root default, backend ID and
+normalized routing/endpoint value in deterministic key order, without user,
+password or any file path. Decode requires exact canonical representation under
+version-one semantics before applying the separately bounded credential table.
+Never promote decoded values into networking readiness; service preflight still
+checks the currently supported static IPv4 slice and native resource budget.
+`Snapshot::config()` exposes the reconstructed typed configuration only to native
+code. Debug and errors redact both sections; neither encoded snapshots nor this
+in-memory accessor is an observable configuration RPC. Protected atomic storage,
+administrative installation, generation fencing and redacted views remain
+separate boundaries. Version-one defaults must remain stable; incompatible
+normalization/default changes require a new version or explicit migration.

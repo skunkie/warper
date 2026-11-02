@@ -395,4 +395,14 @@ It preserves UTF-8 content while removing exactly one final LF/CRLF. Controlled
 file/FIFO/symlink, size, permission, decoding and read-failure tests exercise the
 boundary. Evidence belongs under
 `target/evidence/phase-1/client-secret-import/`. This does not yet provide the
-managed format/store, authorized installation or import CLI.
+authorized installation or import CLI. The managed format is described below.
+
+The initial managed SOCKS5 snapshot now materializes defaults and normalized
+values in bounded versioned data, with a separate UTF-8 credential table. Native
+client import reads selected password files; service-side decode accepts only
+canonical path-free configuration and performs no file reads. Public API tests
+exercise round trips, 64 backends/maximum credentials, malformed/truncated data,
+platform names, unsupported-backend validation before reads, and expansion over
+node/byte budgets. Evidence belongs under
+`target/evidence/phase-1/managed-snapshot/`. Protected atomic storage, generation
+fencing, authorized installation and the import CLI remain open.

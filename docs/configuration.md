@@ -800,3 +800,18 @@ refuses live or uncertain owner evidence and surviving interface/route claims,
 then records ended ownership without deleting/adopting host objects. Prior boot
 identifiers are foreign to the current kernel. Pending storage requires explicit
 inspection/discard, not promotion. No CLI recovery command is exposed yet.
+
+### Initial managed snapshot format
+
+Native SOCKS5 import validates the source before reading selected password
+files, applies the same 255-byte password limit after newline removal, and
+materializes all defaults in a versioned snapshot. The client supports at most
+64 SOCKS5 entries at this boundary; SSH/WireGuard import remains unsupported.
+The protected `WMCF` version-one envelope is limited to 1 MiB, including its
+header, normalized configuration and separately encoded credential table.
+The configuration section contains no credentials or file references; decoder
+validation and typed reconstruction perform no file reads. Debug/errors never
+print either section. Encoded snapshots contain secrets and must never appear
+in logs, ordinary status replies or unprotected storage. This library format
+is not yet an implemented import command or authorized managed store. Its exact
+layout and canonical validation are in the implementation contract.

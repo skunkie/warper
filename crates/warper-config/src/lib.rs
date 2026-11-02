@@ -6,6 +6,7 @@
 //! The installed service uses protected managed material instead of these paths.
 
 pub mod credential;
+pub mod managed;
 pub mod schema;
 pub mod source;
 pub mod yaml;
