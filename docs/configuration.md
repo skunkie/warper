@@ -8,7 +8,9 @@ SPDX-License-Identifier: MIT
 
 Status: offline YAML/schema/semantic validation and the `warper check-config`
 CLI are implemented. Linux native status/up/down clients and static IPv4
-SOCKS5/TCP preflight exist; a running daemon and its handlers remain incomplete.
+SOCKS5/TCP preflight exist. `warperd service` now composes native authenticated
+control and supervised networking; its new executable acceptance remains
+unverified. Administrative CLI and service-manager installation remain open.
 Core implements offline path resolution and injectable invoking-account
 validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
 account lookup in `crates/warper-config/src/identity.rs`. Bounded YAML decoding
@@ -557,8 +559,13 @@ trust, cryptographic, or connectivity claim. On Linux, bare `warper`, `status`,
 initial-user-namespace root peer before sending Hello. They negotiate wire
 version two and correlate every reply. Other service commands, and native
 service commands on other platforms, still return `UnsupportedCapability`.
-No daemon is installed by this client implementation. A missing service fails
-with exit 1; offline checks never attempt IPC.
+`warperd service` runs the foreground Linux daemon against already approved
+managed configuration and enrolled owner policy. It keeps networking independent
+of clients, handles SIGTERM/SIGINT through owned shutdown and shares the fixed
+instance lock. No service-manager installation is performed by building the
+binary. Initial administrative import/enrollment, offline recovery and diagnostic
+`warperd run` commands remain incomplete. A missing service fails with exit 1;
+offline checks never attempt IPC.
 
 A control connection and each request/reply exchange have a five-second
 absolute deadline. Filesystem identity inspection remains synchronous and does

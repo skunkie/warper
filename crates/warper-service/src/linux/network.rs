@@ -128,7 +128,7 @@ pub struct Cleanup {
     pub retirement: Option<Error>,
 }
 impl Cleanup {
-    fn failed(&self) -> bool {
+    pub fn failed(&self) -> bool {
         [
             self.pending_native,
             self.quiescence,

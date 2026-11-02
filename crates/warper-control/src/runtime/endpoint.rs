@@ -168,6 +168,30 @@ impl ControlEndpoint {
         &self.lease
     }
 
+    /// Clone the owned nonblocking listener for safe async registration. The
+    /// service must drop this descriptor before consuming endpoint retirement.
+    /// Metadata and peer authorization must precede framing on every accept.
+    pub fn clone_listener(&self) -> Result<std::os::unix::net::UnixListener, Error> {
+        self.verify()?;
+        let listener = self.listener.as_ref().ok_or(Error::ChangedState)?;
+        Ok(std::os::unix::net::UnixListener::from(
+            listener
+                .try_clone()
+                .map_err(|error| Error::Io(error.kind()))?,
+        ))
+    }
+
+    pub fn authenticate_accepted(
+        &self,
+        stream: UnixStream,
+        policy: &OwnerPolicy,
+    ) -> Result<Accepted, Error> {
+        self.verify()?;
+        let role = crate::unix::authenticate_client(&stream, policy, Access::Observe)
+            .map_err(Error::Peer)?;
+        Ok(Accepted { stream, role })
+    }
+
     pub fn accept(&self, policy: &OwnerPolicy) -> Result<Option<Accepted>, Error> {
         self.verify()?;
         let listener = self.listener.as_ref().ok_or(Error::ChangedState)?;

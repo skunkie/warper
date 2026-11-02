@@ -2646,3 +2646,45 @@ never removes the persistent lock. A Bound record with an absent socket can
 finish interrupted retirement; repeated recovery without either object is a
 no-op. Prepared plus an existing unidentified socket, a socket without intent,
 legacy intent and any foreign metadata remain explicit recovery conflicts.
+
+## Linux daemon composition contract
+
+The daemon composes the verified native controller, shared admission owner and
+network supervisor. One retained native-worker reservation owns the synchronous
+control actor for its lifetime. Bounded command/event channels have 64 slots;
+queued commands retain their authorized frame and client reservation. The actor
+blocks on its inbox rather than polling. The network supervisor owns its own
+single native worker. No client owns either worker or the network cancellation
+sender.
+
+Bootstrap acquires fresh runtime ownership, reconciles endpoint publication and
+network intent, then publishes the protected listener. Readiness of that actual
+listener drives acceptance through a cloned owned Unix listener. Its async
+adapter owns readiness bookkeeping without a raw-descriptor registration.
+Native work verifies protected endpoint metadata and authenticates each accepted
+peer before framing. The cloned listener closes before endpoint retirement.
+Each accepted stream retains
+one native peer descriptor for fresh authorization. Peer descriptors are dropped
+before their final client quota can release. Each session has one request/reply
+at a time and five-second absolute I/O deadlines. Session tasks are retained in
+a bounded join set; closing a session never sends Disconnect.
+
+Native dispatch executes durable actions before delivering their replies.
+Controller callbacks consume actual network readiness and joined outcomes;
+unknown cleanup keeps the original Network owner for an explicit cleanup retry.
+Historical operation success cannot be repurposed as current network readiness.
+Changed admission limits update the existing owner and preserve outstanding
+charges. The encoded-buffer limit does not claim to cap allocator overhead,
+protected configuration copies, kernel peer-owned queues or total RSS.
+
+Stopping closes admission, cancels and joins session tasks, signals the network
+owner, and wakes the native actor. Queued mutations are discarded after stop is
+observed; already executing work remains owned and joined. The daemon keeps
+receiving native completions while stopping so a bounded event channel cannot
+prevent shutdown. Listener references are released and endpoint retirement runs
+in retained native work only after task ownership is settled. A 35-second daemon
+stop budget covers the initial network deadline (at most 30 seconds) and control
+drain. Kernel filesystem stalls are not claimed interruptible. A deadline leaves
+pending ownership retained and returns a typed cleanup failure; it never reports
+successful cleanup or removes foreign state. Runtime/process termination is a
+separate final boundary and leaves durable recovery obligations explicit.

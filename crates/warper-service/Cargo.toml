@@ -10,6 +10,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "warperd"
+path = "src/bin/warperd.rs"
+
 [dependencies]
 tokio.workspace = true
 warper-core = { path = "../warper-core" }
@@ -21,6 +25,7 @@ warper-stack = { path = "../warper-stack" }
 tokio = { workspace = true, features = ["net", "test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+tokio = { workspace = true, features = ["net", "signal"] }
 netlink-packet-core.workspace = true
 netlink-packet-route.workspace = true
 netlink-sys.workspace = true
@@ -30,7 +35,7 @@ rustix = { workspace = true, features = ["fs", "process"] }
 warper-control = { path = "../warper-control" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-nix = { workspace = true, features = ["sched"] }
+nix = { workspace = true, features = ["sched", "signal"] }
 rustix = { workspace = true, features = ["fs"] }
 
 [lints]
