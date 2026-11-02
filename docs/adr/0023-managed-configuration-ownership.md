@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0023. Managed configuration generations and retained installation ownership
 
-- Status: proposed; native installation/lease gate pending.
+- Status: accepted scoped managed configuration boundary; daemon integration pending.
 - Date: 2026-11-02
 - Related contracts and acceptance criteria: [configuration](../configuration.md),
   [managed contracts](../implementation-contracts.md#initial-managed-socks5-snapshot),
@@ -95,9 +95,13 @@ before storage, stale generations, Busy during retained/cloned leases, manager
 reopen blocked until final lease drop, persistence and external-edit rejection.
 Run only through `scripts/control_acceptance.py` on a disposable Linux VM with
 its private mount/net/PID state, dedicated bus/resolver and independent cleanup.
-Evidence belongs under `target/evidence/phase-1/configuration-ownership/` and
-exact-commit CI artifacts. That new native gate is pending; this ADR is not yet
-accepted. No macOS native installation or full service lifecycle is established.
+The [owner-dispatched native gate](https://github.com/skunkie/warper/actions/runs/41391328712)
+passes at `5a62a65`, including those actual API/lifetime checks and independently
+preserved host state. Evidence belongs under
+`target/evidence/phase-1/configuration-ownership/` and
+`target/evidence/phase-1/privileged-control-ci/run-41391328712/`.
+Acceptance is scoped to this managed boundary. No macOS native installation,
+running control handler or full service lifecycle is established.
 
 Revisit this choice for additional backend imports, credential-reference editing,
 format migration, native macOS authorization or changed memory/transaction
