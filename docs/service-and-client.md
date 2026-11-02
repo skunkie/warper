@@ -432,3 +432,30 @@ shared `wire::operation_id` constructor and codec validate this format, and the
 connection store independently enforces it before mutation. The persisted ID
 prefix must equal the stored revision minus one. This bounds replay protection
 without retaining an unlimited set of historical opaque UUIDs.
+
+### Initial Linux controller composition
+
+The native controller runs in one retained blocking worker at a time. It owns
+approved configuration, protected owner policy, durable connection intent and
+bounded operation history. A dispatch authenticates the real retained peer
+against freshly read policy before lookup or mutation. Returning a Start/Stop
+action follows durable intent acceptance; action execution and readiness belong
+to the asynchronous service owner, independently of the requesting connection.
+
+A new Connect during Preparing or Disconnecting returns Busy without accepting
+intent. A matching retained operation may still retrieve its original result.
+A new Connect while Connected records immediate completion without creating a
+second network owner. Disconnect supersedes pending Connect and suppresses its
+late readiness; another new Disconnect during Disconnecting returns Busy.
+Cleanup must report verified retirement before Disconnect succeeds. Unverified
+retirement retains network ownership and blocks Connect. A failed network after
+successful Connect changes current session state without rewriting that
+operation's historical success.
+
+Operation history reserves capacity before accepting durable intent and evicts
+only terminal records, oldest first. The configured limit is 1..=4096 records;
+active operations are protected. Configuration installation requires no retained
+network owner, validates replacement history capacity before storage mutation,
+and hands the new admission plan to the service owner. It never installs while
+an older network lease is retained. Controller actions and state updates are
+internal service messages, not client-provided readiness assertions.

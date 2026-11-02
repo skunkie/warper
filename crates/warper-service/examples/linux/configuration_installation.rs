@@ -54,7 +54,9 @@ pub(super) fn peer() -> Result<(), Failure> {
     Ok(())
 }
 
-fn unauthorized(manager: &mut Configurations, bytes: &[u8]) -> Result<(), Failure> {
+pub(super) fn with_ordinary_peer(
+    work: impl FnOnce(&UnixStream) -> Result<(), Failure>,
+) -> Result<(), Failure> {
     let listener = UnixListener::bind(SOCKET)?;
     listener.set_nonblocking(true)?;
     std::fs::set_permissions(SOCKET, std::fs::Permissions::from_mode(0o666))?;
@@ -79,25 +81,7 @@ fn unauthorized(manager: &mut Configurations, bytes: &[u8]) -> Result<(), Failur
                 Err(error) => return Err(error.into()),
             }
         };
-        for sample in [bytes, b"malformed".as_slice()] {
-            if manager.install(&peer, 0, sample)
-                != Err(Error::Authentication(
-                    warper_control::Error::PermissionDenied,
-                ))
-            {
-                return Err(
-                    "ordinary configuration peer could pass administrative installation".into(),
-                );
-            }
-        }
-        if manager.status()?
-            != (Status {
-                generation: 0,
-                present: false,
-            })
-        {
-            return Err("unauthorized installation changed configuration".into());
-        }
+        work(&peer)?;
         peer.set_write_timeout(Some(Duration::from_secs(1)))?;
         peer.write_all(&[1])?;
         Ok(())
@@ -136,7 +120,36 @@ fn unauthorized(manager: &mut Configurations, bytes: &[u8]) -> Result<(), Failur
             cleanup.push(Box::new(error) as Failure);
         }
     }
+    drop(listener);
+    if let Err(error) = std::fs::remove_file(SOCKET) {
+        cleanup.push(Box::new(error) as Failure);
+    }
     preserve(outcome, cleanup)
+}
+
+fn unauthorized(manager: &mut Configurations, bytes: &[u8]) -> Result<(), Failure> {
+    with_ordinary_peer(|peer| {
+        for sample in [bytes, b"malformed".as_slice()] {
+            if manager.install(peer, 0, sample)
+                != Err(Error::Authentication(
+                    warper_control::Error::PermissionDenied,
+                ))
+            {
+                return Err(
+                    "ordinary configuration peer could pass administrative installation".into(),
+                );
+            }
+        }
+        if manager.status()?
+            != (Status {
+                generation: 0,
+                present: false,
+            })
+        {
+            return Err("unauthorized installation changed configuration".into());
+        }
+        Ok(())
+    })
 }
 
 pub(super) fn exercise(

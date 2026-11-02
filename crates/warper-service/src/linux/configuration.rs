@@ -211,6 +211,11 @@ fn validate(encoded: &[u8]) -> Result<Snapshot, Error> {
     .map_err(Error::Control)?;
     // Drop the pure plan after validating bounds and credentials; a later
     // network owner prepares its own plan while retaining ConfigurationLease.
+    if limits.max_control_operations > super::controller::MAX_OPERATIONS {
+        return Err(Error::Control(
+            warper_control::admission::Error::InvalidLimits,
+        ));
+    }
     Plan::prepare(snapshot.config(), Platform::Linux).map_err(Error::Preflight)?;
     Ok(snapshot)
 }
@@ -245,6 +250,7 @@ mod tests {
         validate(encoded(sample).expose()).unwrap();
         for limits in [
             "max_control_clients: 65",
+            "max_control_operations: 4097",
             "max_control_inflight_requests: 65",
             "max_control_message_bytes: 67",
             "max_control_buffered_bytes_total: 1",

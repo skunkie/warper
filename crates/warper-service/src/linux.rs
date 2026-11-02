@@ -10,6 +10,7 @@ use std::{fmt, io};
 pub mod change_monitor;
 pub mod configuration;
 pub mod context;
+pub mod controller;
 pub mod egress;
 pub mod link_lookup;
 mod netlink;

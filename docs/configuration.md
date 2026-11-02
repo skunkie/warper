@@ -426,7 +426,7 @@ All values below are positive integers; none accepts an unlimited sentinel. Reje
 | `max_control_inflight_requests` | 64 | Pending control requests across clients |
 | `max_control_events_per_client` | 256 | Subscriber queue limit before disconnect/resynchronization |
 | `max_control_buffered_bytes_total` | 8388608 | Aggregate control buffers, separate from data-plane buffers |
-| `max_control_operations` | 256 | Retained operation records; active operations are not silently evicted |
+| `max_control_operations` | 256 | Retained operation records, at most 4096 in the Linux service; active operations are not silently evicted |
 
 The Phase 1 Linux network supervisor requires `timeouts.connect_ms` and
 `timeouts.shutdown_ms` to be between 1 and 30000 milliseconds. Managed approval

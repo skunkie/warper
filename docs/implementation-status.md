@@ -570,3 +570,21 @@ service rejection and both I/O and pacing cancellation. Evidence is under
 `target/evidence/phase-1/native-cli/`. No daemon is installed or exercised by
 these client tests. Administrative import/enrollment/recovery commands, concrete
 handlers, operation history and full native daemon/CLI acceptance remain open.
+
+The serialized Linux controller now composes protected owner policy, managed
+approval, durable connection intent and bounded operation history. It performs
+fresh kernel peer authorization before dispatch, persists accepted intent before
+returning service-owned actions, suppresses duplicate execution and late
+superseded readiness, and distinguishes historical operation completion from
+current session state. A one-record history can accept Disconnect by retiring
+the superseded Connect only after durability; active records are otherwise
+protected. Service shutdown does not convert an interrupted Connect to success.
+Boot policy preserves same-boot Disconnect, restores matching accepted Up only
+after reconciliation, and applies autoconnect separately on a fresh boot.
+Local history, boot-policy, capacity and error-category tests pass. A disposable
+native fixture adds actual owner replacement, pending-start cancellation,
+retained approval and kernel TCP/FIN through controller actions. That new
+exact-commit privileged evidence remains unverified. Evidence belongs under
+`target/evidence/phase-1/controller-dispatch/`. The async daemon, control task
+supervision, administrative CLI/recovery, installation and full daemon/CLI
+acceptance remain open.
