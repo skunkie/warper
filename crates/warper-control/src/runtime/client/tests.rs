@@ -119,5 +119,9 @@ fn endpoint_metadata_and_namespace_changes_are_rejected_without_repair() {
     assert_eq!(pinned.verify(), Err(Error::UnsafeEndpoint));
     fs::remove_dir(&directory).unwrap();
     fs::rename(fixture.path.join("old-directory"), &directory).unwrap();
-    endpoint.close().unwrap();
+    // Deliberate metadata/namespace changes invalidate live endpoint ownership.
+    // Drop preserves the uncertain names; the private fixture owns their cleanup.
+    drop(endpoint);
+    assert!(socket.exists());
+    assert!(fixture.path.join("run/warper/control.intent").exists());
 }

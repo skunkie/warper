@@ -32,7 +32,7 @@ impl Identity {
             uid: stat.st_uid,
             gid: stat.st_gid,
             mode: stat.st_mode,
-            links: u64::from(stat.st_nlink),
+            links: link_count(stat.st_nlink),
             changed: stat.st_ctime,
             changed_ns: stat.st_ctime_nsec,
             modified: stat.st_mtime,
@@ -150,6 +150,11 @@ impl Record {
         }
         Ok(record)
     }
+}
+
+// Linux stat link-count width differs between supported architectures.
+fn link_count(value: impl Into<u64>) -> u64 {
+    value.into()
 }
 
 #[cfg(test)]
