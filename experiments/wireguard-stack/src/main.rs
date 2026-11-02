@@ -224,9 +224,18 @@ impl Transport {
         }
         let result = self.tunnel.update_timers(&mut output);
         self.send_result(result, peer)?;
+        self.receive_outer(peer, &mut output, UdpSocket::recv_from)
+    }
+
+    fn receive_outer(
+        &mut self,
+        peer: &mut Peer,
+        output: &mut [u8; MTU + 256],
+        mut receive: impl FnMut(&UdpSocket, &mut [u8]) -> io::Result<(usize, SocketAddr)>,
+    ) -> Result<()> {
         let mut incoming = [0; MTU + 256];
         for _ in 0..PACKET_CAPACITY {
-            let (length, source) = match self.socket.recv_from(&mut incoming) {
+            let (length, source) = match receive(&self.socket, &mut incoming) {
                 Ok(received) => received,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error.into()),
@@ -244,9 +253,9 @@ impl Transport {
                 }
                 continue;
             }
-            let result =
-                self.tunnel
-                    .decapsulate(Some(source.ip()), &incoming[..length], &mut output);
+            let result = self
+                .tunnel
+                .decapsulate(Some(source.ip()), &incoming[..length], output);
             // Discard rejected authentication and replay attempts without
             // ending the transport; the per-pump packet limit bounds work.
             if matches!(
@@ -268,7 +277,7 @@ impl Transport {
             // Up to 64 staged packets, then one Done result. The sentinel call
             // must fit too; otherwise a full valid queue fails after delivery.
             for _ in 0..=PACKET_CAPACITY {
-                let result = self.tunnel.decapsulate(None, &[], &mut output);
+                let result = self.tunnel.decapsulate(None, &[], output);
                 if !self.receive_result(result, peer)? {
                     drained = true;
                     break;
@@ -1518,6 +1527,25 @@ mod tests {
         ));
     }
 
+    // Exercise the actual bounded decrypt/reject loop with controlled arrivals.
+    // UDP readiness only promises one readable datagram, and kernel queues can
+    // drop a burst; neither property proves a full batch is available to drain.
+    fn receive_queued_outer(
+        server: &mut Endpoint,
+        queue: &mut std::collections::VecDeque<Vec<u8>>,
+        source: SocketAddr,
+    ) {
+        let mut output = [0; MTU + 256];
+        server
+            .transport
+            .receive_outer(&mut server.peer, &mut output, |_socket, buffer| {
+                let packet = queue.pop_front().ok_or(io::ErrorKind::WouldBlock)?;
+                buffer[..packet.len()].copy_from_slice(&packet);
+                Ok((packet.len(), source))
+            })
+            .unwrap();
+    }
+
     #[test]
     fn replayed_handshake_does_not_stop_experimental_udp_transport() {
         for outer_ipv6 in [false, true] {
@@ -1560,35 +1588,17 @@ mod tests {
             assert!(length > 0);
             let response = output[..length].to_vec();
 
-            for _ in 0..=PACKET_CAPACITY {
-                assert_eq!(
-                    client
-                        .transport
-                        .socket
-                        .send_to(&initiation, server_address)
-                        .unwrap(),
-                    initiation.len()
-                );
-            }
-            wait_for_outer(
-                &server.transport.socket,
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-            server
-                .transport
-                .pump(&mut server.peer, Duration::ZERO)
-                .unwrap();
+            let source = client.transport.socket.local_addr().unwrap();
+            let mut queue = std::collections::VecDeque::from(vec![initiation; PACKET_CAPACITY + 1]);
+            receive_queued_outer(&mut server, &mut queue, source);
             assert_eq!(server.transport.received_outer, 1 + PACKET_CAPACITY);
-            wait_for_outer(
-                &server.transport.socket,
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-            server
-                .transport
-                .pump(&mut server.peer, Duration::ZERO)
-                .unwrap();
+            assert_eq!(
+                queue.len(),
+                1,
+                "bounded receive must leave the final replay queued"
+            );
+            receive_queued_outer(&mut server, &mut queue, source);
+            assert!(queue.is_empty());
             assert_eq!(server.transport.received_outer, 2 + PACKET_CAPACITY);
             let keepalive = match client
                 .transport
@@ -2026,33 +2036,10 @@ mod tests {
             let mac_offset = corrupt.len() - 32;
             corrupt[mac_offset] ^= 1;
             let server_address = server.transport.socket.local_addr().unwrap();
-            for _ in 0..PACKET_CAPACITY {
-                assert_eq!(
-                    client
-                        .transport
-                        .socket
-                        .send_to(&corrupt, server_address)
-                        .unwrap(),
-                    corrupt.len()
-                );
-            }
-            assert_eq!(
-                client
-                    .transport
-                    .socket
-                    .send_to(&initiation, server_address)
-                    .unwrap(),
-                initiation.len()
-            );
-            wait_for_outer(
-                &server.transport.socket,
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-            server
-                .transport
-                .pump(&mut server.peer, Duration::ZERO)
-                .unwrap();
+            let source = client.transport.socket.local_addr().unwrap();
+            let mut queue = std::collections::VecDeque::from(vec![corrupt; PACKET_CAPACITY]);
+            queue.push_back(initiation);
+            receive_queued_outer(&mut server, &mut queue, source);
             assert_eq!(server.transport.received_outer, PACKET_CAPACITY);
             assert_eq!(
                 client
@@ -2065,15 +2052,13 @@ mod tests {
             );
             assert!(!server.peer.device.has_ingress());
 
-            wait_for_outer(
-                &server.transport.socket,
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-            server
-                .transport
-                .pump(&mut server.peer, Duration::ZERO)
-                .unwrap();
+            assert_eq!(
+                queue.len(),
+                1,
+                "bounded receive must retain the valid initiation for the next turn"
+            );
+            receive_queued_outer(&mut server, &mut queue, source);
+            assert!(queue.is_empty());
             assert_eq!(server.transport.received_outer, PACKET_CAPACITY + 1);
             wait_for_outer(
                 &client.transport.socket,
