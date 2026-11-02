@@ -2459,3 +2459,40 @@ explicit recovery, without claiming the proposal was applied or replaying it.
 `status()` and new leases recheck native/storage identity; external changed data
 is never silently adopted. This is a native installation boundary, not a control
 session handler, native-budget approval or connected/readiness declaration.
+
+## Linux authenticated control sessions
+
+`warper_control::session::Session` owns one nonblocking Tokio Unix stream, a
+nonzero service instance ID and an encoded-message ceiling. Construction does
+not publish a listener or prove a protected endpoint; the service retains its
+runtime lease and authenticates endpoint admission before creating sessions.
+UID-only sessions remain Linux-only; macOS requires its native identity gate.
+
+`receive(policy, deadline, cancellation)` freshly authenticates Observe access before reading
+one bounded frame, then retains it without dispatch. After reading, the service
+loads current protected policy again and calls synchronous `authorize(policy)`;
+that checks actual kernel identity and command access before exposing the frame.
+Hello must be first and occur once. Request IDs strictly increase within one
+connection; retries use a new frame ID with the original operation identity.
+Unsolicited replies, missing/repeated Hello or duplicate/decreasing IDs poison
+the session. Only one frame/request is pending per session.
+
+Hello, Status and OperationStatus require Observe; Connect/Disconnect require
+Operate; Enroll, InstallConfig and InspectRecovery require Administer. An
+`AuthorizedRequest` records the verified role and owns the redacted frame; it is
+not durable authority. A handler that queues/waits before mutation must reload
+protected policy and authorize again at its commit boundary. Global client,
+request, native-worker and retained-frame budgets belong to service admission.
+
+`respond(frame, deadline, cancellation)` requires the active request ID and appropriate reply
+kind (or ErrorReply). HelloReply must echo the session's actual instance ID.
+Successful HelloReply opens the session for commands; a failed Hello closes it.
+No next request may be read until its response is finished. Every frame read/
+write has an injected total deadline/cancellation receiver and encoded bound.
+The stream is moved out before asynchronous I/O: dropping an in-flight future,
+partial failure, expiry or cancellation closes it rather than permitting resume
+or payload replay. Authorization/protocol failures also close the session.
+Closing a control stream does not cancel service work or release networking.
+
+This boundary supplies framing, handshake, correlation and fresh-policy dispatch,
+not concrete command handlers, a daemon executable or client availability proof.

@@ -446,3 +446,14 @@ timer readiness is still rounded to a later clock tick. Controlled-clock read
 and write regressions fail without this fix. Evidence belongs under
 `target/evidence/phase-1/control-frame-deadlines/`; this does not add session
 handlers or daemon readiness.
+
+The Linux control session owner now enforces Hello, increasing request IDs,
+single-request sequencing, command access and correlated replies. Policy is
+checked before read admission and freshly supplied after read completion for
+dispatch; handlers still need commit-boundary authorization after queuing.
+Controlled Unix peers cover owner permissions/revocation, malformed sequence,
+deadlines, partial reads and abandoned writes without replay. A private native
+root/owner fixture exercises the protected endpoint and administrative dispatch;
+that new gate remains unverified until exact-commit CI. Evidence belongs under
+`target/evidence/phase-1/control-sessions/`. Concrete service handlers, global
+client/buffer admission and a running daemon remain open.

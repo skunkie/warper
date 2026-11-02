@@ -5,12 +5,14 @@
 //! Kernel credential boundary. No payload is read, written, or authenticated
 //! here; protected listener paths and a versioned protocol remain separate gates.
 
+use std::os::fd::AsFd;
+#[cfg(test)]
 use std::os::unix::net::UnixStream;
 
 use crate::{Access, Error, OwnerPolicy, PeerCredentials, Role, require_service};
 
 pub fn authenticate_client(
-    stream: &UnixStream,
+    stream: &impl AsFd,
     policy: &OwnerPolicy,
     access: Access,
 ) -> Result<Role, Error> {
@@ -21,28 +23,32 @@ pub fn authenticate_client(
 /// Required before credential material is sent, alongside trusted receiver
 /// namespace/protected endpoint verification and protocol negotiation. This is
 /// not a complete service handshake or a proof of initial-namespace host root.
-pub fn authenticate_service(stream: &UnixStream) -> Result<(), Error> {
+pub fn authenticate_service(stream: &impl AsFd) -> Result<(), Error> {
     let peer = peer_credentials(stream)?;
     require_service(&peer)
 }
 
 #[cfg(target_os = "linux")]
-pub fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, Error> {
+pub fn peer_credentials(stream: &impl AsFd) -> Result<PeerCredentials, Error> {
     use std::os::fd::AsRawFd;
 
     use nix::sys::socket::{
-        AddressFamily, SockType, SockaddrLike, SockaddrStorage, getsockname, getsockopt, sockopt,
+        AddressFamily, SockType, SockaddrLike, SockaddrStorage, getpeername, getsockname,
+        getsockopt, sockopt,
     };
 
     crate::namespace::require_initial_user_namespace()?;
     let socket_type = getsockopt(stream, sockopt::SockType).map_err(credential_error)?;
-    let address: SockaddrStorage = getsockname(stream.as_raw_fd()).map_err(credential_error)?;
+    let address: SockaddrStorage =
+        getsockname(stream.as_fd().as_raw_fd()).map_err(credential_error)?;
     if socket_type != SockType::Stream || address.family() != Some(AddressFamily::Unix) {
         return Err(Error::InvalidTransport);
     }
-    stream
-        .peer_addr()
-        .map_err(|error| Error::PeerCredentials(error.kind()))?;
+    let peer: SockaddrStorage =
+        getpeername(stream.as_fd().as_raw_fd()).map_err(credential_error)?;
+    if peer.family() != Some(AddressFamily::Unix) {
+        return Err(Error::InvalidTransport);
+    }
     let credentials = getsockopt(stream, sockopt::PeerCredentials).map_err(credential_error)?;
     let uid = credentials.uid();
     if uid == u32::MAX {
@@ -52,7 +58,7 @@ pub fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, Error> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn peer_credentials(_stream: &UnixStream) -> Result<PeerCredentials, Error> {
+pub fn peer_credentials(_stream: &impl AsFd) -> Result<PeerCredentials, Error> {
     // UID-only authorization cannot satisfy ADR 0005 on macOS.
     Err(Error::UnsupportedIntegration)
 }

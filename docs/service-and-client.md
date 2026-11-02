@@ -249,6 +249,19 @@ correlate replies, reauthorize every request and reuse operation identity after
 an uncertain client result. The codec alone does not establish these session
 or service acceptance gates.
 
+The Linux session owner now requires Hello first and exactly once, with strictly
+increasing request IDs per connection. It admits one frame at a time, checks
+kernel Observe permission before reads, then requires a second authorization
+against newly loaded protected policy after the entire read and before dispatch.
+Status/OperationStatus use Observe, Connect/Disconnect use Operate, and
+Enroll/InstallConfig/InspectRecovery use Administer. Replies must match the
+active request ID and command kind; HelloReply carries the actual instance ID.
+Any protocol/authorization failure or failed/dropped I/O closes the stream.
+An application ErrorReply after Hello may keep the connection open. These are
+session rules for the unreleased version-two prototype, not a new frame layout.
+The service still needs concrete handlers, global admission and a supervisor;
+closing a session never implicitly disconnects networking.
+
 ### Control API and managed material
 
 The API must cover status/snapshots, paginated routes/flows/logs, subscriptions,

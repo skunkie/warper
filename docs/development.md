@@ -1033,3 +1033,17 @@ storage, Busy while approved leases remain, stale generations, reopened state
 and external replacement rejection. This is native API evidence, not a running
 control session or CLI. Its owned peer process has bounded waits and is reaped
 on both success and failure.
+
+Control session tests use controlled Unix peers, policy changes and bounded
+socket backpressure:
+
+```sh
+CARGO_INCREMENTAL=0 cargo test --locked -p warper-control --test session
+```
+
+The privileged control fixture also uses actual root and UID-1000 clients over
+the protected endpoint for Hello, native instance IDs, status correlation and
+administrative session dispatch. It reloads protected enrollment after frame
+reads. The fixture has no network session and its small replies establish
+protocol behavior, not daemon readiness. Native acceptance still requires the
+owner-dispatched private-state harness; ordinary compilation cannot substitute.

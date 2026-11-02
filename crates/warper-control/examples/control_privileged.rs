@@ -30,6 +30,8 @@ mod linux {
     };
     type Failure = Box<dyn std::error::Error>;
 
+    mod session_fixture;
+
     struct Client(Child);
     impl Client {
         fn start(uid: u32, mode: &str) -> Result<Self, Failure> {
@@ -309,6 +311,9 @@ mod linux {
                 _ => Err("unsafe endpoint was not rejected before connection".into()),
             };
         }
+        if matches!(mode, "session-owner" | "session-admin") {
+            return runtime.block_on(session_fixture::client(connected?, mode == "session-admin"));
+        }
         let mut stream = connected?.into_std()?;
         configure(&stream)?;
         unix::authenticate_service(&stream)?;
@@ -415,6 +420,7 @@ mod linux {
             }
             child.join()?;
         }
+        session_fixture::exercise(&endpoint)?;
         let replaced = store.enroll(endpoint.runtime(), &admin, 1, Some(1001))?;
         let old_owner = old_owner.ok_or("owner snapshot is missing")?;
         if unix::authenticate_client(&old_owner, &replaced.policy(), Access::Observe)
