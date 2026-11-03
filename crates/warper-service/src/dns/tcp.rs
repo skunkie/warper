@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! One bounded DNS exchange through the original selected TCP backend.
+//! Bounded TCP DNS through an explicit selected backend or direct physical path.
 
 use std::{fmt, io, net::SocketAddr, sync::Arc};
 
@@ -12,7 +12,7 @@ use tokio::{
 };
 use warper_core::{
     BackendId,
-    transport::{Backend, Error as BackendError, Request},
+    transport::{Backend, EndpointConnector, Error as BackendError, OpenTcp, Request},
 };
 
 use super::{Error as PacketError, Limits, Packet};
@@ -27,6 +27,7 @@ pub enum ExchangeError {
     UnsupportedCapability,
     ResourceLimit,
     Backend(BackendError),
+    Direct(BackendError),
     Packet(PacketError),
     Io(io::ErrorKind),
 }
@@ -40,6 +41,7 @@ impl fmt::Display for ExchangeError {
             Self::UnsupportedCapability => "selected backend cannot carry DNS TCP",
             Self::ResourceLimit => "DNS request or frame admission exhausted",
             Self::Backend(_) => "selected DNS backend failed",
+            Self::Direct(_) => "direct DNS physical path failed",
             Self::Packet(_) => "DNS packet validation failed",
             Self::Io(_) => "DNS stream I/O failed",
         })
@@ -88,13 +90,7 @@ impl TcpTransport {
         limits: Limits,
         admission: Admission,
     ) -> Result<Self, ExchangeError> {
-        if upstream.port() == 0
-            || upstream.ip().is_unspecified()
-            || upstream.ip().is_multicast()
-            || matches!(upstream.ip(), std::net::IpAddr::V4(ip) if ip.is_broadcast())
-        {
-            return Err(ExchangeError::InvalidUpstream);
-        }
+        validate_upstream(upstream)?;
         let capabilities = backend.capabilities();
         if !capabilities.tcp
             || (upstream.is_ipv4() && !capabilities.ipv4)
@@ -118,71 +114,167 @@ impl TcpTransport {
         query: &Packet,
         request: Request,
     ) -> Result<Packet, ExchangeError> {
-        request
-            .clone()
-            .run(async { Ok(self.exchange_owned(query, request).await) })
-            .await
-            .map_err(ExchangeError::Backend)?
+        exchange(
+            Dial::Backend(self.backend.as_ref()),
+            self.upstream,
+            self.limits,
+            &self.admission,
+            query,
+            request,
+        )
+        .await
     }
 
     pub fn backend(&self) -> BackendId {
         self.backend.id()
     }
+}
 
-    async fn exchange_owned(
+/// Direct DNS is a separate transport, constructed only for preserved physical
+/// upstreams. A selected-backend transport never owns or invokes this adapter.
+pub struct DirectTcpTransport {
+    connector: Arc<dyn EndpointConnector>,
+    upstream: SocketAddr,
+    limits: Limits,
+    admission: Admission,
+}
+
+impl DirectTcpTransport {
+    pub fn new(
+        connector: Arc<dyn EndpointConnector>,
+        upstream: SocketAddr,
+        limits: Limits,
+        admission: Admission,
+    ) -> Result<Self, ExchangeError> {
+        validate_upstream(upstream)?;
+        Ok(Self {
+            connector,
+            upstream,
+            limits,
+            admission,
+        })
+    }
+
+    pub async fn exchange(
         &self,
         query: &Packet,
         request: Request,
     ) -> Result<Packet, ExchangeError> {
-        if query.is_response() {
-            return Err(ExchangeError::InvalidRequest);
+        exchange(
+            Dial::Direct(self.connector.as_ref()),
+            self.upstream,
+            self.limits,
+            &self.admission,
+            query,
+            request,
+        )
+        .await
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Dial<'a> {
+    Backend(&'a dyn Backend),
+    Direct(&'a dyn EndpointConnector),
+}
+
+impl<'a> Dial<'a> {
+    fn open(self, upstream: SocketAddr, request: Request) -> OpenTcp<'a> {
+        match self {
+            Self::Backend(backend) => backend.open_tcp(upstream, request),
+            Self::Direct(connector) => connector.connect_tcp(upstream, request),
         }
-        let _permit = self
-            .admission
-            .permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| ExchangeError::ResourceLimit)?;
-        let mut frame = query.encode().map_err(ExchangeError::Packet)?;
-        let length = frame.len();
-        if length > self.limits.wire_bytes() {
-            return Err(ExchangeError::ResourceLimit);
+    }
+
+    fn error(self, error: BackendError) -> ExchangeError {
+        match self {
+            Self::Backend(_) => ExchangeError::Backend(error),
+            Self::Direct(_) => ExchangeError::Direct(error),
         }
-        frame
-            .try_reserve_exact(2)
-            .map_err(|_| ExchangeError::ResourceLimit)?;
-        frame.resize(length + 2, 0);
-        frame.copy_within(..length, 2);
-        frame[..2].copy_from_slice(&(length as u16).to_be_bytes());
-        let mut stream = self
-            .backend
-            .open_tcp(self.upstream, request)
-            .await
-            .map_err(ExchangeError::Backend)?;
-        // Keep the length and query in one write operation to avoid a tiny
-        // prefix being delayed by Nagle/ACK interaction on real TCP streams.
-        stream
-            .write_all(&frame)
-            .await
-            .map_err(|error| ExchangeError::Io(error.kind()))?;
-        let mut prefix = [0; 2];
-        stream
-            .read_exact(&mut prefix)
-            .await
-            .map_err(|error| ExchangeError::Io(error.kind()))?;
-        let length = usize::from(u16::from_be_bytes(prefix));
-        if length > self.limits.wire_bytes() {
-            return Err(ExchangeError::ResourceLimit);
-        }
-        if length < 12 {
-            return Err(ExchangeError::Packet(PacketError::Malformed));
-        }
-        let mut bytes = vec![0; length];
-        stream
-            .read_exact(&mut bytes)
-            .await
-            .map_err(|error| ExchangeError::Io(error.kind()))?;
-        Packet::response(&bytes, query, self.limits).map_err(ExchangeError::Packet)
+    }
+}
+
+async fn exchange(
+    dial: Dial<'_>,
+    upstream: SocketAddr,
+    limits: Limits,
+    admission: &Admission,
+    query: &Packet,
+    request: Request,
+) -> Result<Packet, ExchangeError> {
+    request
+        .clone()
+        .run(async { Ok(exchange_owned(dial, upstream, limits, admission, query, request).await) })
+        .await
+        .map_err(|error| dial.error(error))?
+}
+
+async fn exchange_owned(
+    dial: Dial<'_>,
+    upstream: SocketAddr,
+    limits: Limits,
+    admission: &Admission,
+    query: &Packet,
+    request: Request,
+) -> Result<Packet, ExchangeError> {
+    if query.is_response() {
+        return Err(ExchangeError::InvalidRequest);
+    }
+    let _permit = admission
+        .permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ExchangeError::ResourceLimit)?;
+    let mut frame = query.encode().map_err(ExchangeError::Packet)?;
+    let length = frame.len();
+    if length > limits.wire_bytes() {
+        return Err(ExchangeError::ResourceLimit);
+    }
+    frame
+        .try_reserve_exact(2)
+        .map_err(|_| ExchangeError::ResourceLimit)?;
+    frame.resize(length + 2, 0);
+    frame.copy_within(..length, 2);
+    frame[..2].copy_from_slice(&(length as u16).to_be_bytes());
+    let mut stream = dial
+        .open(upstream, request)
+        .await
+        .map_err(|error| dial.error(error))?;
+    // Keep the length and query in one write operation to avoid a tiny
+    // prefix being delayed by Nagle/ACK interaction on real TCP streams.
+    stream
+        .write_all(&frame)
+        .await
+        .map_err(|error| ExchangeError::Io(error.kind()))?;
+    let mut prefix = [0; 2];
+    stream
+        .read_exact(&mut prefix)
+        .await
+        .map_err(|error| ExchangeError::Io(error.kind()))?;
+    let length = usize::from(u16::from_be_bytes(prefix));
+    if length > limits.wire_bytes() {
+        return Err(ExchangeError::ResourceLimit);
+    }
+    if length < 12 {
+        return Err(ExchangeError::Packet(PacketError::Malformed));
+    }
+    let mut bytes = vec![0; length];
+    stream
+        .read_exact(&mut bytes)
+        .await
+        .map_err(|error| ExchangeError::Io(error.kind()))?;
+    Packet::response(&bytes, query, limits).map_err(ExchangeError::Packet)
+}
+
+fn validate_upstream(upstream: SocketAddr) -> Result<(), ExchangeError> {
+    if upstream.port() == 0
+        || upstream.ip().is_unspecified()
+        || upstream.ip().is_multicast()
+        || matches!(upstream.ip(), std::net::IpAddr::V4(ip) if ip.is_broadcast())
+    {
+        Err(ExchangeError::InvalidUpstream)
+    } else {
+        Ok(())
     }
 }
 

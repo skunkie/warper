@@ -2936,3 +2936,14 @@ negatives, failures, admission, cancellation, timeout and dropped-future cleanup
 the original DNS destination, production backend negotiation, DNS frames and
 stream closure. This is protocol/transport evidence, not DNS-discovered TUN
 routing or system resolver acceptance.
+
+`DirectTcpTransport::new(Arc<dyn EndpointConnector>, SocketAddr, Limits,
+Admission)` supplies a separate explicit direct role over the same framing and
+ownership engine. It accepts only numeric upstreams; the service must supply
+the already verified physical connector and reject loop-producing resolver
+choices before installing DNS policy. It does not discover or trust a host stub.
+The selected-backend transport retains no direct connector. Direct setup and
+deadline failures are typed `ExchangeError::Direct`, distinct from selected
+backend errors, and neither role retries or invokes the other. Both share the
+same service-wide admission pool. Controlled direct and SOCKS5 peer tests verify
+the distinct wire protocols, negative results and joined stream cleanup.

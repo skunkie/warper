@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Actual DNS frames through the production SOCKS5 backend and a controlled peer.
+//! Actual DNS frames through explicit selected SOCKS5 and direct TCP paths.
 
 use std::{
     net::SocketAddr,
@@ -24,7 +24,7 @@ use warper_core::{
     BackendId,
     transport::{EndpointConnector, Error, OpenTcp, Request, TcpStream as BoxedTcp},
 };
-use warper_service::dns::{Admission, Limits, Packet, TcpTransport};
+use warper_service::dns::{Admission, DirectTcpTransport, Limits, Packet, TcpTransport};
 
 struct MockConnector {
     endpoint: SocketAddr,
@@ -44,7 +44,7 @@ impl EndpointConnector for MockConnector {
     }
 }
 
-async fn controlled_exchange() -> (Duration, usize) {
+async fn controlled_exchange(direct: bool) -> (Duration, usize) {
     tokio::time::timeout(Duration::from_secs(5), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = listener.local_addr().unwrap();
@@ -63,23 +63,28 @@ async fn controlled_exchange() -> (Duration, usize) {
             admission.clone(),
         )
         .unwrap();
+        let direct_transport =
+            DirectTcpTransport::new(connector.clone(), endpoint, limits, admission.clone())
+                .unwrap();
         let mut query_wire = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
         query_wire.extend_from_slice(b"\x07example\x04test\0\0\x01\0\x01");
         let query = Packet::request(&query_wire, limits).unwrap();
         let expected = query_wire.clone();
         let peer = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut hello = [0; 3];
-            stream.read_exact(&mut hello).await.unwrap();
-            assert_eq!(hello, [5, 1, 0]);
-            stream.write_all(&[5, 0]).await.unwrap();
-            let mut connect = [0; 10];
-            stream.read_exact(&mut connect).await.unwrap();
-            assert_eq!(connect, [5, 1, 0, 1, 192, 0, 2, 53, 0, 53]);
-            stream
-                .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-                .await
-                .unwrap();
+            if !direct {
+                let mut hello = [0; 3];
+                stream.read_exact(&mut hello).await.unwrap();
+                assert_eq!(hello, [5, 1, 0]);
+                stream.write_all(&[5, 0]).await.unwrap();
+                let mut connect = [0; 10];
+                stream.read_exact(&mut connect).await.unwrap();
+                assert_eq!(connect, [5, 1, 0, 1, 192, 0, 2, 53, 0, 53]);
+                stream
+                    .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+                    .await
+                    .unwrap();
+            }
             let length = stream.read_u16().await.unwrap();
             assert_eq!(usize::from(length), expected.len());
             let mut bytes = vec![0; usize::from(length)];
@@ -100,7 +105,14 @@ async fn controlled_exchange() -> (Duration, usize) {
             cancellation,
         };
         let started = Instant::now();
-        let (response, peer_result) = tokio::join!(transport.exchange(&query, request), peer);
+        let exchange = async {
+            if direct {
+                direct_transport.exchange(&query, request).await
+            } else {
+                transport.exchange(&query, request).await
+            }
+        };
+        let (response, peer_result) = tokio::join!(exchange, peer);
         peer_result.unwrap();
         let response = response.unwrap();
         assert_eq!(response.response_code(), 3);
@@ -115,24 +127,40 @@ async fn controlled_exchange() -> (Duration, usize) {
 
 #[tokio::test]
 async fn dns_tcp_uses_the_selected_socks5_peer_and_original_upstream() {
-    controlled_exchange().await;
+    controlled_exchange(false).await;
+}
+
+#[tokio::test]
+async fn direct_dns_tcp_uses_only_its_explicit_connector() {
+    controlled_exchange(true).await;
 }
 
 #[tokio::test]
 #[ignore = "controlled release workload; run explicitly with --nocapture"]
 async fn dns_tcp_workload() {
+    workload(false).await;
+}
+
+#[tokio::test]
+#[ignore = "controlled release workload; run explicitly with --nocapture"]
+async fn direct_dns_tcp_workload() {
+    workload(true).await;
+}
+
+async fn workload(direct: bool) {
     let started = Instant::now();
     let mut latencies = Vec::with_capacity(100);
     let mut bytes = 0;
     for _ in 0..100 {
-        let (latency, transferred) = controlled_exchange().await;
+        let (latency, transferred) = controlled_exchange(direct).await;
         latencies.push(latency);
         bytes += transferred;
     }
     let elapsed = started.elapsed();
     latencies.sort_unstable();
+    let setup_bytes = if direct { 0 } else { 2500 };
     println!(
-        "requests=100 concurrency=1 dns_frame_bytes={bytes} socks5_setup_bytes=2500 elapsed_ms={:.3} queries_per_second={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3}",
+        "direct={direct} requests=100 concurrency=1 dns_frame_bytes={bytes} socks5_setup_bytes={setup_bytes} elapsed_ms={:.3} queries_per_second={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3}",
         elapsed.as_secs_f64() * 1000.0,
         100.0 / elapsed.as_secs_f64(),
         latencies[49].as_secs_f64() * 1000.0,

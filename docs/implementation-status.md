@@ -35,9 +35,10 @@ Linux x86-64 only. Phase 2's production DNS/route transaction gate is next.
 ## Phase 2 DNS Foundations
 
 `warper-core::dns` implements bounded names and domain selection;
-`warper-service::dns` implements bounded packet validation and selected-backend
-TCP exchange. Raw checks, coverage, controlled peer results and the release
-workload are under `target/evidence/phase-2/{domain-policy,packet-adapter,tcp-transport}/`.
+`warper-service::dns` implements bounded packet validation and explicit
+selected-backend/direct TCP exchange. Raw checks, coverage, controlled peer
+results and release workloads are under
+`target/evidence/phase-2/{domain-policy,packet-adapter,tcp-transport,direct-tcp}/`.
 The packet adapter's native matrix and disposable Linux regression manifests
 are retained under its `ci-41607466058/` directory. These establish scoped
 protocol compatibility and existing Linux lifecycle regressions, not native

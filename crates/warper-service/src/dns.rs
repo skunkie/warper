@@ -8,4 +8,4 @@ mod packet;
 mod tcp;
 
 pub use packet::{Error, Limits, Packet, Question};
-pub use tcp::{Admission, ExchangeError, TcpTransport};
+pub use tcp::{Admission, DirectTcpTransport, ExchangeError, TcpTransport};

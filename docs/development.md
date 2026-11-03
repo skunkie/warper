@@ -136,15 +136,16 @@ The selected-backend DNS TCP adapter has a controlled loopback SOCKS5 fixture:
 ```sh
 cargo test --locked -p warper-service --test dns_tcp
 cargo test --locked --release -p warper-service --test dns_tcp dns_tcp_workload -- --ignored --exact --nocapture
+cargo test --locked --release -p warper-service --test dns_tcp direct_dns_tcp_workload -- --ignored --exact --nocapture
 ```
 
-The explicit workload repeats 100 sequential fresh SOCKS5 connections with
-partial DNS response writes. It prints request rate, latency percentiles and
+The explicit workloads repeat 100 sequential fresh direct or SOCKS5 connections
+with partial DNS response writes. They print request rate, latency percentiles and
 DNS framing/backend setup bytes. Record process CPU/RSS, environment and
 loopback drop-counter deltas alongside output under
 `target/evidence/phase-2/tcp-transport/`. Measurements include the controlled
-peer and backend setup. Loopback counters are host-wide observations, not
-per-flow attribution; this is not a DNS-discovered TUN workload. No developer
+peer and applicable backend setup. Loopback counters are host-wide observations,
+not per-flow attribution; this is not a DNS-discovered TUN workload. No developer
 resolver, public DNS server or credentials are used.
 
 Configuration parser tests run as part of workspace tests, or separately with:

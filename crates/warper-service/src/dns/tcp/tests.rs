@@ -27,6 +27,18 @@ struct MockBackend {
     capabilities: Capabilities,
 }
 
+struct RejectingDirect {
+    calls: AtomicUsize,
+}
+
+impl EndpointConnector for RejectingDirect {
+    fn connect_tcp(&self, endpoint: SocketAddr, _request: Request) -> OpenTcp<'_> {
+        assert_eq!(endpoint, UPSTREAM.parse().unwrap());
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(BackendError::UnsupportedIntegration) })
+    }
+}
+
 impl Backend for MockBackend {
     fn id(&self) -> BackendId {
         BackendId(7)
@@ -146,6 +158,21 @@ async fn cancellation_timeout_and_future_drop_release_stream_and_shared_admissio
             () = async { notified.await.unwrap() } => (),
         }
         assert_eq!(admission.active(), 1);
+        let direct_connector = Arc::new(RejectingDirect {
+            calls: AtomicUsize::new(0),
+        });
+        let direct = DirectTcpTransport::new(
+            direct_connector.clone(),
+            UPSTREAM.parse().unwrap(),
+            limits(),
+            admission.clone(),
+        )
+        .unwrap();
+        assert!(matches!(
+            direct.exchange(&query, request.clone()).await,
+            Err(ExchangeError::ResourceLimit)
+        ));
+        assert_eq!(direct_connector.calls.load(Ordering::SeqCst), 0);
         let other = TcpTransport::new(
             backend.clone(),
             UPSTREAM.parse().unwrap(),
@@ -295,6 +322,43 @@ fn invalid_admission_upstream_or_capability_fails_before_opening() {
     ));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     drop(peer);
+}
+
+#[tokio::test(start_paused = true)]
+async fn direct_failures_remain_typed_without_retry_or_backend_selection() {
+    let connector = Arc::new(RejectingDirect {
+        calls: AtomicUsize::new(0),
+    });
+    let admission = Admission::new(1).unwrap();
+    assert!(matches!(
+        DirectTcpTransport::new(
+            connector.clone(),
+            "0.0.0.0:53".parse().unwrap(),
+            limits(),
+            admission.clone()
+        ),
+        Err(ExchangeError::InvalidUpstream)
+    ));
+    let direct = DirectTcpTransport::new(
+        connector.clone(),
+        UPSTREAM.parse().unwrap(),
+        limits(),
+        admission.clone(),
+    )
+    .unwrap();
+    let (_owner, mut request) = context();
+    assert!(matches!(
+        direct.exchange(&query(), request.clone()).await,
+        Err(ExchangeError::Direct(BackendError::UnsupportedIntegration))
+    ));
+    assert_eq!(connector.calls.load(Ordering::SeqCst), 1);
+    request.deadline = Instant::now();
+    assert!(matches!(
+        direct.exchange(&query(), request).await,
+        Err(ExchangeError::Direct(BackendError::Timeout))
+    ));
+    assert_eq!(connector.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(admission.active(), 0);
 }
 
 #[tokio::test]
