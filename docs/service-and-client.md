@@ -6,8 +6,9 @@ SPDX-License-Identifier: MIT
 
 # Service and Desktop Client
 
-Status: product and architecture contract; the service, control API, and
-Tauri application are not implemented yet. [ADR 0004](adr/0004-desktop-service.md)
+Status: product and architecture contract. The narrow Linux service and
+authenticated CLI are implemented; the Tauri application and native macOS
+service remain later-phase work. [ADR 0004](adr/0004-desktop-service.md)
 records the decision. The desktop client replaces the planned terminal UI.
 
 ## 1. Product Model
@@ -46,10 +47,11 @@ flowchart LR
    Show approval-pending, denied, missing, and ready states separately; open
    the relevant System Settings page when the user chooses to grant approval.
    Never request an administrator password in a web form.
-2. Import an existing `~/.warp.yaml` or create a configuration through guided
-   forms. Preserve an advanced YAML view. Resolve file references in the
-   ordinary-user native client, validate without changing networking, and
-   display actionable errors and SSH trust requirements before Connect.
+2. Create and edit configuration through guided forms, with validation and
+   review before Apply. The desktop offers no YAML upload or raw YAML editor.
+   Resolve file references in the ordinary-user native client, validate without
+   changing networking, and display actionable errors and SSH trust requirements
+   before Connect. YAML import remains a native CLI operation.
 3. Install an approved managed snapshot and enroll its authorized owner
    through a platform administrative authorization flow. Registration alone
    does not authorize arbitrary IPC callers or arbitrary configuration paths.

@@ -6,15 +6,16 @@ SPDX-License-Identifier: MIT
 
 # warper
 
-A planned Rust service for selective host traffic tunneling through SSH,
-SOCKS5, and WireGuard, with DNS-based route discovery and a Tauri desktop
-client. The macOS app will bundle the client and networking service.
+A Rust service for selective host traffic tunneling. The current Linux slice
+forwards static IPv4 routes through SOCKS5 TCP, with an authenticated local CLI,
+managed configuration, recovery, and a source systemd unit. SSH, WireGuard,
+DNS-based route discovery, native macOS networking, and the Tauri desktop remain
+later-phase work.
 
-The repository contains the design, configuration examples, development
-infrastructure, Phase 0 Rust stack experiments, core static routing, and offline
-configuration validation with a thin CLI beginning Phase 1. A production
-networking service has not been implemented. Phase 0 selects direct smoltcp
-adapters and BoringTun for Linux; native macOS networking remains unverified.
+Phase 0 selected direct smoltcp adapters and BoringTun for Linux. Phase 1's
+networking and lifecycle tests run against controlled peers in disposable CI
+namespaces; native macOS builds do not establish macOS networking support.
+See the phase ledger for accepted evidence and remaining gates.
 
 - [Implementation plan](docs/implementation-plan.md)
 - [Configuration and CLI contract](docs/configuration.md)
@@ -35,8 +36,9 @@ Validate an example without opening credentials or connecting to a backend:
 cargo run --locked -p warper-cli --bin warper -- check-config --config examples/socks5.yaml
 ```
 
-Help and version are available. Service control commands remain explicitly
-unsupported until the authenticated local-control service is implemented.
+See [Linux service installation and operation](docs/linux-service.md) for
+enrollment, approved configuration import, Connect/Disconnect, recovery, and
+foreground diagnostics. Closing a control client leaves networking running.
 
 ## Acknowledgments and license
 
