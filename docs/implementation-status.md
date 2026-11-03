@@ -94,6 +94,18 @@ not NET-11's native route-ACK/output gate. Global byte/lease admission,
 acknowledged routing, response handoff, listener ownership and resolved
 integration remain required; daemon DNS readiness is still unavailable.
 
+The production core lease ledger now reserves fixed-capacity canonical lease,
+address-owner, index, response and flow storage under one byte budget. Atomic
+reservation/handoff, in-place renewal, grace, independent flow pins, bounded
+drop notifications, publication uncertainty and explicit retirement/drain are
+implemented. Controlled-clock cases cover pending/partial output, cancelled
+renewal, one-IP entry/byte exhaustion, foreign/stale handles and unchanged
+storage across repeated renewal/reclamation. Evidence belongs under
+`target/evidence/phase-2/lease-ledger/`. These are production metadata policies;
+service discovery/output integration and actual native publication/retirement
+still require NET-10–NET-12 acceptance. Global reusable DNS caching is absent;
+request-local discovery snapshots do not become retained response caches.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

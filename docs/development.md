@@ -175,6 +175,20 @@ setup; total CPU/wall time includes fixture creation and both peer and client.
 Discovery latency excludes fixture setup. No packet loss is injected, and
 this fixture does not prove kernel route publication or gated DNS output.
 
+The production lease ledger has a separate controlled metadata workload:
+
+```sh
+cargo test --locked -p warper-core --lib dns::lease
+cargo test --locked --release -p warper-core --lib dns::lease::tests::lease_renewal_workload -- --ignored --exact --nocapture
+```
+
+It retains 5000 invented DNS names on one address at the canonical capacity
+and byte defaults, then measures 1000 in-place renewals. Record latency,
+process CPU/RSS, reserved bytes and capacities under
+`target/evidence/phase-2/lease-ledger/`. Fixture creation is included in process
+CPU/RSS; renewal latency excludes it. This workload owns no sockets or kernel
+routes, so network throughput and packet-drop metrics do not apply.
+
 Configuration parser tests run as part of workspace tests, or separately with:
 
 ```sh

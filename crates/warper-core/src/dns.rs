@@ -11,6 +11,8 @@ use std::{fmt, net::IpAddr};
 
 use crate::BackendId;
 
+pub mod lease;
+
 const MAX_NAME_BYTES: usize = 255;
 
 /// Uncompressed DNS name including label lengths and the terminating root.

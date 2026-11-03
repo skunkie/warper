@@ -3155,3 +3155,69 @@ between steps so cancellation/deadline and unrelated requests can progress.
 There are no child tasks, background queues, timers or automatic retries.
 This per-request count bound is not NET-12's global byte/lease admission, and
 successful discovery is not permission to publish routes or DNS output.
+
+### Production DNS lease ledger
+
+[`warper_core::dns::lease::Ledger`](../crates/warper-core/src/dns/lease.rs)
+implements [ADR 0026](adr/0026-bounded-dns-lease-ledger.md) as a serialized
+metadata owner, independent of packet libraries, backends and platform I/O. `QuestionKey` contains the selected
+backend and canonical question/class/type; `Contribution` adds an endpoint IP
+and original monotonic freshness expiry. Reserve the whole response atomically
+before native route mutation. Duplicate IP/path contributions coalesce to their
+greatest justified expiry. Same-key renewals share one lease, and distinct
+questions consume separate leases even when one address/route is shared.
+
+Construction preallocates lease slots, address owners, fixed hash indexes,
+free lists, request blocks, flow slots and drop markers. It charges actual
+container capacities, fixed names, optional expiry fields, indexes, free slots,
+reserved response/flow handles and one notification waiter against the byte
+budget. The configured lease count is an upper bound: construction chooses the
+largest fixed capacity that fits the byte budget, or fails if even one cannot
+fit. Renewals allocate nothing and update expiry in place; there is no timer
+heap. Arc control-header padding is charged conservatively; allocator metadata,
+Tokio task/waker allocation and unrelated transport buffers are documented
+separate costs, not a whole-process RSS claim. Reusable response caching is
+currently absent; positive/negative responses allocate no global cache entries.
+Request-local discovery snapshots remain transient data-plane buffers.
+
+Opaque response/flow handles mark their fixed control slot on Drop and notify
+one owner waiter. `advance(now)` reclaims those references and expired timed
+leases with bounded scans. Every time-bearing operation advances the same
+monotonic elapsed clock; backward time is rejected. Live pending output never
+expires merely because its deadline passes: cancellation must first destroy
+its I/O owner, then drop/cancel the response handle. Handoff refuses expired
+requests. Successful handoff checks every address's committed publication,
+then atomically exchanges pending references for retention through the greater
+of original expiry or `now + grace`, without shortening prior retention.
+Dropping/cancelling a response creates no grace lease.
+
+Flows pin address ownership independently of DNS lease keys, so expired names
+can be reclaimed while existing flows keep their route/backend. New flows need
+committed, referenced coverage. Drop/release frees only that flow reference;
+service supervision still enforces actual flow deadlines and joins tasks before
+releasing pins. Flow pins never expire solely from a metadata clock update.
+Address ownership persists after its final reference until explicit retirement,
+preventing a competing backend from reusing an address during kernel cleanup.
+
+Route handles are fenced to this ledger and one address-owner generation.
+`confirm_publication` records an externally proven handler/kernel/journal
+commit; it performs no platform operation itself. Only then may handoff/flow
+admission succeed. `begin_retirement` requires zero pending/timed/flow coverage
+and blocks renewal/admission. `finish_retirement` requires external verified
+withdrawal; `restore_committed` requires proven unchanged owned state after a
+definitive failure. Uncertain native operations remain retiring. These methods
+are metadata transitions, not native ACK evidence or permission to replay an
+uncertain operation. The service route manager must serialize native intent,
+ACK/ownership reconciliation and these transitions; daemon DNS remains disabled
+until that integration and NET-10–NET-12 native gates pass.
+
+The owner arms one timer from `next_expiry()` and one coalesced `changed()`
+notification. Ordinary renewals skip expiry scans until that timestamp is due;
+releasing a response checks only its own lease slots. Extending a lease can
+leave one early wake, which recomputes the timestamp without adding records.
+`mark_uncertain` withdraws metadata publication readiness while retaining all
+references, until the service proves the same owned route committed again or
+performs checked retirement. `close` rejects new reservations, flow admission
+and handoff. After external DNS withdrawal and output/flow cancellation/join,
+`finish_drain` clears timed leases; it refuses live references and retains every
+address owner for native withdrawal. It does not report completed Disconnect.
