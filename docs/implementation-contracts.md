@@ -2395,6 +2395,29 @@ administrative installation, generation fencing and redacted views remain
 separate boundaries. Version-one defaults must remain stable; incompatible
 normalization/default changes require a new version or explicit migration.
 
+## Offline owner-intent recovery
+
+Offline owner-intent recovery uses a uniquely borrowed runtime lease rather
+than a manufactured control peer. The lease must be freshly acquired and must
+never have attempted endpoint publication. Its existing initial-user-namespace,
+actual UID and protected-lock validation supplies administrative authority.
+Inspection pins exactly the same bounded pending/committed objects as online
+recovery; discard repeats every unchanged-object and committed-policy check.
+Neither path promotes staged enrollment or removes committed owner policy.
+Publication permanently invalidates offline recovery through that lease even
+after its endpoint is dropped. A stopped-service command must reacquire the
+persistent flock before inspecting or discarding pending owner intent.
+
+`tun::inspect_abandoned` reads the protected committed network journal and
+checks the same recorded process, boot, interface absence and capture-route
+absence conditions as retirement. It reports NoRecord, Retired or Retirable
+without journal writes or kernel mutation. Pending/unknown state, live owners,
+foreign route keys, cancellation and unavailable evidence remain errors.
+Retirement independently rereads and revalidates before its revision-fenced
+journal write; an inspection result is never a mutation capability. The offline
+coordinator may apply the same read-only validation to the committed snapshot
+pinned by a pending token before discarding any unpublished state.
+
 ## Linux native import process
 
 The explicitly elevated CLI materializes configuration before starting its async

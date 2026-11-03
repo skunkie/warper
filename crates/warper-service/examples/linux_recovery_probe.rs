@@ -29,7 +29,10 @@ mod linux {
     use warper_service::{
         linux::{
             context::Context,
-            tun::{Error as TunError, Owner, RecoveryOutcome, Stage, recover_abandoned},
+            tun::{
+                Error as TunError, Owner, RecoveryInspection, RecoveryOutcome, Stage,
+                inspect_abandoned, recover_abandoned,
+            },
         },
         native::Workers,
     };
@@ -216,7 +219,10 @@ mod linux {
             cancellation: observer.subscribe(),
         };
         if !matches!(
-            recover_abandoned(&context, expired),
+            recover_abandoned(&context, expired.clone()),
+            Err(TunError::RecoveryWait(_))
+        ) || !matches!(
+            inspect_abandoned(&context, expired),
             Err(TunError::RecoveryWait(_))
         ) {
             return Err("expired recovery changed journal ownership".into());
@@ -227,7 +233,10 @@ mod linux {
             cancellation,
         };
         if !matches!(
-            recover_abandoned(&context, cancelled),
+            recover_abandoned(&context, cancelled.clone()),
+            Err(TunError::RecoveryWait(_))
+        ) || !matches!(
+            inspect_abandoned(&context, cancelled),
             Err(TunError::RecoveryWait(_))
         ) {
             return Err("cancelled recovery changed journal ownership".into());
@@ -280,6 +289,7 @@ mod linux {
             let result = (|| -> Result<(), Failure> {
                 let before = ip(&["-j", "route", "show", PREFIX])?;
                 if recover_abandoned(&context, request(&observer)) != Err(TunError::Conflict)
+                    || inspect_abandoned(&context, request(&observer)) != Err(TunError::Conflict)
                     || before != ip(&["-j", "route", "show", PREFIX])?
                 {
                     return Err("recovery changed a surviving foreign route key".into());
@@ -302,6 +312,8 @@ mod linux {
             .write_all(b"partial")?;
         if recover_abandoned(&context, request(&observer))
             != Err(TunError::Storage(JournalError::RecoveryRequired))
+            || inspect_abandoned(&context, request(&observer))
+                != Err(TunError::Storage(JournalError::RecoveryRequired))
         {
             return Err("pending intent did not block abandoned recovery".into());
         }
@@ -309,8 +321,21 @@ mod linux {
             .inspect_pending(&lease)?
             .ok_or("pending recovery fixture missing")?;
         journal.discard_pending(&lease, token)?;
+        let inspected = NetworkJournal::open(&lease)?
+            .inspect(&lease)?
+            .ok_or("committed recovery record missing")?;
+        if inspect_abandoned(&context, request(&observer))? != RecoveryInspection::Retirable {
+            return Err("ended native owner was not inspectable for retirement".into());
+        }
+        let unchanged = NetworkJournal::open(&lease)?
+            .inspect(&lease)?
+            .ok_or("inspection removed committed recovery record")?;
+        if unchanged != inspected {
+            return Err("read-only network inspection changed journal state".into());
+        }
         if recover_abandoned(&context, request(&observer))? != RecoveryOutcome::Retired
             || recover_abandoned(&context, request(&observer))? != RecoveryOutcome::AlreadyRetired
+            || inspect_abandoned(&context, request(&observer))? != RecoveryInspection::Retired
         {
             return Err("abandoned retirement is not idempotent".into());
         }

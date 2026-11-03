@@ -687,3 +687,16 @@ and preserved host state. Its log verifies active SIGTERM cleanup, SIGKILL
 recovery, restored same-boot forwarding and persisted Disconnect. Evidence is
 under `target/evidence/phase-1/daemon-restart/ci-41569040009/`. Offline administrative recovery,
 foreground diagnostics and the final Phase 1 requirement audit remain open.
+
+Stopped-service owner-intent recovery now requires an exclusive, freshly
+acquired, never-published runtime lease rather than a synthetic control peer.
+It pins/discards only unchanged pending intent and preserves committed policy;
+publication permanently prevents offline recovery through that lease. Controlled
+tests cover successful discard and refusal after endpoint publication/drop.
+Network recovery now also exposes read-only committed-journal inspection with
+the same process, boot, interface and route-absence checks as retirement.
+Inspection does not change the journal and does not authorize later mutation.
+The native owner and crash-recovery fixtures now exercise these boundaries;
+their expanded privileged gate remains unverified. Evidence belongs under
+`target/evidence/phase-1/offline-owner-recovery/`. Offline CLI composition remains
+open.

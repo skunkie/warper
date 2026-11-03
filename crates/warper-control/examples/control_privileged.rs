@@ -349,10 +349,25 @@ mod linux {
         }
         let endpoint = ControlEndpoint::bind(lease)?;
         endpoint_fixture::changed_permissions(endpoint)?;
-        let lease = RuntimeLease::acquire()?;
+        let mut lease = RuntimeLease::acquire()?;
         let mut store = OwnerStore::open(&lease)?;
         if store.read(&lease)?.revision() != 0 {
             return Err("fixture must start with empty enrollment".into());
+        }
+        let offline_pending = "/var/lib/warper/owner.pending";
+        fs::write(offline_pending, b"WOWN")?;
+        fs::set_permissions(offline_pending, fs::Permissions::from_mode(0o600))?;
+        let inspection = store
+            .inspect_pending_offline(&mut lease)?
+            .ok_or("offline owner inspection did not pin partial intent")?;
+        if fs::read(offline_pending)? != b"WOWN"
+            || store
+                .discard_pending_offline(&mut lease, inspection)?
+                .revision()
+                != 0
+            || fs::symlink_metadata(offline_pending).is_ok()
+        {
+            return Err("offline owner recovery changed committed policy".into());
         }
         let endpoint = ControlEndpoint::bind(lease)?;
         let (admin, _other) = UnixStream::pair()?;

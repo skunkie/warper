@@ -32,6 +32,26 @@ impl fmt::Debug for PendingInspection {
 }
 
 impl OwnerStore {
+    /// Offline administration requires unique access to a never-published
+    /// runtime lease. No caller-provided UID or synthetic peer grants access.
+    pub fn inspect_pending_offline(
+        &self,
+        lease: &mut RuntimeLease,
+    ) -> Result<Option<PendingInspection>, Error> {
+        authorize_offline(lease)?;
+        self.inspect()
+    }
+
+    /// Preserve committed policy while discarding unchanged unpublished intent.
+    pub fn discard_pending_offline(
+        &mut self,
+        lease: &mut RuntimeLease,
+        inspection: PendingInspection,
+    ) -> Result<Enrollment, Error> {
+        authorize_offline(lease)?;
+        self.discard(lease, inspection, Self::sync)
+    }
+
     /// Require a fresh live administrative peer before inspecting any record.
     pub fn inspect_pending(
         &self,
@@ -180,6 +200,16 @@ fn authorize(lease: &RuntimeLease, peer: &UnixStream) -> Result<(), Error> {
     lease.revalidate().map_err(Error::Runtime)?;
     crate::unix::authenticate_client(peer, &OwnerPolicy { owner: None }, Access::Administer)
         .map_err(Error::Peer)?;
+    Ok(())
+}
+fn authorize_offline(lease: &RuntimeLease) -> Result<(), Error> {
+    lease.revalidate().map_err(Error::Runtime)?;
+    if lease
+        .endpoint_bound
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(Error::UnsafeState);
+    }
     Ok(())
 }
 fn unchanged(a: &Stat, b: &Stat) -> bool {

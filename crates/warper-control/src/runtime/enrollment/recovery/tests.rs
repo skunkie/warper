@@ -18,6 +18,40 @@ fn pending(fixture: &Fixture, bytes: &[u8]) -> std::path::PathBuf {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     path
 }
+
+#[test]
+fn offline_recovery_preserves_policy_and_rejects_a_published_runtime() {
+    let fixture = Fixture::new();
+    let mut lease = fixture.acquire().unwrap();
+    let mut store = store(&fixture);
+    let committed = store.replace(&lease, 0, Some(1234)).unwrap();
+    let path = pending(&fixture, b"partial");
+    let inspection = store.inspect_pending_offline(&mut lease).unwrap().unwrap();
+    assert_eq!(inspection.committed(), committed);
+    assert_eq!(fs::read(&path).unwrap(), b"partial");
+    assert_eq!(
+        store.discard_pending_offline(&mut lease, inspection),
+        Ok(committed)
+    );
+    assert!(!path.exists());
+    let path = pending(&fixture, b"retained");
+    let inspection = store.inspect_pending_offline(&mut lease).unwrap().unwrap();
+    let lease = std::sync::Arc::new(lease);
+    let endpoint = crate::runtime::endpoint::ControlEndpoint::bind(lease.clone()).unwrap();
+    drop(endpoint);
+    let mut used = std::sync::Arc::try_unwrap(lease)
+        .unwrap_or_else(|_| panic!("dropped endpoint retained its runtime"));
+    assert!(matches!(
+        store.inspect_pending_offline(&mut used),
+        Err(Error::UnsafeState)
+    ));
+    assert_eq!(
+        store.discard_pending_offline(&mut used, inspection),
+        Err(Error::UnsafeState)
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"retained");
+    assert_eq!(store.inspect().unwrap().unwrap().committed(), committed);
+}
 #[test]
 fn explicit_discard_preserves_committed_policy_for_empty_partial_and_complete_intent() {
     let fixture = Fixture::new();
