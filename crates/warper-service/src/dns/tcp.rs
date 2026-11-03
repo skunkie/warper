@@ -18,8 +18,14 @@ use warper_core::{
 use super::{Error as PacketError, Limits, Packet, QueryBudget};
 
 mod address;
+mod service;
 
 pub use address::{AddressDiscoveryLimits, AddressResolution, DiscoveryError};
+
+pub use service::{
+    DependencyKind, EndpointPath, EndpointSource, ServiceDiscoveryError, ServiceDiscoveryLimits,
+    ServiceEndpoint, ServiceResolution,
+};
 
 const MAX_REQUESTS: usize = 4096;
 

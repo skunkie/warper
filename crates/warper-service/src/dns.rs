@@ -10,12 +10,14 @@ mod tcp;
 mod udp;
 
 pub use packet::{
-    Address, AddressAnswer, AddressError, AddressLookup, AddressProgress, Error, Limits, Packet,
-    Question,
+    Address, AddressAnswer, AddressError, AddressLookup, AddressProgress, AddressSection,
+    BindingSet, Error, Limits, Packet, Question, RelatedAddress, RelatedSet, ServiceAlias,
+    ServiceBinding, ServiceError, TimedAlias,
 };
 pub use query::QueryBudget;
 pub use tcp::{
-    AddressDiscoveryLimits, AddressResolution, Admission, DirectTcpTransport, DiscoveryError,
-    ExchangeError, TcpTransport,
+    AddressDiscoveryLimits, AddressResolution, Admission, DependencyKind, DirectTcpTransport,
+    DiscoveryError, EndpointPath, EndpointSource, ExchangeError, ServiceDiscoveryError,
+    ServiceDiscoveryLimits, ServiceEndpoint, ServiceResolution, TcpTransport,
 };
 pub use udp::DirectUdpTransport;

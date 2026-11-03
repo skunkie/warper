@@ -158,6 +158,23 @@ CPU/RSS and loopback drop deltas under
 wall/CPU time but excluded from each discovery latency. Process measurements
 include both client and controlled peer; they are not physical TUN results.
 
+The service-binding fixture follows HTTPS AliasMode, two ServiceMode
+alternatives, an address CNAME and the final alias fallback through the
+production SOCKS5 backend. It verifies three upstream attempts under one root
+permit, all advertised hints, resolved addresses and original Additional data:
+
+```sh
+cargo test --locked -p warper-service --test dns_service
+cargo test --locked --release -p warper-service --test dns_service service_discovery_workload -- --ignored --exact --nocapture
+```
+
+The explicit workload repeats 100 discoveries with 300 fresh upstream streams.
+Record process CPU/RSS, environment and host-wide loopback drop deltas under
+`target/evidence/phase-2/service-binding/`. DNS framing bytes exclude SOCKS5
+setup; total CPU/wall time includes fixture creation and both peer and client.
+Discovery latency excludes fixture setup. No packet loss is injected, and
+this fixture does not prove kernel route publication or gated DNS output.
+
 Configuration parser tests run as part of workspace tests, or separately with:
 
 ```sh

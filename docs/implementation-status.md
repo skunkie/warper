@@ -27,7 +27,7 @@ Linux x86-64 only. Phase 2's production DNS/route transaction gate is next.
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
 | 1: Headless Linux service slice | Complete for the verified Linux slice | [Closure audit](phase-1-acceptance.md): actual application TCP/FIN through selected SOCKS5/TUN, failed-start restoration, detached clients, explicit Down, authorization, bounded ownership, recovery, equivalent diagnostics and installed systemd lifecycle. Full native matrix and all privileged gates pass at `687b293` in [CI 41597810149](https://github.com/skunkie/warper/actions/runs/41597810149). Inspected evidence is under `target/evidence/phase-1/lifecycle-tracing/`. Linux ARM64 privileged acceptance and native macOS networking are not claimed. |
-| 2: Linux DNS and routing | In progress | Core bounded DNS names, longest-domain selection and bounded packet adapters are implemented. Selected/direct TCP and direct UDP DNS include shared request admission, query budgets and original deadlines; protected UDP lifecycle has native evidence. Listener integration, complete service-binding dependency gates, response handoff, route leases, retained-state admission, resolved integration and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
+| 2: Linux DNS and routing | In progress | Core bounded DNS names, longest-domain selection and bounded packet adapters are implemented. Selected/direct TCP and direct UDP DNS include shared request admission, query budgets and original deadlines; protected UDP lifecycle has native evidence. Listener integration, native service-binding endpoint gates, response handoff, route leases, retained-state admission, resolved integration and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
 | 5: Tauri desktop and release | Not started | GUI/control lifecycle, native packaging, UX-01–UX-05, production-mode exclusion tests and public signing/notarization remain required |
@@ -82,8 +82,17 @@ follow-ups with one parent permit, query budget and original deadline. A real
 controlled SOCKS5 peer verifies both upstream queries and socket cleanup;
 failure tests cover exhausted attempts, retained admission, cancellation,
 timeout, invalid aliases and setup failure. Dependency queries preserve RD/CD
-and EDNS, refusing unsafe transaction-signature synthesis. Full HTTPS/SVCB
-endpoint discovery, acknowledged routing and gated output remain required.
+and EDNS, refusing unsafe transaction-signature synthesis. HTTPS/SVCB discovery now walks all reachable service alternatives, hints,
+related addresses and AliasMode fallbacks through the same selected backend.
+It validates winning domain policy before dependency I/O, retains original
+response data across newer replies, coalesces request-local queries, preserves
+expiry and bounds graph/provenance work independently of unique addresses.
+Controlled packet/duplex cases and a real SOCKS5 fixture exercise this slice;
+raw checks, coverage and release workloads belong under
+`target/evidence/phase-2/service-binding/`. These establish endpoint discovery,
+not NET-11's native route-ACK/output gate. Global byte/lease admission,
+acknowledged routing, response handoff, listener ownership and resolved
+integration remain required; daemon DNS readiness is still unavailable.
 
 ## Phase 0 Exit Evidence
 

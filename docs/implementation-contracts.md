@@ -3087,3 +3087,71 @@ a request carrying transaction signatures or non-EDNS Additional records rather
 than invalidating authentication or copying unrelated data into a new query.
 Responses remain unchanged; synthesis never asserts AA or AD. Address freshness
 is stamped immediately after each complete validated exchange.
+
+### Service-binding packet semantics
+
+`Packet::service_bindings(owner, received_at)` provides a bounded, borrowed
+view of the reachable owner's IN HTTPS or SVCB Answer RRset. The question's
+record type chooses the RRset; the two types never alias one another. Negative
+response codes and empty sets remain distinct from CNAME, AliasMode and
+ServiceMode. A CNAME cannot coexist with service or address data at its owner.
+Conflicting CNAME targets fail. RRset TTLs use the minimum observed TTL, with
+zero/high-bit TTL freshness handled as in address traversal.
+
+AliasMode suppresses ServiceMode records in the same RRset and ignores its
+parameters. Preserve every AliasMode alternative; a root target is an explicit
+unavailable-service indication, never an address lookup of the DNS root.
+ServiceMode root targets use the effective owner verbatim, including Attrleaf
+and port-prefix labels. Do not strip prefixes or reapply them to alias targets.
+Every ServiceMode alternative is retained independent of priority, ALPN or
+unknown mandatory keys: this intermediary cannot infer all clients' support.
+Validate recognized parameter self-consistency, mandatory-key ordering and
+presence, and nonempty address hints. Preserve unknown parameters and original
+packet bytes; never rewrite records to conceal an endpoint.
+
+`Packet::related_addresses(owner, received_at, address_limit)` inspects only
+that reachable owner's IN Answer/Additional A/AAAA and CNAME data, excluding
+Authority and unrelated owners/classes. It retains section provenance, both
+families and per-family RRset expiry, rejects ambiguous aliases, and bounds
+unique IPs independently of repeated records. A related CNAME is an explicit
+continuation, not permission to accept another owner's addresses. Views retain
+at most the admitted packet record count of service references; hints borrow
+packet storage, and related metadata holds at most two entries per unique IP.
+Allocation is fallible. Neither API performs I/O or authorizes route/output
+publication. The parent still must validate every dependency's winning domain
+policy, traverse all service/address/fallback paths with shared budgets, and
+reject disabled families or unrouteable exposed endpoints before handoff.
+
+### Selected service-binding discovery
+
+`TcpTransport::discover_service_bindings` owns one request permit through the
+complete HTTPS/SVCB graph. It pins the caller's immutable domain policy and
+backend, original deadline/cancellation and attempt budget. It walks all
+AliasMode alternatives, CNAMEs and ServiceMode priorities, validates every
+non-root dependency/target against the original backend's winning rule before
+querying, and never owns a direct connector. Reuse same-question responses
+within the request with their original observation times. Missing service or
+address RRsets use canonical dependency questions through that same transport.
+
+Retain every hint and reachable related address, and resolve missing target
+families. A family disabled for capture rejects any exposed endpoint of that
+family. Valid negative address dependencies are final only when that family
+has no passed-through hint depending on it; other dependency failures reject
+the whole discovery. After a non-root AliasMode transition, include A/AAAA
+fallbacks for the final canonical service owner, in addition to every advertised
+ServiceMode target. An unavailable root alias never becomes a root lookup.
+Ordinary non-SVCB fallback and caches remain within the documented selective
+DNS coverage limits, not a general kill switch.
+
+The result retains the original packet, backend, unique endpoint coverage and
+bounded per-contribution alias/service/address provenance. Each contribution
+references a parent-indexed path arena and uses the minimum original expiry
+along that path. `ServiceDiscoveryLimits` supplies alias hops, unique addresses,
+IPv6 policy and a work/metadata admission bound (`work_items`, 1–65536). Each
+path, queued step, saved response and endpoint contribution charges that bound;
+charges are not refunded within a request. This bounds both retained capacity
+and repeated graph work independently of unique IP count. The driver yields
+between steps so cancellation/deadline and unrelated requests can progress.
+There are no child tasks, background queues, timers or automatic retries.
+This per-request count bound is not NET-12's global byte/lease admission, and
+successful discovery is not permission to publish routes or DNS output.
