@@ -352,6 +352,47 @@ mod linux {
             .spawn()?;
         Ok(())
     }
+    async fn inspect_offline() -> Result<(), Failure> {
+        tokio::task::spawn_blocking(|| -> Result<(), Failure> {
+            use std::os::unix::fs::MetadataExt;
+            let paths = [
+                "/var/lib/warper/owner",
+                "/var/lib/warper/connection",
+                "/var/lib/warper/network.journal",
+                "/etc/warper/configuration",
+            ];
+            let before = paths.map(|path| {
+                Ok::<_, Failure>((fs::metadata(path)?, fs::read(path)?))
+            });
+            let output = Command::new("/usr/bin/timeout")
+                .args(["--kill-after=1s", "8s", DAEMON, "recover", "--inspect"])
+                .env_clear()
+                .stdin(Stdio::null())
+                .output()?;
+            if !output.status.success()
+                || !output.stderr.is_empty()
+                || output.stdout != b"Control endpoint: absent\nOwner pending intent: no\nConfiguration pending intent: no\nConnection pending intent: no\nNetwork pending intent: no\nNetwork ownership: retired\n"
+            {
+                return Err("offline native inspection did not report protected retired state".into());
+            }
+            for (path, expected) in paths.iter().zip(before) {
+                let (metadata, bytes) = expected?;
+                let current = fs::metadata(path)?;
+                if fs::read(path)? != bytes
+                    || current.dev() != metadata.dev()
+                    || current.ino() != metadata.ino()
+                    || current.mtime() != metadata.mtime()
+                    || current.mtime_nsec() != metadata.mtime_nsec()
+                    || current.ctime() != metadata.ctime()
+                    || current.ctime_nsec() != metadata.ctime_nsec()
+                {
+                    return Err("offline inspection changed committed state".into());
+                }
+            }
+            Ok(())
+        })
+        .await?
+    }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         fixture::isolated(mount, net)?;
         let workers = warper_service::native::Workers::new(1)?;
@@ -511,6 +552,7 @@ mod linux {
         {
             return Err("daemon restart/stop left owned networking".into());
         }
+        inspect_offline().await?;
         println!(
             "PASS actual warperd/warper owner authentication, accepted-client detach, kernel TCP/FIN, foreign denial, explicit Disconnect, failed-start rollback, active SIGTERM cleanup, SIGKILL recovery, same-boot desired restoration, persisted Disconnect and endpoint retirement"
         );

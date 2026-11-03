@@ -2418,6 +2418,17 @@ journal write; an inspection result is never a mutation capability. The offline
 coordinator may apply the same read-only validation to the committed snapshot
 pinned by a pending token before discarding any unpublished state.
 
+The stopped-service `linux::recovery::inspect` coordinator acquires the actual
+exclusive native runtime lease before reading fixed owner, connection,
+configuration and network stores. It retains at most one bounded pending token
+per store, validates the corresponding committed snapshots, and reports only
+pending booleans plus endpoint/network retirement classifications. It performs
+no snapshot replacement, discard, sync or kernel mutation. Instance-lock
+creation during acquisition is permitted; the persistent inode is retained.
+Native queries share five seconds; synchronous filesystem reads retain their
+documented kernel-wait limitation. The synchronous command starts no executor
+or service tasks, has no user-selected path and releases all pins on return.
+
 ## Linux native import process
 
 The explicitly elevated CLI materializes configuration before starting its async

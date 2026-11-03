@@ -17,6 +17,7 @@ pub mod link_lookup;
 mod netlink;
 pub mod network;
 pub mod packet;
+pub mod recovery;
 pub mod route_inventory;
 pub mod route_lookup;
 pub mod rule_inventory;

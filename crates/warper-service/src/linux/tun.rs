@@ -24,6 +24,7 @@ pub use transaction::{
 };
 pub use transaction::{Cause as NativeCause, Delivery as NativeDelivery, Failure as NativeFailure};
 mod recovery;
+pub(crate) use recovery::inspect_snapshot;
 pub use recovery::{RecoveryInspection, RecoveryOutcome, inspect_abandoned, recover_abandoned};
 mod record;
 pub use record::Stage;

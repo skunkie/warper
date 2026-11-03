@@ -566,7 +566,8 @@ commands on other platforms, still return `UnsupportedCapability`.
 managed configuration and enrolled owner policy. It keeps networking independent
 of clients, handles SIGTERM/SIGINT through owned shutdown and shares the fixed
 instance lock. No service-manager installation is performed by building the
-binary. Offline recovery and diagnostic `warperd run` commands remain incomplete.
+binary. Offline repair and diagnostic `warperd run` commands remain incomplete;
+stopped-service `warperd recover --inspect` is available on Linux.
 A missing service fails with exit 1;
 offline checks never attempt IPC.
 
@@ -621,6 +622,31 @@ owner fields accepted from arbitrary imported YAML.
 `warperd recover` is the stopped-service administrative path and requires
 its instance lock; inspection is read-only/redacted. Neither requires backend
 DNS. Logs go to stderr; stdout contains command results only.
+
+Linux `warperd recover --inspect` acquires the exclusive instance lock and fails
+if the daemon still holds it. It reads only fixed protected state, validates
+committed managed configuration, pins pending records, and checks native
+network ownership without starting a backend or connecting. It does not unlink,
+sync or rewrite inspected state. Acquiring the persistent instance lock may
+create its inode when absent; it is never removed by inspection. Successful
+output has exactly these labels and value sets, each on its own line:
+
+```text
+Control endpoint: absent|retirable
+Owner pending intent: no|yes
+Configuration pending intent: no|yes
+Connection pending intent: no|yes
+Network pending intent: no|yes
+Network ownership: absent|retired|retirable
+```
+
+Values after `:` above are alternatives, not literal output. Retirable means
+the current observation passed retirement checks, never that cleanup occurred.
+Changed/unknown objects, live recorded owners and surviving foreign route keys
+remain errors. There is no configuration path, sudo-home search or secret output.
+Native network queries share a five-second deadline; synchronous filesystem
+inspection has no hard kernel deadline. Online `warper recover` and offline
+repair without `--inspect` still return typed unsupported-capability errors.
 
 Exit codes: 0 for completed success, valid inspection, or explicitly requested
 operation acceptance; 2 for CLI/configuration errors; 1 for runtime, preflight,

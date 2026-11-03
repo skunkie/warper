@@ -697,6 +697,20 @@ Network recovery now also exposes read-only committed-journal inspection with
 the same process, boot, interface and route-absence checks as retirement.
 Inspection does not change the journal and does not authorize later mutation.
 The native owner and crash-recovery fixtures now exercise these boundaries;
-their expanded privileged gate remains unverified. Evidence belongs under
-`target/evidence/phase-1/offline-owner-recovery/`. Offline CLI composition remains
-open.
+the [expanded privileged gate](https://github.com/skunkie/warper/actions/runs/41571094798)
+passes at `3a8a5b9`. All four isolated probe results report exit zero, no timeout
+and preserved host state. Evidence is under
+`target/evidence/phase-1/offline-owner-recovery/ci-41571094798/`.
+
+
+`warperd recover --inspect` now acquires the actual exclusive stopped-service
+lock, validates fixed protected committed/pending stores and reports only
+retirement classifications and pending booleans. It starts no service/backend,
+accepts no source path and does not rewrite, sync or discard records. Local
+process tests reject ordinary users through the native authorization gate, and
+output tests distinguish absent from dirty state. The actual daemon fixture now
+executes inspection after shutdown and checks committed bytes, inode identity
+and modification/change timestamps. This expanded native CLI gate remains
+unverified. Evidence belongs under `target/evidence/phase-1/offline-inspection/`.
+Offline repair, online recovery, foreground diagnostics and the final Phase 1
+requirement audit remain open.

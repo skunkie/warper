@@ -199,7 +199,7 @@ fn authorize_admin(peer: &UnixStream) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate(encoded: &[u8]) -> Result<Snapshot, Error> {
+pub(crate) fn validate(encoded: &[u8]) -> Result<Snapshot, Error> {
     let snapshot = Snapshot::decode(encoded, Platform::Linux).map_err(Error::Managed)?;
     let limits = &snapshot.config().limits;
     warper_control::admission::Plan::new(
