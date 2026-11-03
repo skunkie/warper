@@ -18,7 +18,7 @@ package implements offline check-config, authenticated Linux status/lifecycle
 control and elevated managed import/owner enrollment. `warperd service` runs the
 foreground Linux daemon with static IPv4 SOCKS5 TCP forwarding. The
 [Linux source installation](linux-service.md) includes a systemd unit; installed
-unit lifecycle acceptance remains separate from the native daemon traffic gate.
+idle-unit lifecycle acceptance remains separate from the native daemon traffic gate.
 `warper-control` supplies kernel peer authentication, protected persistence,
 framing and bounded local sessions. See the implementation status for the
 remaining phase gates and capability limits.

@@ -334,6 +334,24 @@ mod linux {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
+    fn restart(child: &mut Child) -> Result<(), Failure> {
+        if child.try_wait()?.is_none() {
+            return Err("cannot replace a live daemon child".into());
+        }
+        let stdout = fs::OpenOptions::new()
+            .append(true)
+            .open("/run/warper/daemon.stdout")?;
+        let stderr = fs::OpenOptions::new()
+            .append(true)
+            .open("/run/warper/daemon.stderr")?;
+        *child = Command::new(DAEMON)
+            .arg("service")
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()?;
+        Ok(())
+    }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         fixture::isolated(mount, net)?;
         let workers = warper_service::native::Workers::new(1)?;
@@ -424,6 +442,43 @@ mod linux {
             {
                 return Err("daemon Disconnect did not restore owned networking".into());
             }
+            if !cli(
+                0,
+                &["config", "install", "--config", "/run/warper/source.yaml"],
+            )
+            .await?
+            .0 || !cli(1000, &["up", "--wait-ms", "3000"]).await?.0
+            {
+                return Err("could not restore approved connection for active shutdown".into());
+            }
+            status("connected").await?;
+            traffic().await?;
+            stop(&mut child).await?;
+            if before != fixture::ip(&["-j", "route", "show", "table", "all"])?
+                || nix::net::if_::if_nameindex()?
+                    .iter()
+                    .any(|interface| interface.name().to_bytes() == NAME.as_bytes())
+            {
+                return Err("active SIGTERM did not restore owned networking".into());
+            }
+            restart(&mut child)?;
+            status("connected").await?;
+            traffic().await?;
+            child.kill()?;
+            let killed = child.wait()?;
+            use std::os::unix::process::ExitStatusExt;
+            if killed.signal() != Some(9) {
+                return Err("active daemon was not reaped after SIGKILL".into());
+            }
+            restart(&mut child)?;
+            status("connected").await?;
+            traffic().await?;
+            if !cli(1000, &["down", "--wait-ms", "3000"]).await?.0 {
+                return Err("restored same-boot intent could not be disconnected".into());
+            }
+            stop(&mut child).await?;
+            restart(&mut child)?;
+            status("disconnected").await?;
             Ok::<_, Failure>(())
         }
         .await;
@@ -449,8 +504,15 @@ mod linux {
         {
             return Err("daemon did not retire its endpoint".into());
         }
+        if before != fixture::ip(&["-j", "route", "show", "table", "all"])?
+            || nix::net::if_::if_nameindex()?
+                .iter()
+                .any(|interface| interface.name().to_bytes() == NAME.as_bytes())
+        {
+            return Err("daemon restart/stop left owned networking".into());
+        }
         println!(
-            "PASS actual warperd/warper owner authentication, accepted-client detach, kernel TCP/FIN, foreign denial, explicit Disconnect, failed-start rollback, SIGTERM and endpoint retirement"
+            "PASS actual warperd/warper owner authentication, accepted-client detach, kernel TCP/FIN, foreign denial, explicit Disconnect, failed-start rollback, active SIGTERM cleanup, SIGKILL recovery, same-boot desired restoration, persisted Disconnect and endpoint retirement"
         );
         Ok(())
     }

@@ -82,5 +82,8 @@ lock inode or erase a cleanup failure by deleting its journal. Offline recovery
 commands are still incomplete.
 
 Unit syntax validation does not establish a successful systemd lifecycle.
-Actual daemon/CLI native traffic has separate disposable acceptance evidence;
-full installed-unit start/restart/stop acceptance remains unverified.
+The [installed idle-unit gate](https://github.com/skunkie/warper/actions/runs/41568333593)
+passes at `a7e3505`, including owner access, restart, SIGKILL/automatic recovery,
+stop, subsequent start and independent cleanup. It approves no network
+configuration and preserves resolver identity/bytes. Actual daemon/CLI TUN
+traffic has separate private-namespace acceptance evidence.

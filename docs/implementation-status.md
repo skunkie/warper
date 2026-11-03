@@ -647,8 +647,8 @@ foreground root process and protected directory creation, preserves the runtime
 lock inode across stops and allows the full native shutdown budget before forced
 control-group termination. Installation, approval, readiness, update and removal
 instructions are documented without deleting recovery state. Unit syntax is
-validated against the built daemon path; actual installed-unit lifecycle
-acceptance remains unverified. Evidence belongs under
+validated against the built daemon path; installed idle-unit lifecycle
+acceptance now has the exact-commit evidence below. Evidence belongs under
 `target/evidence/phase-1/systemd/`. No release package or desktop is produced.
 
 Endpoint recovery now exposes a read-only inspection boundary that repeats the
@@ -657,8 +657,10 @@ It reports only Absent or Retirable and never removes or syncs files. Later
 retirement performs fresh checks rather than trusting the observation. Controlled
 tests cover preservation of stale publication and rejection of foreign changes;
 the privileged SIGKILL fixture now verifies inspection before retirement.
-This expanded privileged gate remains unverified. Evidence belongs under
-`target/evidence/phase-1/endpoint-inspection/`. The offline recovery CLI still
+The [expanded privileged gate](https://github.com/skunkie/warper/actions/runs/41568333593)
+passes at `a7e3505`, including all four isolated native probes with exit zero,
+no timeout and preserved host state. Evidence is under
+`target/evidence/phase-1/endpoint-inspection/ci-41568333593/`. The offline recovery CLI still
 requires composition with the protected stores and network journal.
 
 An owner-dispatched installed-unit CI gate now exercises the actual source unit
@@ -668,6 +670,17 @@ and persistent lock identity. The fixture refuses developer/self-hosted hosts
 and existing installations, independently stops the unit/removes owned installed
 files and verifies unchanged resolver identity/bytes. It approves no network
 configuration; real TUN traffic remains covered by the separate isolated gate.
-The 140-test infrastructure suite passes; installed-unit execution remains
-unverified until its first exact-commit CI result. Evidence belongs under
-`target/evidence/phase-1/systemd/`.
+The [installed-unit gate](https://github.com/skunkie/warper/actions/runs/41568333593)
+passes at `a7e3505` with no fixture or cleanup errors; its recorded commands
+verify start, restart, automatic crash recovery, stop and independent removal.
+The 140-test infrastructure suite also passes. Evidence is under
+`target/evidence/phase-1/systemd/ci-41568333593/`.
+
+
+The actual daemon traffic fixture now repeats kernel TCP/FIN after active
+SIGTERM and after SIGKILL/reap with fresh service processes. It checks restored
+same-boot Up intent, explicit Disconnect surviving another restart, and original
+namespace route/interface state after active shutdown and final retirement.
+This expanded real-process gate remains unverified. Evidence belongs under
+`target/evidence/phase-1/daemon-restart/`. Offline administrative recovery,
+foreground diagnostics and the final Phase 1 requirement audit remain open.
