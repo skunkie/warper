@@ -83,7 +83,7 @@ pub fn inspect(request: Request) -> Result<Inventory, Error> {
     .map_err(transaction::query_error)
 }
 
-fn entry(message: RouteMessage) -> Result<Entry, Cause> {
+pub(super) fn entry(message: RouteMessage) -> Result<Entry, Cause> {
     let header = message.header;
     if header.address_family != AddressFamily::Inet || header.destination_prefix_length > 32 {
         return Err(Cause::Protocol);

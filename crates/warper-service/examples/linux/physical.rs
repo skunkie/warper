@@ -368,7 +368,7 @@ async fn exchange(
     Ok(())
 }
 
-async fn protected_udp_connector(
+pub(super) async fn protected_udp_connector(
     context: Arc<warper_service::linux::context::Context>,
     endpoints: Vec<SocketAddr>,
     excluded: u32,

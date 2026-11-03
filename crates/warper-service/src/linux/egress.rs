@@ -148,6 +148,7 @@ impl Preparation {
                 paths.push(Path {
                     protocol: self.protocol,
                     endpoint,
+                    capture_interface: self.excluded,
                     route,
                     link,
                 });
@@ -166,8 +167,19 @@ impl Preparation {
 struct Path {
     protocol: route_lookup::Protocol,
     endpoint: SocketAddrV4,
+    capture_interface: NonZeroU32,
     route: route_lookup::Observation,
     link: link_lookup::Observation,
+}
+impl Path {
+    fn subscribe_changes(&self) -> Result<Monitor, change_monitor::Error> {
+        Monitor::subscribe_physical(change_monitor::PhysicalPath {
+            capture_interface: self.capture_interface,
+            endpoint: *self.endpoint.ip(),
+            source: self.route.source,
+            gateway: self.route.gateway,
+        })
+    }
 }
 
 /// Immutable deterministic path selection, with no default or alternate dial.
@@ -193,7 +205,7 @@ impl Connector {
             .try_acquire_owned()
             .map_err(|_| Error::ResourceLimit)?;
         bounded(request.clone(), async {
-            let mut monitor = Monitor::subscribe().map_err(Error::Monitor)?;
+            let mut monitor = path.subscribe_changes().map_err(Error::Monitor)?;
             verify_link(path, request.clone()).await?;
             let socket = TcpSocket::new_v4().map_err(io_error)?;
             socket

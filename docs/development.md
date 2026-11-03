@@ -1110,10 +1110,17 @@ DNS lease controller and live stack selector. In the disposable namespace it
 rejects a foreign /32 and wrong backend before mutation, installs 20 new /32s
 with original-expiry-zero pending reservations, checks idempotent publication,
 then drains and withdraws the full batch before releasing runtime ownership.
-Its `live_capture` row records add latency percentiles, total elapsed/CPU time
-and process peak RSS with concurrency one and zero application bytes. This
-measures native publication and metadata ownership, not packet throughput or
-DNS output completion. The existing isolated runner command includes this
+Its `live_capture` row records add latency percentiles, total elapsed/process
+CPU time and process peak RSS with concurrency one. The fixture retains one
+protected TCP connection and one UDP association across all additions and final
+withdrawal. Each of the 21 exchanges sends and verifies 16 bytes in both
+directions on both transports: 1280 application bytes during additions and
+1344 including the final exchange, without reopening an association. Per-add
+latency excludes those exchanges; total time includes fixture work, and peak
+RSS includes prior scopes in the same process. The `physical_continuity` row
+records exact message/byte counts. This measures publication and continuity,
+not sustained packet throughput or DNS output completion.
+The existing isolated runner command includes this
 scope; no privileged tests should run against the developer's live network.
 
 The control fixture also exercises the fixed root-owned `/etc/warper` managed

@@ -21,8 +21,11 @@ use warper_service::{
 };
 use warper_stack::{Seed, runtime::Runtime};
 
+mod continuity;
+
 pub(super) async fn exercise(context: Arc<Context>) -> Result<(), Failure> {
-    let (native, port) = owned_packet_port(context).await?;
+    let (native, port) = owned_packet_port(context.clone()).await?;
+    let index = native.index().ok_or("live capture index missing")?;
     let mut native = Some(native);
     let controller = Controller::new(
         Arc::new(Policy::new(&[], 32)?),
@@ -69,6 +72,7 @@ pub(super) async fn exercise(context: Arc<Context>) -> Result<(), Failure> {
     let mut latencies = Vec::with_capacity(20);
     ip(&["route", "add", "203.0.113.250/32", "dev", "lo"])?;
     let foreign_before = ip(&["-j", "route", "show", "exact", "203.0.113.250/32"])?;
+    let mut continuity = continuity::Peers::start(context, index).await?;
     let runtime_task = tokio::spawn(runtime.run());
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
@@ -130,6 +134,7 @@ pub(super) async fn exercise(context: Arc<Context>) -> Result<(), Failure> {
             })
             .await?;
             latencies.push(before.elapsed().as_nanos());
+            continuity.exchange(index).await?;
             // Metadata commitment follows the joined native ACK and durable
             // snapshot; this fixture does not emit a DNS answer.
             controller.confirm_publication(route)?;
@@ -190,6 +195,11 @@ pub(super) async fn exercise(context: Arc<Context>) -> Result<(), Failure> {
         }
     };
     if withdrawn {
+        if outcome.is_ok()
+            && let Err(error) = continuity.exchange(20).await
+        {
+            cleanup.push(error);
+        }
         for route in routes {
             if let Err(error) = controller
                 .begin_retirement(route)
@@ -207,6 +217,7 @@ pub(super) async fn exercise(context: Arc<Context>) -> Result<(), Failure> {
         Ok(Err(error)) => cleanup.push(Box::new(error) as Failure),
         Err(error) => cleanup.push(Box::new(error) as Failure),
     }
+    cleanup.extend(continuity.finish().await);
     drop(port);
     if let Some(mut native) = native {
         let closed = async {
@@ -236,8 +247,11 @@ pub(super) async fn exercise(context: Arc<Context>) -> Result<(), Failure> {
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("native route RSS unavailable")?;
     println!(
-        "live_capture routes=20 concurrency=1 elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} app_bytes=0 failures=0 {peak}",
+        "live_capture routes=20 concurrency=1 elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} app_bytes_during_additions=1280 failures=0 {peak}",
         latencies[9], latencies[18], latencies[19]
+    );
+    println!(
+        "physical_continuity tcp_messages=21 udp_datagrams=21 round_trip_app_bytes=1344 association_reopens=0"
     );
     println!(
         "PASS live DNS mapping precedes native host ACK, repeated publication preserves ownership, and joined withdrawal preserves a foreign route"

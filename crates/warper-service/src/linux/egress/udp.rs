@@ -88,7 +88,7 @@ impl Connector {
             .try_acquire_owned()
             .map_err(|_| Error::ResourceLimit)?;
         bounded(request.clone(), async {
-            let mut monitor = Monitor::subscribe().map_err(Error::Monitor)?;
+            let mut monitor = path.subscribe_changes().map_err(Error::Monitor)?;
             verify_link(path, request.clone()).await?;
             // Bound queue capacity before a local port can receive anything.
             let descriptor = rustix::net::socket_with(

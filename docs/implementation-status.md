@@ -125,13 +125,22 @@ foreign routes and failed prior state cannot authorize another mutation.
 The disposable native fixture exercises 20 additions, repeated publication,
 metadata flow pins and joined whole-batch withdrawal with a preserved foreign
 route. Local checks and raw native results belong under
-`target/evidence/phase-2/native-host/`; native acceptance remains unverified
-until its exact-commit CI artifacts pass. Individual route withdrawal, capacity
+`target/evidence/phase-2/native-host/`. The publication-only native scope passes
+the [exact-commit gate](https://github.com/skunkie/warper/actions/runs/41708153607),
+with all five result manifests reporting success, four isolated probes reporting
+preserved host state, and installed-unit acceptance reporting no errors.
+Individual route withdrawal, capacity
 alignment, DNS output and resolver integration remain open. Daemon DNS is still
 explicitly unavailable.
-Protected physical sockets currently invalidate on every network change,
-including owned route additions. Preserving unchanged physical paths across
-expected capture updates remains required before integrating live DNS sessions.
+Protected physical sockets now discard only exact disjoint /32 capture updates
+on their retained TUN, preserving the original physical tuple and socket.
+Peer/source/gateway routes, broader or ambiguous changes, rules, links, addresses
+and notification loss still invalidate. Controlled classifier cases verify the
+exception and its failure boundaries. The native fixture keeps one real TCP
+connection and UDP association across all 20 additions and final withdrawal,
+verifying exact bytes and joined peer shutdown. Evidence belongs under
+`target/evidence/phase-2/physical-continuity/`; that expanded native scope remains
+unverified until its exact-commit CI run passes.
 
 ## Phase 0 Exit Evidence
 

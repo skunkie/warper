@@ -3291,6 +3291,26 @@ runtime quiescence, drained packet work and zero retained flows. Per-address
 retirement, larger native admission aligned with configured DNS capacity, and
 supervised DNS session integration remain required before enabling daemon DNS.
 This operation refreshes the capture monitor, not existing protected socket
-proofs. Those sockets still invalidate on any network change; preserving an
-unchanged verified physical path across owned additions is a separate required
-integration gate.
+proofs. Their narrowly scoped continuity policy is defined below; it needs
+separate native acceptance before live DNS session integration.
+
+### Physical socket continuity across capture host updates
+
+After physical path preparation, each protected TCP/UDP association subscribes
+with its immutable peer/source/gateway and excluded capture interface. It may
+discard only a canonical IPv4 /32 main-table static unicast link-scope route
+notification on that interface, with the capture metric's high bit and no
+unknown attributes, gateway, preferred source or route flags. The host address
+must differ from the physical peer, source and gateway. This narrow exception
+does not authorize mutation or trust an ownership claim; the disjoint host
+route cannot select this socket's verified physical tuple or next hop.
+
+All other changes retain the existing fail-closed behavior, including rule,
+link and address changes, broader routes, another interface, and routes to any
+physical path address. Parse every message and trailing byte before discarding
+a datagram. Mixed batches, truncation, overflow, unexpected senders and malformed
+input still invalidate. A check/poll consumes at most 64 datagrams of at most
+64 messages each before declaring uncertainty, so an unrelated notification
+flood cannot stall forwarding or be mistaken for a proven empty queue. No
+socket is reopened, payload replayed, monitor task spawned or kernel path proof
+replaced. Connector preparation remains globally conservative.

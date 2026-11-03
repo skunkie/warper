@@ -2,18 +2,20 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! A bounded, caller-owned subscription; any change or uncertainty invalidates.
+//! A bounded, caller-owned subscription with conservative path invalidation.
 //! This is not an atomic route snapshot or an authorization to send traffic.
 
 use super::netlink::{self, MAX_DATAGRAM};
 use netlink_packet_core::{NetlinkBuffer, NetlinkMessage, NetlinkPayload};
-use netlink_packet_route::RouteNetlinkMessage;
+use netlink_packet_route::{RouteNetlinkMessage, route::RouteMessage};
 use netlink_sys::{AsyncSocket, SocketAddr, TokioSocket};
 use nix::{errno::Errno, libc};
 use std::{
     fmt,
     future::poll_fn,
     io,
+    net::Ipv4Addr,
+    num::NonZeroU32,
     task::{Context, Poll},
 };
 use tokio::time::sleep_until;
@@ -27,6 +29,35 @@ const GROUPS: u32 = libc::RTMGRP_LINK as u32
     | libc::RTMGRP_IPV4_RULE as u32
     | (1 << (libc::RTNLGRP_IPV6_RULE - 1));
 const MAX_MESSAGES: usize = 64;
+const MAX_DATAGRAMS: usize = 64;
+
+#[derive(Clone, Copy)]
+pub(super) struct PhysicalPath {
+    pub(super) capture_interface: NonZeroU32,
+    pub(super) endpoint: Ipv4Addr,
+    pub(super) source: Ipv4Addr,
+    pub(super) gateway: Option<Ipv4Addr>,
+}
+impl PhysicalPath {
+    fn ignores(self, message: RouteMessage) -> bool {
+        let Ok(route) = super::route_inventory::entry(message) else {
+            return false;
+        };
+        route.exact
+            && route.prefix_len == 32
+            && route.table.get() == 254
+            && route.interface == Some(self.capture_interface)
+            && route.metric.is_some_and(|metric| metric & 0x80000000 != 0)
+            && route.protocol == 4
+            && route.scope == 253
+            && route.kind == 1
+            && route.gateway.is_none()
+            && route.preferred_source.is_none()
+            && route.network != self.endpoint
+            && route.network != self.source
+            && Some(route.network) != self.gateway
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -57,17 +88,27 @@ pub enum Invalidation {
 }
 
 /// Subscribe before collecting route/link/address observations. There is no
-/// internal task or event history. The first event/error closes the socket and
-/// permanently invalidates this monitor. Replacing it requires fresh inspection.
+/// internal task or event history. The first relevant event/error closes the
+/// socket permanently. Replacing it requires fresh inspection. A physical socket
+/// may exclude only disjoint, exact host capture updates on its retained TUN.
 /// Callers must reserve 32769 receive bytes plus bounded parse storage and a
 /// kernel receive queue of at most 64 KiB. No packet contents escape this type.
 pub struct Monitor {
     socket: Option<TokioSocket>,
     invalidation: Option<Invalidation>,
+    physical: Option<PhysicalPath>,
 }
 
 impl Monitor {
     pub fn subscribe() -> Result<Self, Error> {
+        Self::with_physical_path(None)
+    }
+
+    pub(super) fn subscribe_physical(physical: PhysicalPath) -> Result<Self, Error> {
+        Self::with_physical_path(Some(physical))
+    }
+
+    fn with_physical_path(physical: Option<PhysicalPath>) -> Result<Self, Error> {
         let (socket, _) = netlink::socket(GROUPS).map_err(|error| match error {
             netlink::Error::Io(error) => Error::Io(error.kind()),
             netlink::Error::ResourceLimit => Error::ResourceLimit,
@@ -76,6 +117,7 @@ impl Monitor {
         Ok(Self {
             socket: Some(socket),
             invalidation: None,
+            physical,
         })
     }
 
@@ -85,27 +127,32 @@ impl Monitor {
         if let Some(reason) = self.invalidation {
             return Err(reason);
         }
-        let Some(socket) = &self.socket else {
-            return Err(self.invalidate(Invalidation::InvalidMessage));
-        };
         let mut buffer = [0; MAX_DATAGRAM + 1];
-        let mut remaining = &mut buffer[..];
-        let result = socket
-            .socket_ref()
-            .recv_from(&mut remaining, libc::MSG_DONTWAIT);
-        match result {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Err(error) => Err(self.invalidate(io_invalidation(error))),
-            Ok((length, sender)) => {
-                let reason = classify(&buffer[..length], sender);
-                Err(self.invalidate(reason))
+        for _ in 0..MAX_DATAGRAMS {
+            let Some(socket) = &self.socket else {
+                return Err(self.invalidate(Invalidation::InvalidMessage));
+            };
+            let mut remaining = &mut buffer[..];
+            match socket
+                .socket_ref()
+                .recv_from(&mut remaining, libc::MSG_DONTWAIT)
+            {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(self.invalidate(io_invalidation(error))),
+                Ok((length, sender)) => {
+                    if let Err(reason) = classify(&buffer[..length], sender, self.physical) {
+                        return Err(self.invalidate(reason));
+                    }
+                }
             }
         }
+        Err(self.invalidate(Invalidation::NotificationLost))
     }
 
     /// Retain and await this future in the service supervisor. Dropping a
-    /// pending future leaves the still-owned subscription intact; no packet is
-    /// consumed across a suspension point. Cancellation/deadline invalidates.
+    /// pending future leaves the subscription intact. Disjoint capture updates
+    /// are discarded only as fully parsed datagrams. Cancellation or deadline
+    /// invalidates the monitor.
     pub async fn wait(&mut self, mut request: Request) -> Invalidation {
         let reason = tokio::select! { biased;
             _ = request.cancellation.wait_for(|cancelled| *cancelled) => Invalidation::Cancelled,
@@ -116,26 +163,31 @@ impl Monitor {
     }
 
     /// Register one owner's waker without an internal task or deadline. Pending
-    /// consumes no datagram; a ready event/error permanently closes the monitor.
+    /// may consume disjoint capture updates; a relevant event/error closes it.
     pub fn poll_invalidation(&mut self, context: &mut Context<'_>) -> Poll<Invalidation> {
         if let Some(reason) = self.invalidation {
             return Poll::Ready(reason);
         }
-        let Some(socket) = &self.socket else {
-            return Poll::Ready(self.invalidate(Invalidation::InvalidMessage));
-        };
         let mut buffer = [0; MAX_DATAGRAM + 1];
-        let mut remaining = &mut buffer[..];
-        let result = match socket.poll_recv_from(context, &mut remaining) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(result) => result,
-        };
-        let length = MAX_DATAGRAM + 1 - remaining.len();
-        let reason = match result {
-            Ok(sender) => classify(&buffer[..length], sender),
-            Err(error) => io_invalidation(error),
-        };
-        Poll::Ready(self.invalidate(reason))
+        for _ in 0..MAX_DATAGRAMS {
+            let Some(socket) = &self.socket else {
+                return Poll::Ready(self.invalidate(Invalidation::InvalidMessage));
+            };
+            let mut remaining = &mut buffer[..];
+            let result = match socket.poll_recv_from(context, &mut remaining) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(result) => result,
+            };
+            let length = MAX_DATAGRAM + 1 - remaining.len();
+            let classified = match result {
+                Ok(sender) => classify(&buffer[..length], sender, self.physical),
+                Err(error) => Err(io_invalidation(error)),
+            };
+            if let Err(reason) = classified {
+                return Poll::Ready(self.invalidate(reason));
+            }
+        }
+        Poll::Ready(self.invalidate(Invalidation::NotificationLost))
     }
 
     pub fn invalidation(&self) -> Option<Invalidation> {
@@ -156,25 +208,30 @@ fn io_invalidation(error: io::Error) -> Invalidation {
     }
 }
 
-fn classify(mut bytes: &[u8], sender: SocketAddr) -> Invalidation {
+fn classify(
+    mut bytes: &[u8],
+    sender: SocketAddr,
+    physical: Option<PhysicalPath>,
+) -> Result<(), Invalidation> {
     if sender.port_number() != 0 || sender.multicast_groups() & !GROUPS != 0 {
-        return Invalidation::UnexpectedSender;
+        return Err(Invalidation::UnexpectedSender);
     }
     if bytes.len() > MAX_DATAGRAM {
-        return Invalidation::NotificationLost;
+        return Err(Invalidation::NotificationLost);
     }
     if bytes.is_empty() {
-        return Invalidation::InvalidMessage;
+        return Err(Invalidation::InvalidMessage);
     }
+    let mut changed = false;
     for _ in 0..MAX_MESSAGES {
         let buffer = match NetlinkBuffer::new_checked(bytes) {
             Ok(buffer) => buffer,
-            Err(_) => return Invalidation::InvalidMessage,
+            Err(_) => return Err(Invalidation::InvalidMessage),
         };
         let length = buffer.length() as usize;
         let message = match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&bytes[..length]) {
             Ok(message) => message,
-            Err(_) => return Invalidation::InvalidMessage,
+            Err(_) => return Err(Invalidation::InvalidMessage),
         };
         match message.payload {
             NetlinkPayload::InnerMessage(
@@ -182,28 +239,33 @@ fn classify(mut bytes: &[u8], sender: SocketAddr) -> Invalidation {
                 | RouteNetlinkMessage::DelLink(_)
                 | RouteNetlinkMessage::NewAddress(_)
                 | RouteNetlinkMessage::DelAddress(_)
-                | RouteNetlinkMessage::NewRoute(_)
-                | RouteNetlinkMessage::DelRoute(_)
                 | RouteNetlinkMessage::NewRule(_)
                 | RouteNetlinkMessage::DelRule(_),
-            ) => {}
+            ) => changed = true,
+            NetlinkPayload::InnerMessage(
+                RouteNetlinkMessage::NewRoute(route) | RouteNetlinkMessage::DelRoute(route),
+            ) => changed |= !physical.is_some_and(|path| path.ignores(route)),
             NetlinkPayload::Overrun(_) | NetlinkPayload::Error(_) => {
-                return Invalidation::NotificationLost;
+                return Err(Invalidation::NotificationLost);
             }
-            _ => return Invalidation::InvalidMessage,
+            _ => return Err(Invalidation::InvalidMessage),
         }
         // Netlink messages are four-byte aligned. A short tail is uncertainty;
         // never turn malformed input into an empty-queue observation.
         let aligned = (length + 3) & !3;
         bytes = match bytes.get(aligned..) {
             Some(bytes) => bytes,
-            None => return Invalidation::InvalidMessage,
+            None => return Err(Invalidation::InvalidMessage),
         };
         if bytes.is_empty() {
-            return Invalidation::NetworkChanged;
+            return if changed {
+                Err(Invalidation::NetworkChanged)
+            } else {
+                Ok(())
+            };
         }
     }
-    Invalidation::NotificationLost
+    Err(Invalidation::NotificationLost)
 }
 
 #[cfg(test)]
@@ -216,18 +278,21 @@ mod tests {
     use std::time::Duration;
     use tokio::{sync::watch, time::Instant};
 
-    fn packet(payload: NetlinkPayload<RouteNetlinkMessage>) -> Vec<u8> {
+    pub(super) fn packet(payload: NetlinkPayload<RouteNetlinkMessage>) -> Vec<u8> {
         let mut message = NetlinkMessage::new(NetlinkHeader::default(), payload);
         message.finalize();
         let mut bytes = vec![0; message.buffer_len()];
         message.serialize(&mut bytes);
         bytes
     }
-    fn event(message: RouteNetlinkMessage) -> Vec<u8> {
+    pub(super) fn event(message: RouteNetlinkMessage) -> Vec<u8> {
         packet(NetlinkPayload::InnerMessage(message))
     }
-    fn kernel() -> SocketAddr {
+    pub(super) fn kernel() -> SocketAddr {
         SocketAddr::new(0, libc::RTMGRP_LINK as u32)
+    }
+    fn classify(bytes: &[u8], sender: SocketAddr) -> Invalidation {
+        super::classify(bytes, sender, None).unwrap_err()
     }
 
     #[test]
@@ -356,3 +421,6 @@ mod tests {
         assert_eq!(monitor.check_pending(), Err(Invalidation::Timeout));
     }
 }
+
+#[cfg(test)]
+mod physical_tests;
