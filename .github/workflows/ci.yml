@@ -166,3 +166,113 @@ jobs:
       - uses: ./.github/actions/validate-native
         with:
           target: ${{ matrix.target }}
+
+  privileged-control:
+    name: Privileged Linux control acceptance
+    needs: [stage, quality]
+    # Privileged acceptance requires an explicit dispatch by this repository's owner.
+    # PR/push events cannot start it; callers must preserve owner-dispatch trust.
+    if: >-
+      needs.stage.outputs.rust == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'skunkie/warper' &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          build-warnings: warn
+      - name: Build the actual privileged control probe
+        run: |
+          cargo build --locked -p warper-control --example control_privileged
+          cargo build --locked -p warper-service --example linux_network_probe
+          cargo build --locked -p warper-service --example linux_recovery_probe
+          cargo build --locked -p warper-service --example linux_daemon_probe --bin warperd
+          cargo build --locked -p warper-cli --bin warper
+      - name: Exercise protected root state and real kernel peers in isolation
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control
+          sudo -n -- python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/control_privileged" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/controller.log
+      - name: Exercise the candidate TUN API with actual kernel TCP in isolation
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control/tun-api
+          sudo -n -- python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/linux_network_probe" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control/tun-api" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/tun-api/controller.log
+      - name: Exercise real crash reconciliation in fresh private state
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control/tun-recovery
+          sudo -n -- python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/linux_recovery_probe" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control/tun-recovery" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/tun-recovery/controller.log
+      - name: Exercise the actual daemon and CLI lifecycle in fresh private state
+        shell: bash
+        run: |
+          mkdir -p target/evidence/phase-1/privileged-control/daemon
+          sudo -n -- env WARPERD_BINARY="$PWD/target/debug/warperd" \
+            WARPER_BINARY="$PWD/target/debug/warper" \
+            python3 scripts/control_acceptance.py \
+            --probe "$PWD/target/debug/examples/linux_daemon_probe" \
+            --evidence "$PWD/target/evidence/phase-1/privileged-control/daemon" \
+            2>&1 | tee target/evidence/phase-1/privileged-control/daemon/controller.log
+      - name: Retain privileged gate evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-control-${{ github.sha }}
+          path: target/evidence/phase-1/privileged-control/
+          if-no-files-found: error
+          retention-days: 14
+
+  privileged-systemd:
+    name: Installed Linux systemd acceptance
+    needs: [stage, quality]
+    # The source unit is installed only into an owner-dispatched disposable VM.
+    if: >-
+      needs.stage.outputs.rust == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'skunkie/warper' &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          build-warnings: warn
+      - name: Build the actual installed applications
+        run: cargo build --locked -p warper-service --bin warperd -p warper-cli --bin warper
+      - name: Exercise the source unit in this disposable hosted VM
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p target/evidence/phase-1/systemd
+          sudo -n -- env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            python3 scripts/systemd_acceptance.py --disposable-github-vm \
+            --warper "$PWD/target/debug/warper" \
+            --warperd "$PWD/target/debug/warperd" \
+            --unit "$PWD/packaging/linux/warper.service" \
+            --owner-uid "$(id -u)" --owner-gid "$(id -g)" \
+            --revision "$REVISION" --evidence "$PWD/target/evidence/phase-1/systemd"
+      - name: Retain installed-unit evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-systemd-${{ github.sha }}
+          path: target/evidence/phase-1/systemd/
+          if-no-files-found: error
+          retention-days: 14

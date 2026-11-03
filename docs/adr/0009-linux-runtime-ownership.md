@@ -17,7 +17,8 @@ The future listener needs exclusive ownership before publishing an endpoint.
 Deleting a lock pathname on shutdown lets another process lock a new inode
 while an existing holder still owns the old one. Opening unchecked runtime
 objects can follow a symlink or access a device before its type is validated.
-No running service, protected owner store or listener exists yet.
+No running service or protected owner store exists yet. The subsequent endpoint
+adapter uses this lease for intent-backed listener publication and retirement.
 
 ## Alternatives
 
@@ -72,9 +73,10 @@ runtime directories; this is not proof of initial mount/network namespace
 admission or an already integrated network-instance lock. Those remain service
 startup gates before host mutations.
 
-No stale socket is removed. Journaled recovery, listener creation, client
-endpoint validation, administrative owner enrollment and bounded/versioned
-messaging remain separate increments. The API is Linux-only; macOS still needs
+No stale socket is automatically removed. The endpoint adapter now implements
+intent-backed publication and explicit owned retirement under this lease.
+Journaled recovery, client endpoint validation, administrative owner enrollment
+and bounded/versioned messaging remain separate increments. The API is Linux-only; macOS still needs
 its native helper lifecycle and authentication.
 
 ## Validation and reconsideration
@@ -94,9 +96,9 @@ The subprocess gets its fixture through Command's environment without mutating
 the parent's environment. It has a bounded readiness wait and a cleanup guard.
 Native namespace probes additionally reject nested UID 0 before runtime access.
 
-Evidence belongs under `target/evidence/phase-1/runtime-ownership/`. Positive
-public UID-0 acquisition in a disposable initial-user-namespace fixture,
-runtime submount rejection, native macOS and complete service/networking
-acceptance remain unverified. Tests never provision or modify live `/run`.
+Evidence belongs under `target/evidence/phase-1/runtime-ownership/`. Public UID-0 acquisition, native owner/foreign peers and protected endpoint
+retirement now have [privileged CI evidence](https://github.com/skunkie/warper/actions/runs/41181399851)
+in a disposable initial-user-namespace fixture. Runtime submount rejection,
+native macOS helper and complete service/networking acceptance remain unverified. Tests never provision or modify live `/run`.
 Reconsider for a different installation layout, mount policy, filesystem
 locking semantics or administrator recovery requirements.

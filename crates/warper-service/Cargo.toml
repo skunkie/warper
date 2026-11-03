@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "warper-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "warperd"
+path = "src/bin/warperd.rs"
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+warper-core = { path = "../warper-core" }
+warper-config = { path = "../warper-config" }
+warper-cli = { path = "../warper-cli" }
+warper-backends = { path = "../warper-backends" }
+warper-stack = { path = "../warper-stack" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "test-util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio = { workspace = true, features = ["net", "signal"] }
+netlink-packet-core.workspace = true
+netlink-packet-route.workspace = true
+netlink-sys.workspace = true
+tun-rs.workspace = true
+nix.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
+warper-control = { path = "../warper-control" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+nix = { workspace = true, features = ["sched", "signal"] }
+rustix = { workspace = true, features = ["fs"] }
+
+[lints]
+workspace = true

@@ -13,7 +13,7 @@ import unittest
 
 
 class FeasibilityHarnessTests(unittest.TestCase):
-    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0, address_exit=0, route_mismatch=False, mismatch_after=0, check_exit=0, adapter_exit=0, mtu_exit=0, raw_exit=1, tun_pmtu_exit=0):
+    def run_harness(self, *, probe="wireguard-stack", probe_exit=0, scope="--packet-only", build_exit=0, rekey=False, mapping="0 1000 1", cleanup_exit=0, peer_exit=0, probe_killed=False, tc_exit=0, interrupt_exit=0, route_exit=0, rule_exit=0, address_exit=0, route_mismatch=False, mismatch_after=0, check_exit=0, adapter_exit=0, mtu_exit=0, raw_exit=1, tun_pmtu_exit=0, await_failed_controller=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -108,6 +108,12 @@ if [[ "${{1:-}}" == --router-mtu-check && {probe_exit} == 0 ]]; then
 fi
 exit {probe_exit}
 ''')
+        if await_failed_controller:
+            source = executable.read_text()
+            source = source.replace("for _ in {1..500}; do", "while :; do")
+            termination = f"""if [[ "${{1:-}}" == --router-mtu-check ]]; then trap 'touch "{root}/client-terminated"; exit 143' TERM; fi"""
+            source = source.replace("set -eu\necho fixture-probe", f"set -eu\n{termination}\necho fixture-probe")
+            executable.write_text(source)
         executable.chmod(0o700)
         # The synthetic harness runs without a private network namespace.
         # Substitute an idle notification socket only for the fixture checker.
@@ -130,7 +136,10 @@ if sys.argv[0].endswith("verify_router_paths.py"):
             arguments.append(scope)
         if rekey:
             arguments.append("--rekey")
-        result = subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=10)
+        # The enclosing router harness has a 20-second process-group deadline
+        # plus a two-second kill grace. Allow it to reap children and record
+        # cleanup before this outer synthetic-test deadline expires.
+        result = subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=30)
         evidence = list((root / "target/evidence/phase-0").glob(f"{probe}.*"))
         if not scope:
             evidence = [path for path in evidence if ".gate." in path.name]
@@ -358,6 +367,17 @@ if sys.argv[0].endswith("verify_router_paths.py"):
         self.assertIn("addr del 198.20.0.2/24 dev client1", commands)
         self.assertIn("link del dev routerc1", commands)
         self.assertTrue((evidence.parents[3] / "umount-commands.log").exists())
+        self.assertNotIn("PASS", (evidence / "result.txt").read_text())
+
+    def test_failed_controller_stops_a_client_waiting_for_its_next_marker(self):
+        result, evidence = self.run_harness(
+            scope="--router-mtu-check", address_exit=7, await_failed_controller=True,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        root = evidence.parents[3]
+        self.assertTrue((root / "client-terminated").exists())
+        self.assertIn("link del dev routerc1", (root / "ip-commands.log").read_text())
+        self.assertTrue((root / "umount-commands.log").exists())
         self.assertNotIn("PASS", (evidence / "result.txt").read_text())
 
     def test_router_rule_change_failure_retires_links_and_control_mount(self):

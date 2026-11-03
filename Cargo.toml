@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 [workspace]
-members = ["experiments/host-stack", "experiments/wireguard-stack", "experiments/initial-contract", "crates/warper-core", "crates/warper-config", "crates/warper-cli", "crates/warper-control"]
+members = ["experiments/host-stack", "experiments/wireguard-stack", "experiments/initial-contract", "crates/warper-core", "crates/warper-config", "crates/warper-cli", "crates/warper-control", "crates/warper-backends", "crates/warper-stack", "crates/warper-service"]
 resolver = "3"
 
 [workspace.package]
@@ -20,12 +20,17 @@ boringtun = { version = "=0.7.1", default-features = false }
 futures = { version = "=0.3.32", default-features = false, features = ["std", "async-await"] }
 idna = "=1.1.0"
 netstack-smoltcp = "=0.2.4"
+netlink-packet-core = "=0.9.0"
+netlink-packet-route = "=0.33.0"
+netlink-sys = { version = "=0.9.0", default-features = false, features = ["tokio_socket"] }
 nix = { version = "=0.31.3", default-features = false, features = ["net", "uio"] }
 # Pinned Linux networking socket options reference the time module.
 rustix = { version = "=1.1.5", features = ["event", "net", "rand", "time"] }
 # Direct candidate and controlled peers; the wrapper retains its own 0.12 stack.
 smoltcp = { version = "=0.14.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }
 tokio = { version = "=1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tun-rs = { version = "=2.8.16", default-features = false, features = ["async_tokio"] }
 toml = { version = "=1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 wireguard-uapi = { version = "=3.0.1", default-features = false }
 yaml-rust2 = { version = "=0.11.1", default-features = false }

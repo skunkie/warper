@@ -129,9 +129,16 @@ never import an experiment or expose smoltcp/BoringTun types.
 | Unix account lookup | [`identity.rs`](../crates/warper-config/src/identity.rs): `UnixIdentity` implements `IdentityProvider` using the existing pinned nix dependency's effective UID and reentrant account lookup. It copies only UID/name/home, discards other account fields, and maps missing accounts and OS lookup errors to redacted `IdentityLookup`. It reads OS account records without reading credential/trust files or using environment paths. This synchronous call may block in NSS/directory services and has no cancellation/deadline guarantee; future ordinary-user clients must isolate it on a blocking worker with bounded admission and track unfinished calls after timeout. Native Linux lookup has an executable probe; native macOS remains unverified. |
 | YAML decoding | [`yaml.rs`](../crates/warper-config/src/yaml.rs): `decode(&[u8]) -> Result<Value, Error>` admits at most 1 MiB before UTF-8/parser allocation, with 65,536 key/value nodes and depth 16. The owned tree preserves scalar types/spelling and sequence order; duplicate keys, nulls, anchors/aliases, unsupported/mismatched tags and multiple documents fail with typed redacted category/reason/path. Scanner types/errors remain private; Value Debug is redacted. Synchronous decoding releases partial state on error and creates no tasks/I/O; source bounds are not an RSS cap or execution deadline. Schema/semantic checks remain required before any import/network operation. See ADR 0006. |
 | Source and CLI | [`source.rs`](../crates/warper-config/src/source.rs) opens with `O_NONBLOCK`, checks the descriptor is regular and bounds metadata/read size. It returns typed redacted errors and follows source symlinks; it is not a credential-file reader. [`warper-cli`](../crates/warper-cli/src/lib.rs) separates arguments, injected `Environment`/`SourceReader`, execution and stream writes. Only check-config resolves identity/paths and reads a source; help/version and unsupported service commands perform no environment/file/IPC access. Success reports offline validity, never engine startup. stdout failures return typed I/O kinds; `Failure` retains primary and stderr failures. Account/file I/O is synchronous without a hard deadline; no background task or host mutation is introduced. |
-| Linux control peer | [`warper-control`](../crates/warper-control/src/lib.rs): `OwnerPolicy::new(Option<u32>)` validates policy data but does not load/store/enroll it. Its internal evaluator permits owner observation/operation and UID-0 administration; external consumers must use native authentication. Credential fields have no public constructor/deserializer; Debug is redacted. [`unix.rs`](../crates/warper-control/src/unix.rs) admits the initial user namespace before socket type/family/connection and SO_PEERCRED checks. Both authentication directions borrow caller-owned streams, perform no payload I/O/retries/tasks, retain socket error kinds and do not close on denial. [`namespace.rs`](../crates/warper-control/src/namespace.rs) uses fixed verified procfs and openat2 traversal guards, a pinned symlink and a 64-byte readlink buffer; missing/malformed/submounted/noninitial evidence fails closed (ADR 0008). No caller anchors, environment override or cache is accepted. Native integration must prohibit user-namespace transitions between authorization and operation. Snapshots prove neither liveness/code identity nor a protected endpoint. Recheck current owner policy per request; revocation is a later gate. macOS returns UnsupportedIntegration; protected paths/enrollment, versioned bounded messages and service operations remain open. |
-| Linux runtime ownership | [`runtime.rs`](../crates/warper-control/src/runtime.rs): `RuntimeLease::acquire() -> Result<Self, Error>` admits initial-user-namespace effective UID 0 and fixed `/run/warper/service.lock`. It pins and verifies root-owned directories, rejects symlinks/submounts beneath `/run`, and creates exclusively or inspects/reopens an empty regular root-owned mode-0600 single-link lock without truncation. Exclusive nonblocking flock precedes final identity validation. `revalidate()` checks namespace, effective UID, metadata and named identities before later mutations. Four owned descriptors, no public constructor/path override/raw FD, redacted Debug/typed errors, no tasks/retries/payload I/O. Drop releases descriptors without unlinking persistent state. Synchronous filesystem operations have no hard deadline; root and a stable launch namespace remain trusted. Private UID fixtures establish contention, changed-state rejection and child SIGKILL recovery; actual public root acquisition and runtime submount rejection remain unverified. No listener, owner enrollment, journal or integrated network-instance ownership is provided (ADR 0009). |
+| Linux control peer | [`warper-control`](../crates/warper-control/src/lib.rs): `OwnerPolicy::new(Option<u32>)` validates policy data but does not load/store/enroll it. Its internal evaluator permits owner observation/operation and UID-0 administration; external consumers must use native authentication. Credential fields have no public constructor/deserializer; Debug is redacted. [`unix.rs`](../crates/warper-control/src/unix.rs) admits the initial user namespace before socket type/family/connection and SO_PEERCRED checks. Both authentication directions borrow caller-owned streams, perform no payload I/O/retries/tasks, retain socket error kinds and do not close on denial. [`namespace.rs`](../crates/warper-control/src/namespace.rs) uses fixed verified procfs and openat2 traversal guards, a pinned symlink and a 64-byte readlink buffer; missing/malformed/submounted/noninitial evidence fails closed (ADR 0008). No caller anchors, environment override or cache is accepted. Native integration must prohibit user-namespace transitions between authorization and operation. Snapshots prove neither liveness/code identity nor a protected endpoint. Recheck current owner policy per request; revocation is a later gate. macOS returns UnsupportedIntegration; endpoint/enrollment/framing adapters are separate boundaries, while authenticated sessions and service operations remain open. |
+| Linux runtime ownership | [`runtime.rs`](../crates/warper-control/src/runtime.rs): `RuntimeLease::acquire() -> Result<Self, Error>` admits initial-user-namespace effective UID 0 and fixed `/run/warper/service.lock`. It pins and verifies root-owned directories, rejects symlinks/submounts beneath `/run`, and creates exclusively or inspects/reopens an empty regular root-owned mode-0600 single-link lock without truncation. Exclusive nonblocking flock precedes final identity validation. `revalidate()` checks namespace, effective UID, metadata and named identities before later mutations. Four owned descriptors, no public constructor/path override/raw FD, redacted Debug/typed errors, no tasks/retries/payload I/O. Drop releases descriptors without unlinking persistent state. Synchronous filesystem operations have no hard deadline; root and a stable launch namespace remain trusted. Private UID fixtures establish contention, changed-state rejection and child SIGKILL recovery; actual public root acquisition has privileged CI evidence; runtime submount rejection remains unverified. Endpoint/enrollment adapters use this lease separately; journal and integrated network-instance ownership remain open (ADR 0009). |
+| Linux control endpoint | [`runtime/endpoint.rs`](../crates/warper-control/src/runtime/endpoint.rs): `ControlEndpoint::bind(RuntimeLease) -> Result<Self, Failure>` consumes the lease, syncs exclusive fixed intent before binding, pins the socket pathname inode and sets mode 0666 before listening. `accept(&OwnerPolicy) -> Result<Option<Accepted>, Error>` is nonblocking and returns only authenticated Observe peers; per-request authorization and current enrollment remain required. Backlog is 32, caller owns returned streams, no tasks/readers/queues are created. `close(self)` closes admission and retires only unchanged pinned objects under the lease; Drop leaves uncertain state. `Failure` preserves primary and cleanup errors. Four lease FDs plus intent, socket pathname and listener FDs are retained; directory sync uses a temporary FD. No cwd/umask mutation, stale deletion, listener path override or network mutation. Root/launch mount namespace and procfs FD lookup are trusted, filesystem waits have no hard deadline. Controlled current-UID fixtures prove normal retirement, foreign denial, crash-stale conflicts and changed-state preservation; actual root publication/retirement has privileged CI evidence; syscall-fault injection remains unverified. |
+| Linux client endpoint | [`runtime/client.rs`](../crates/warper-control/src/runtime/client.rs): `connect(Instant, watch::Receiver<bool>)` admits the initial user namespace, verifies fixed root-owned `/`, `/run`, mode-0755 `/run/warper` and a mode-0666, single-link socket, and pins four descriptors. It connects through the socket's procfs descriptor path, authenticates a connected real root peer, then rechecks metadata/name identities before exposing the Tokio stream. No payload, arbitrary path/UID, repair, retries or task spawn. One absolute async deadline and cancellation on owner loss; synchronous metadata/procfs inspection has no hard wall bound. Caller negotiates the wire version before configuration transfer. Private current-UID fixtures test real pinned-inode connection, root-peer rejection and changed-state preservation; public root-service success is a privileged CI gate. |
+| Linux owner enrollment | [`runtime/enrollment.rs`](../crates/warper-control/src/runtime/enrollment.rs): `OwnerStore::open(&RuntimeLease)` admits effective UID 0 and pins fixed root-owned `/var/lib/warper`. `read` revalidates the lease/state, refuses pending intent and reads at most 25 bytes from a verified regular file into the exact versioned 24-byte snapshot. `enroll(&mut self, &RuntimeLease, &UnixStream, expected_revision, owner)` authenticates a live administrative peer before reading records, then exclusively stages/syncs a revision and its directory, rechecks the prior snapshot identity/revision, renames atomically and syncs again. Pre-publication cleanup touches only unchanged owned pending state; `Failure` retains primary/cleanup causes. Post-rename sync failure is CommitUncertain, never rollback/replay. Four state directory FDs plus bounded temporary record/pending handles, no tasks/retries or generic paths; synchronous filesystem waits have no hard deadline. Debug/errors are redacted. Current-UID private fixtures prove real storage transitions and injected post-rename uncertainty; positive public root enrollment has privileged CI evidence. Administrative `inspect_pending` pins a bounded partial/complete pending file and committed snapshot; consuming `discard_pending` freshly authenticates root and compares store/owner/pending identities, timestamps and bytes before unlink/sync. It never promotes a pending owner or changes the committed revision; mismatches preserve state, final sync failure is CommitUncertain. Each inspection retains at most two file pins and 25 payload bytes; the service must bound retained inspections and serialize mutations. Current-UID tests cover partial writes, changed snapshots, unsafe metadata, denial, lease loss and uncertain sync; positive root recovery CI now passes; live connection revocation and service integration remain open. |
+| Linux connection intent | [`runtime/connection.rs`](../crates/warper-control/src/runtime/connection.rs): `ConnectionStore::open(&RuntimeLease)` requires actual root and fixed protected `/var/lib/warper`, reusing the private directory pins with enrollment. Native bounded verified-procfs BootId and nonblocking 16-byte instance entropy have no overrides/fallback. `Request::from_frame` decodes validated v2 lifecycle fields. `accept(lease, current_approved_generation, request)` verifies independent generation/instance/revision fences, binds the operation ID's revision prefix and nonzero nonce to its original expected revision, returns AlreadyAccepted for the unchanged last operation, then exclusively stages/syncs an exact 80-byte snapshot and directory, rechecks prior identity/content, renames and syncs before Accepted. No network action or RPC authorization is implied. Changed/deleted observed snapshots fail closed; CommitUncertain blocks acceptance until explicit unchanged inspect/resync. Opaque bounded pending inspection/discard never promotes staged intent and preserves changed state; unlink uncertainty requires resync. Four directory FDs, bounded transient file pins/buffers, one fixed observed snapshot and no tasks/retries; synchronous kernel waits have no hard deadline. The service must serialize operations, authorize each command, bound inspection retention and apply boot/recovery/readiness barriers. Public root persistence passes owner-dispatched CI at `ed834b5`; authenticated daemon integration remains open. |
+| Control framing | [`wire.rs`](../crates/warper-control/src/wire.rs): private-field `Frame::new(Kind, nonzero_request_id, Vec<u8>)` validates version-2 kind-specific length/body rules; redacted Debug. Connect/Disconnect carry 48-byte operation/configuration/desired-revision/instance fences, StatusReply carries 26 bytes, and legacy layouts/versions fail before body reads. Expected instance IDs and operation IDs must be nonzero; durable comparison/acceptance belongs to service handlers. Async `Frame::read/write` borrow I/O and an injected watch cancellation receiver plus one absolute Tokio deadline covering header/body/flush. Magic/version/kind/length/ID validation precedes body allocation; maximum is 1 MiB plus eight generation bytes, fixed commands are exact-sized. Limited read/write variants enforce the configured encoded-message budget before body allocation/any output, counting header and generation metadata. No generic paths/shell commands exist. A framing error poisons the stream; partial output is never replayed. No tasks/queues/retries are spawned. Callers own connection admission/global buffer accounting, peer authentication, Hello session order, reply correlation, current per-request authorization and operation idempotency. Controlled duplex probes cover all kinds, maximum-size/partial I/O, rejection before body reads, cancellation/closed channel/EOF and total deadlines. Service handlers remain open. |
 | Offline schema | [`schema/mod.rs`](../crates/warper-config/src/schema/mod.rs): `Config::parse(&[u8], &Paths, Platform) -> Result<Config, Error>` constructs owned typed tunnel/backend/timeout/limit settings, resolves credential paths without opening files, rejects unknown/mistyped/conflicting values, normalizes IDNA and enforces global ID/domain/CIDR uniqueness. Secret-bearing Debug is redacted, including usernames/source paths. `static_policy` checks route-count admission before cloning entries into the existing core policy. `BackendSettings::requirements` describes required protocol behavior, never current adapter availability. Parsing is synchronous with no tasks, external mutation or host discovery; allocation/CPU remain bounded by admitted source plus normalized-model/library overhead, not a hard deadline/RSS guarantee. Returned editable records are not authorization tokens; validation and runtime preflight remain required before installation or networking. |
+| Production TCP and physical connector | [`warper-core::transport`](../crates/warper-core/src/transport.rs) promotes the proven Metadata/CapturedTcp/boxed TcpIo, Capabilities, Backend and deadline/cancellation Request boundaries. EndpointConnector is service-constructed; implementations must protect the selected physical endpoint and cannot detach I/O or fall back. Request cancels on owner loss, has one total setup deadline and drops owned futures on failure. Errors are typed/redacted, retaining I/O kind and generic rejection category. No backend/stack implementation is imported by core. Service path protection and platform adapters remain open. |
+| SOCKS5 TCP | [`socks5.rs`](../crates/warper-backends/src/socks5.rs): `Socks5::new(BackendId, SocketAddr, Option<Credentials>, max_streams, Arc<dyn EndpointConnector>)` validates credentials/endpoint/semaphore range. Backend open_tcp reserves one permit without queueing, connects only through the supplied connector, performs exact configured authentication and numeric CONNECT under the original Request deadline, and consumes the complete bound address. Permit survives half-close until boxed stream drop. No UDP, destination DNS, retries, direct connector or detached tasks. Setup buffers are bounded (auth 513, request 22, reply 257 bytes plus credentials/allocator/OS overhead); data relay/idle/age budgets are service-owned. Real controlled peers and loopback workload evidence are described in ADR 0011; physical/TUN integration remains open. |
 | Captured TCP | [`transport.rs`](../experiments/initial-contract/src/transport.rs): `Metadata { id: u64, source: SocketAddr, destination: SocketAddr, backend: BackendId }`; `CapturedTcp { metadata, stream: Box<dyn TcpIo> }`; `TcpIo: AsyncRead + AsyncWrite + Unpin + Send`. `AcceptedFlow::into_contract` is used by the controlled packet and Linux TUN relays. |
 | Backend TCP | `Backend: Send + Sync`, `id`, `capabilities`, `open_tcp(&self, SocketAddr, Request) -> OpenTcp<'_>`; the boxed future and stream are `Send`. `Capabilities` advertises IPv4/IPv6/TCP/UDP independently. The TUN fixture's `ControlledBackend` opens distinct real loopback peers through this interface; it is not a production protocol backend. |
 | Setup ownership | `Request { deadline: tokio::time::Instant, cancellation: watch::Receiver<bool> }`; `Request::run` bounds the complete setup operation. Cancellation or loss of its owner drops the owned future/I/O. `Error` distinguishes unsupported capability, cancellation, timeout, resource limit and I/O, retaining the I/O cause with redacted Display. |
@@ -1627,3 +1634,1205 @@ The MTU gate requires actual runtime and kernel-TUN exchanges with multiple
 flows, exact bytes/FIN, pending output, failed seed retry, cancellation/expiry,
 and independent cleanup. The raw stack failure stays a separate negative
 control and cannot substitute for this gate.
+
+## 28. Production host TCP boundary
+
+`warper-stack::{host, runtime}` promotes the initial TCP boundary from sections
+7 and 10; it does not promote the experimental combined TCP/UDP or expanded
+PMTU interfaces. ADR 0012 records the scope. No third-party stack types cross
+this boundary. `AcceptedFlow::into_core` preserves `transport::Metadata` and
+returns the core boxed stream; backend selection is immutable per flow.
+
+`HostAdapter::new(Limits, Arc<Policy>, Seed)` validates limits before allocation.
+MTU is 1280, each flow has two 8192-byte stack buffers and a duplex stream with
+two 8192-byte directions, and each adapter packet queue holds at most 64 MTU
+packets. Flow/accepted limits are nonzero, accepted is at most flows, and flows
+is at most sixteen. Setup, idle and absolute lifetimes are positive bounded
+`Duration`s. A retired stream retains its permit until all handles drop; a
+reusable socket slot does not release that charge. Adapter-owned delayed input
+for the old tuple is discarded before slot reuse. Packet rejection is typed,
+with no backend retry or direct fallback. The caller advances the adapter clock
+with `poll_io` before admitting new input; the runtime enforces this ordering.
+
+`Runtime::new` adds bounded ingress/egress channels, each with capacity 1..64.
+`required_buffer_capacity` validates first and reserves adapter payload buffers
+plus `(2 * capacity + 1) * MTU` for channel and pending input. Allocator, policy,
+stack metadata, kernel I/O and relay buffers require separate service accounting.
+Ingress reserves capacity before copying. Egress returns no queued packets
+after runtime termination. Cancellation cannot retract packets already handed
+to the consumer, which must stop/join its own I/O worker.
+
+`run` is the only owner future and spawns no task. The caller retains and joins
+it. It handles application wakeups, monotonic transport and lifecycle timers,
+eight output packets per turn, and bounded input admission. Output pressure
+suppresses transport retries while retaining lifecycle expiry. Explicit stop
+wins before another turn; loss of input, output, acceptance or shutdown owners
+returns a typed failure with counters. Normal stop and failure cancel flows,
+drain pending input and close outputs. Dropping/aborting the future also cancels
+flows; retained streams expose terminal errors rather than silently surviving.
+
+`Seed::generate` uses native nonblocking Linux randomness, returns typed OS or
+short-read failure, and has no configured value or fallback. Non-Linux native
+entropy is unsupported. UDP, fragmented IP, IPv4 options, IPv6 extension headers
+and MTUs other than 1280 are outside this initial production boundary. Service
+preflight must reject unsupported configuration before external changes. This
+boundary alone establishes neither TUN interception nor physical egress safety.
+
+## 29. Service-owned TCP relay supervision
+
+The service owns a bounded `relay::Relays` set, with 1..1024 task slots and at
+most 64 immutable backend registrations. Duplicate backend/active flow IDs,
+unknown selected IDs and unsupported destination families fail admission. A
+slot covers setup, transfer and the completion record until joined; completed
+records cannot accumulate outside the task bound. Constructor/admission checks
+precede task creation. There is no task admission queue or backend reselection.
+
+Each flow opens only its selected backend with the original numeric destination
+and a shared cancellation owner. One absolute setup deadline is capped by the
+flow's absolute lifetime, and the service independently enforces it around the
+backend future. Established copying uses two 8192-byte buffers and preserves
+half-close in each direction. Positive writes count transferred bytes even on
+later failure; progress resets the idle deadline. Millisecond progress timestamps
+permit up to one millisecond of expiry grace, never early expiry. Payload is
+never replayed after errors. The caller adds stack, backend and kernel buffers
+to the service relay reservation of `flow_limit * 16384` bytes.
+
+A returned completion contains flow/backend IDs, transferred byte counts and a
+typed/redacted outcome without addresses, credentials or payload. Backend and
+individual flow failures terminate that flow. A worker panic/lost worker closes
+admission, cancels remaining relays and is surfaced to the supervisor. Explicit
+shutdown closes admission, signals cancellation and joins all workers within
+the configured shutdown budget; at expiry it aborts remaining async workers and
+joins their cancellation. This relies on backend futures respecting nonblocking
+polling. Dropping the task set aborts workers as a safety net; required service
+shutdown uses the explicit joined path. Client connection lifetime is unrelated
+to relay ownership. This boundary alone does not publish a connected service,
+create a TUN or verify a physical transport path.
+
+Shutdown reports retain the first typed flow failure and worker failure alongside
+aggregate counters and any shutdown deadline/clock error. Expected cancellation
+is counted separately. Thus explicit teardown preserves an initial operational
+failure even when workers finish while shutdown is joining them; bounded reports
+do not silently replace errors with successful cleanup.
+
+## 30. Pure service preparation and adapter allocation
+
+`warper-service::preflight::Plan::prepare(&Config, Platform)` validates the
+initial Linux static IPv4 SOCKS5/TCP capability before external changes. No
+filesystem reads, name resolution, socket opens, entropy initialization, task
+spawns or connected-state publication occur. Unsupported protocol, DNS,
+routing, family, MTU and hostname requirements return typed redacted errors.
+File-valued credentials require prior protected import; no privileged YAML path
+is opened. The canonical initial capability and diagnostics are specified in
+configuration.md. Malformed relevant mutable snapshot values fail preparation.
+
+At most 64 unique nonzero backend registry IDs are retained, with consistent
+static route ownership. Effective flow slots are the lesser of the configured
+admission ceiling and the host adapter's sixteen slots. This is exposed in the
+plan; defaults remain unchanged. Preserve deterministic core longest-prefix
+selection. Validate host and relay durations/limits before buffer reservation.
+
+Reserve host/runtime payloads with channel capacity 64, two relay copy buffers
+per effective flow, TUN reader/output buffers, conservative per-flow protocol
+setup buffers and copied credential bytes against the aggregate data-plane
+buffer budget. Compute with checked arithmetic and reject one-byte shortages;
+copy credentials only after the budget fits. Policy/registry/task/allocator
+metadata, protected source material and kernel socket buffers have separate
+owners. Native physical socket budget enforcement remains an open gate.
+
+`Plan::instantiate(Seed, Arc<dyn EndpointConnector>)` consumes the admitted
+snapshot and allocates real SOCKS5 backends, host runtime/channels and retained
+relay owners. No worker is spawned or backend opened during allocation. The
+service supplies verified physical protection and retains/joins the resulting
+owners. There is no default connector, direct fallback or claim of network
+readiness. Ordinary client lifetime does not own these values. Native privilege,
+route/conflict verification, managed storage and journaled platform application
+must pass before a service publishes a usable capture route or connected state.
+
+### Shared runtime ownership during shutdown
+
+`ControlEndpoint::bind` accepts `Into<Arc<RuntimeLease>>`, retaining the same
+verified lease rather than reopening or duplicating the lock. Existing owned
+callers remain supported. A service worker can retain another reference while
+native work completes; endpoint retirement does not release its instance lock.
+Explicit service shutdown must join workers before dropping the final reference.
+A real flock/thread test closes the listener, observes acquisition contention,
+then joins/releases the worker and reacquires the unchanged persistent lock.
+All lease mutation checks and native namespace/credential admission still apply.
+
+### Native read-only IPv4 TCP route lookup
+
+`warper_service::linux::route_lookup::lookup(Query, Request)` observes one route
+in the current network namespace. Query contains the numeric IPv4 destination
+and TCP port, optional actual source/port and nonzero interface constraint. The
+adapter supplies the process effective UID, protocol TCP and lookup-table flag;
+it never accepts caller-provided privilege or starts a network connection.
+It returns an opaque-Debug `Observation` with the reported interface index,
+source, optional gateway, table and local/unicast kind. These values confer no
+physical-path protection or mutation authority.
+
+Each retained future owns a nonblocking close-on-exec socket, a unique
+process-local sequence, at most 128 request bytes and 32769 receive bytes.
+Strict kernel input checking is mandatory; the verified kernel receive queue is
+at most 64 KiB including Linux bookkeeping doubling. The
+extra receive byte rejects oversized/truncated datagrams. Parsing allocations
+are bounded by that datagram; callers must reserve transient parse memory and
+bound concurrent queries before using this boundary in a service. No worker,
+subscription, hidden queue, retries after successful send or persistent cache is
+created. Cancellation, owner loss and one total deadline drop the socket.
+Exactly one complete kernel unicast reply with matching port and sequence is
+required. An ACK is not a route, and a negative kernel errno remains typed.
+Unknown, ambiguous, missing, duplicate or unsupported routing metadata fails
+closed. IPv6, multipath, encapsulation and nexthop indirection are unsupported.
+See ADR 0016 for dependency ownership and executable limits. A monitored path
+generation, interface identity, socket binding, native mutation ACKs and journal
+recovery remain separate obligations before capture or physical sends.
+
+### Native change subscription
+
+`linux::change_monitor::Monitor::subscribe` owns one nonblocking close-on-exec
+netlink socket subscribed to link, IPv4/IPv6 address, route and policy-rule
+changes. Subscribe before route observations. `check_pending` returns only a
+momentary empty-queue observation, while `wait(Request)` is a retained future
+for the next change or failure. Neither confers send authority or makes a route
+snapshot atomic. No worker, internal event queue, per-interface history or
+automatic restart exists. An owner must await/poll it and prevent sends after
+invalidation; merely creating a monitor is insufficient.
+
+Any subscribed event, malformed/foreign message, socket failure, overrun,
+truncation, cancellation, owner loss or deadline permanently invalidates the
+monitor and closes its socket. Subsequent operations preserve the first reason
+and never silently clear it. Replacement requires fresh subscription and
+inspection. A dropped pending wait consumes no message across suspension and
+leaves the still-owned subscription intact. Any relevant event invalidates the
+whole generation conservatively, including changes unrelated to its endpoint.
+
+The kernel receive queue is capped/verified at 64 KiB with ENOBUFS suppression
+disabled. Each receive uses a fixed 32769-byte slice and accepts at most 64
+messages totaling 32 KiB; oversize, malformed tails, unknown messages and excess
+work fail closed. Packet libraries parse one bounded message at a time; payloads
+and addresses are never retained or returned. Callers reserve receive/parse
+storage and retain the monitor until retirement. This is a notification sensor,
+not interface identity, a race-free route snapshot, socket binding, a routing
+exemption or a complete physical-path generation. Those integration gates stay
+open, alongside native mutation ACKs and persistent journal recovery.
+
+### Native link inspection
+
+`linux::link_lookup::lookup(Query, Request)` accepts a validated Linux interface
+name or a nonzero signed-range index and returns one correlated native link
+observation. It shares route lookup's private read-only transport, 128-byte
+request bound, fixed receive slice, strict kernel checking, sequence ownership,
+queue budget and total cancellation/deadline. The transport admits only
+GetRoute/GetLink requests; native mutation messages cannot pass this boundary.
+`linux::QueryError` is shared; `route_lookup::Error` remains its public alias.
+
+Retain the index, at most 15 ASCII name bytes, at most 255 alias bytes, nonzero
+MTU, layer type, flags and classified loopback/TUN/other kind. Reject missing,
+duplicate, zero, mismatched or oversized comparison fields. A TUN-kind link with
+Ethernet framing is unsupported, so a TAP is never admitted as a TUN. Other
+link kinds do not establish physical egress. Ignore unrelated metadata only
+within the shared datagram/parse bounds; Debug and errors omit native values.
+This is an observation for conflict/recovery comparisons, not owned generation
+identity or cleanup authority. A protected journal, boot/network-namespace
+identity and service ownership mark must establish ownership before mutation or
+recovery; a reused name or index is insufficient. Monitoring, physical binding
+and mutation acknowledgement requirements remain separate.
+
+### Protected network journal storage
+
+The fixed Linux `runtime::journal::NetworkJournal` is protected storage for the
+native platform, separate from connection intent and RPC authorization. Open
+and every operation require native root and the retained `RuntimeLease`, reuse
+protected state-directory pins and expose no path/UID/descriptor override.
+An exact versioned envelope bounds payloads to 64 KiB; the platform validates its
+own secret-free payload schema before depending on it. `read` returns a bounded
+revisioned snapshot. `replace(expected_revision, payload)` checks the observed
+snapshot, exclusively stages/syncs bytes and directory, rechecks prior/pending
+identity/content, renames atomically and syncs before success. It never mutates
+the network or treats storage success as kernel acknowledgement.
+
+An observed snapshot cannot disappear or change into revision zero. Failed
+staging preserves pending state and blocks writes. Uncertain durability blocks
+normal operations until unchanged inspection/resync. Recovery inspection pins
+bounded current/pending state; consuming discard revalidates directory/store,
+identity/timestamps/bytes and prior content before unlink/sync. Never promote
+pending state or remove changed objects. Abandoning a token preserves evidence;
+service handlers separately authorize/bound inspections. Each store retains four
+directory descriptors and at most one 64-KiB observed payload. A call/token can
+retain at most two bounded records/file pins; serialization/readback add bounded
+64-KiB transients, which the service must account before worker admission.
+Synchronous filesystem waits need retained blocking workers and may outlive a
+caller deadline; the final runtime reference cannot be released before joining.
+The platform journal schema, boot/namespace/instance ownership and actual native
+mutation/recovery integration remain open until independently implemented.
+
+### Native journal owner context
+
+`linux::context::Context` retains the runtime lease and native network/PID
+namespace descriptors. Capture requires the real root runtime lease and native
+connection store; no path, namespace, process, boot or instance override is
+accepted. A verified procfs anchor supplies guarded namespace links and bounded
+current-process stat data. Follow only the already checked fixed namespace name,
+require nsfs/type/inode agreement and retain namespace handles. Check procfs PID
+against the current kernel PID and preserve the exact field-22 start ticks.
+Revalidation checks the current thread's scopes, process and boot before a
+future driver operation; a decoded record never becomes native authority.
+
+A fixed version-one 88-byte owner component records boot ID, network/PID
+namespace device/inode, service instance, PID and process start ticks. Decode
+rejects wrong length/version, noncanonical zero identities and reserved bytes;
+zero process start ticks remain valid. Serialization exposes native boot bytes
+without adding a public constructor for trusted `BootId`. Compare records as
+current owner, previous instance, conflicting owner, foreign boot or foreign
+namespace. Previous-instance classification permits inspection only; process
+liveness, object ownership marks, full journal schema and mutation/recovery
+policy remain required before cleanup or continuation. Debug/errors omit native
+record values. Capture/revalidation uses bounded synchronous procfs reads in
+retained native workers; no task, namespace mutation or network change is made.
+
+### Journaled initial TUN lifecycle
+
+`linux::tun::Owner` is a synchronous native-worker boundary for the initial
+1280-byte Linux TUN. `prepare(Arc<Context>, optional_name, mtu)` validates native
+scope, the fixed protected real TUN device and name availability before writing
+a durable Prepared intent. `allocate` always creates an unnamed, down,
+nonpersistent device; never pass a configured name to the upstream constructor.
+Validate descriptor-derived name/index/MTU and persist Allocated ownership before
+success. `apply_name` writes Renaming intent before the atomic kernel rename,
+then verifies/persists Named ownership. An unchanged/OS-selected name is explicit;
+no interface becomes usable or Connected through this boundary.
+
+The version-one fixed 160-byte `WTUN` platform payload contains the 88-byte owner
+component, lifecycle stage, MTU, optional requested/actual names and kernel index.
+Only absent or validated Retired journal state permits a fresh preparation.
+Unknown, active, pending or uncertain state requires recovery. Each native step
+revalidates context and committed journal; any failed native/storage mutation
+blocks further application. Keep the live device in the owner for explicit
+rollback. Cleanup closes only the freshly created owned descriptor, never an
+interface selected by stored name/index. Kernel index absence must be verified
+before durably recording Retired. Record retirement intent before close when
+storage is available; the original Prepared intent also covers compensating
+closure of an owned temporary descriptor after storage failure. Preserve the
+initial failure alongside rollback/storage/absence-check errors.
+
+Repeated close verifies unchanged Retired storage. Drop closes the owned device
+before releasing context/instance ownership but does not advance the journal or
+claim asynchronous cleanup. The supervisor must run/join native workers and
+call explicit close. A crash leaves a conservative recovery record; this version
+never deletes an interface based on stored identity alone. External persistence
+or unexpected surviving indices fail cleanup rather than touching foreign state.
+Validate the protected device node before invoking the upstream builder so its
+missing-node repair path is not selected. No network address, UP flag, route,
+DNS setting, packet task or application flow is published here. Those native
+transactions and full platform recovery remain subsequent implementation gates.
+
+### Blocking native job ownership
+
+`warper_service::native::Workers::new(1..=4)` bounds running jobs and unjoined
+results. `try_reserve` requires an active Tokio runtime and returns Busy without
+queuing; reserve before moving an existing native resource into a job.
+`Reservation::start` moves trusted synchronous native work into a blocking task.
+A reservation is shared by task and worker/result so a panic, early owner drop
+or completed-but-unjoined result cannot release capacity while work remains.
+Discarded results drop native resources before their reservation.
+
+`Task::wait(Request)` borrows its retained handle. Deadline, cancellation and
+owner loss end only the wait; they do not abort accepted native work or consume
+its result. Subsequent waits can join the same job. Successful completion or a
+panicked/cancelled worker is joined once and releases admission; another wait
+returns AlreadyJoined. Panic payloads are not returned/logged by the adapter.
+There is no hidden application queue, work replay, namespace change or native
+mutation in the worker primitive. Reusable blocking threads must preserve
+credentials/namespaces; concrete native operations revalidate their context.
+The supervisor retains every Task across caller detach, surfaces failures and
+joins/drains before dropping runtime ownership. Drop cannot asynchronously stop
+or join a blocking syscall and is not a clean-shutdown operation. Kernel waits
+may outlive a caller deadline; service worker admission and driver/application
+integration remain separate gates.
+
+### Initial owned IPv4 address transaction
+
+The TUN owner may assign one unicast non-loopback IPv4 address with /32 and
+IFA_F_NOPREFIXROUTE while remaining down. Validate the owned descriptor/context
+and take a bounded IPv4 address snapshot before journaling Addressing intent.
+Reject an address already assigned anywhere in the namespace. Send one exclusive
+RTM_NEWADDR request only after durable intent and renewed ownership validation.
+Require a correlated kernel ACK containing the original request header, then
+verify the exact /32/local/no-prefix-route address in a fresh bounded snapshot
+before committing Addressed. Same-address repetition verifies ownership without
+sending another mutation; other address changes are unsupported by this slice.
+
+A native-worker netlink socket bounds request/datagram/kernel queues, total wait
+and cancellation checks. Dump inspection retains no address history and caps
+messages/datagrams; interrupted/lost/truncated/ambiguous replies fail closed.
+Only a kernel unicast sender, matching port/sequence and exact original header
+can acknowledge mutation. Missing ACK after successful send is uncertain, never
+permission to resend. Report not-sent, rejected or potentially-applied delivery
+separately from timeout/cancellation/protocol/kernel errors. No address is
+removed by number: rollback closes the originally owned TUN descriptor and
+verifies retirement, preserving initial and cleanup failures.
+
+WTUN version two uses the same 160-byte envelope and records the address and
+Addressing/Addressed stages. Version-one Retired records remain admissible for
+fresh preparation; active version-one state still requires recovery. Unknown
+versions and malformed state/address combinations are preserved. Kernel dumps
+are observations under the service's serialized native owner; changes by other
+privileged network managers can invalidate them. Global live path monitoring,
+interface UP, capture routes, exemptions and full recovery remain open gates.
+
+### Initial owned TUN activation transaction
+
+After committed address ownership, `Owner::enable(Request)` may set only IFF_UP
+on the newly owned descriptor's verified index. It must validate context,
+storage, identity/MTU and the exact owned address before journaling Enabling.
+Send one RTM_NEWLINK with a change mask of IFF_UP only; no creation/replacement,
+name, MTU or other flags may be requested. Require the shared correlated native
+ACK, fresh link UP inspection and address verification before committing
+Enabled. Repetition verifies current ownership/UP without sending another
+mutation. Missing ACK or subsequent failure remains sticky and requires cleanup;
+never infer rejection from a timeout or replay an uncertain request.
+
+Activation publishes no capture route or connected-service status. Internal
+packet handlers and verified physical endpoint protection still must precede
+capture route publication. Rollback closes only the original descriptor and
+verifies retirement. WTUN version three adds Enabling/Enabled, retaining the
+160-byte layout and decoding version-one/two records conservatively; only
+Retired records authorize fresh preparation. Native operations share the bounded
+worker netlink transport and one total operation deadline. Privileged external
+changes can invalidate observations; full monitoring/recovery stays open.
+
+### Owned native packet port
+
+The initial TUN owner registers its fresh down descriptor with an I/O-enabled
+Tokio runtime during allocation in a retained native worker. No named device,
+raw descriptor, cloned TUN queue or upstream device escapes. After committed
+Enabled, `packet_port` may issue one non-cloneable port. The port shares only
+the original descriptor and retains the native context/runtime lease, dropping
+the descriptor reference before that lease. It cannot reconfigure the device.
+Issuance validates context, storage and descriptor identity/MTU. Once issued,
+a second port is rejected even if the first was dropped.
+
+One receive and one send may be pending per port; concurrent same-direction
+operations return Busy without queueing. Receive uses exactly 1281 bytes to
+reject packets exceeding the 1280-byte MTU. Zero-length reads, oversized
+packets, short writes and native failures remain typed/redacted. Send accepts
+only nonempty packets up to MTU and never retries a partial write. One total
+Request deadline and cancellation/owner loss bound each asynchronous wait;
+the actual monotonic deadline is checked before every device I/O poll, including
+resumed readiness before a rounded runtime timer wakes. Expired I/O is not polled.
+Dropping the future releases its direction reservation and retains no task.
+Failure/cancellation never authorizes replay of a potentially delivered packet.
+The caller owns framing/family validation and bounded packet queues.
+
+Explicit owner close returns PacketPortActive while a port reference survives;
+it does not advance the journal or pretend the interface was retired. Shutdown
+must cancel and join packet work and drop the port before descriptor retirement.
+Dropping the journal owner with a live port preserves context/runtime ownership
+until the last port drops and leaves conservative active journal state. There
+is no asynchronous cleanup hook or capture-route authority in this boundary.
+Verified physical protection, journaled route ownership and a supervising daemon
+remain separate gates.
+
+### Bound TCP egress feasibility experiment
+
+Before a production physical connector depends on a binding mechanism, the
+private Linux fixture must create two isolated veth namespaces, observe the
+original unicast path and bind a TCP socket to that interface and source.
+Read back SO_BINDTODEVICE and the actual ephemeral local tuple; query routing
+with that same TCP tuple/UID/interface. Add a competing /32 capture TUN route
+and prove the unconstrained lookup selects the TUN while the constrained tuple
+still selects the original egress. Actual TCP must reach only the isolated
+peer, preserve source/port and FIN, and leave no IPv4 packet in the capture TUN.
+A failed proof remains failure; it does not authorize an unbound connection.
+
+The root experiment uses only synthetic bytes, a fixed 1281-byte observation
+buffer, at most 32 capture observations, six readiness bytes and bounded peer
+request/response reads. Socket/pipe operations have two-second waits; the peer
+has a five-second lifetime. Retain and join the child, preserve initial/cleanup
+errors, and remove only fixture-created links/namespaces. The outer private
+mount/network/PID harness independently reaps processes and verifies host state.
+This is proposed API evidence, not a production physical-path lease: monitored
+path generations, continuous invalidation, reservations, endpoint refresh,
+exemption ownership and daemon integration remain open.
+
+### Initial Linux protected TCP connector
+
+Construct preparation in a retained native worker from verified native context,
+1..=64 numeric IPv4 endpoints, the currently owned capture index and 1..=16
+stream slots. Revalidate context before collecting read-only route/link
+observations. Preparation subscribes before inspection and rejects any pending
+change, but its stored observations alone confer no send authority. Supported
+paths are unicast over unstacked Ethernet/veth, or explicit loopback endpoints
+using a local loopback route. Other virtual/stacked links, TUN, nonlocal loopback,
+IPv6 and ambiguous routes remain unsupported; no alternate path is selected.
+
+Each admitted connection owns a fresh change subscription and one stream permit.
+Reinspect the selected link, bind SO_BINDTODEVICE and the observed source before
+connect, verify option/local-port readback, and query the exact TCP/UID/source/
+interface tuple against the prepared route. Check notifications before SYN;
+race connect against invalidation and inspect the tuple/route again before
+returning. Bindings remain the capture-loop backstop across observation races.
+Any mismatch or notification/loss fails closed without unbound retry. Kernel
+TCP send and receive queues are each capped/read back at 64 KiB; the monitor
+queue is capped at 64 KiB. Query/monitor parse capacity and at most two stored
+I/O wakers per stream are separately bounded; the service must account these
+native resources alongside its payload budget before admission.
+
+Returned streams own their descriptor, monitor, permit and native context in
+that retirement order. Before each read/write/flush/half-close, poll the monitor
+with a waker that notifies both I/O directions. Any event/error permanently
+closes the socket and returns a typed/redacted network-unreachable I/O failure.
+An idle pending read wakes on changes; no worker or hidden monitoring task is
+spawned. Half-close retains the permit and read side. Caller timeout/drop closes
+setup resources; stream drop releases capacity only after socket/monitor close.
+Fresh dials must repeat all current-path checks against the prepared selection;
+network changes never select another interface/backend implicitly. Full daemon
+readiness, capture publication/recovery and hardware deployment evidence remain
+independent gates.
+
+Link inspection now distinguishes unstacked Ethernet (Ether layer with no link
+kind) and veth (Ether plus Veth kind). Bridges and other stacked/unknown links
+remain Other, and neither classification alone proves physical egress. The
+change subscription also exposes `poll_invalidation(Context)` for retained I/O
+owners: Pending consumes no datagram; ready errors/events are sticky and close
+the monitor. Callers provide deadline/cancellation and combine wakers when more
+than one I/O direction waits on the same monitor.
+
+Portable transport errors distinguish UnsupportedIntegration (an unavailable
+verified OS transport path) from UnsupportedCapability (an unsupported backend
+operation). Neither category permits selecting a different backend or direct
+connection. Native route/monitor details remain behind the Linux adapter.
+
+### Host TCP admission quiescence
+
+Before retiring capture routes, the service can request quiescence through a
+runtime-owned admission control. At the acknowledged linearization point, no
+new flow or pending handshake may become an accepted stream. Already accepted
+flows retain their tuple/backend, data, FIN behavior and lifetime references.
+Selected new SYNs are processed without a listener so the live stack returns
+RST; they allocate no stream, ID or backend task. Unknown/unselected traffic
+retains its typed rejection. Pending handshakes abort without discarding queued
+output or allowing a socket slot to be reused for a different tuple.
+
+One command/result reservation bounds queued work and unread acknowledgements.
+A successful queue admission owns the command even if its observer disappears;
+timeout, cancellation and owner loss end only that wait. The retained receipt
+can be waited again and is joined once. The runtime processes queued commands
+before new ingress, and acknowledges active/retained flow counts after applying
+quiescence. Repetition is idempotent, with no resume operation in this slice.
+Dropping all admission senders disables that command branch without a hot loop;
+it does not close the networking service. Explicit shutdown ownership remains
+separate and retains its existing owner-loss behavior.
+
+Quiescence is not shutdown, drain completion, route retirement or OS authority.
+The supervisor still must drain/cancel accepted streams and pending output,
+retain route/response grace references, remove acknowledged owned capture state,
+then stop/join packet and stack tasks. Counts in one acknowledgement alone do
+not prove those barriers. One fixed command and completion plus their retained
+reservation/waker metadata are bounded separately from packet payload capacity.
+
+### Published capture policy and lifetime observation
+
+A host runtime publishes a read-only reference to its allocated immutable
+prefix/backend mapping, ingress channel, quiescence state and shared flow
+lifetime accounting. Only runtime construction creates it; native drivers may
+inspect canonical entries and compare runtime identity, but cannot construct
+it from serialized records or modify its counters. It proves allocated handler
+publication, not that a task has been scheduled or that networking is ready;
+the supervisor must retain/start packet and runtime owners before capture.
+
+The reference holds only a weak ingress sender, so metadata cannot keep the
+packet-input owner alive. Publication ends when the runtime stops, the last
+ingress producer disappears or its receiver closes.
+Quiescence is observed with acquire/release ordering after admission stops.
+Retained flow count includes driver, pending/queued and application stream
+ownership, and remains observable after runtime cancellation. Native retirement
+requires quiescence and zero retained references; zero alone is not a barrier
+while new admission is possible. The reference cannot remove OS state or bypass
+response grace, packet drain or verified native ownership. Its private runtime
+identity distinguishes two runtimes using the same policy. Payload queues stay
+unchanged;
+its fixed references/counters are separately bounded metadata.
+
+### Bounded native IPv4 route inventory
+
+The read-only route inventory runs synchronously in a retained native worker
+under the caller's cancellation and absolute deadline (at most 30 seconds).
+It requests all IPv4 tables, retains at most 8192 compact entries, and accepts
+at most 64 datagrams / 16384 messages. Each datagram is bounded to 32768 bytes,
+with a one-byte oversize sentinel and a verified kernel receive queue of at
+most 65536 bytes. Parsing retains one bounded upstream message at a time.
+There are no tasks, subprocesses, name lookups, mutations or retries.
+
+A successful result requires a correlated kernel unicast multipart dump and
+terminal zero-code Done. Truncation, interruption, overrun, malformed
+correlation or capacity exhaustion returns an error without a partial result.
+Entries retain canonical destination, table, output interface, metric, source
+preference, gateway, protocol, scope and kind as adapter-owned values. Extra
+selectors, flags or attributes make an entry ineligible for exact ownership
+comparison; they never disappear from conflict inspection. Ambiguous or
+unrepresentable destination/table metadata rejects the whole inventory.
+Debug output omits route metadata.
+
+This is a bounded observation, not a consistent snapshot, policy-rule proof,
+route ownership token or authority to publish/delete routes. A future driver
+must subscribe before inspection, validate rules and conflicts, journal intent,
+apply exclusive changes, await ACKs, compare fresh exact metadata and commit
+ownership before reporting capture readiness. Retirement must also honor
+quiescence and retained flows.
+
+### Initial IPv4 policy-rule admission observation
+
+The initial capture driver supports only the ordinary three unconditional IPv4
+lookup rules: priority 0/table 255, priority 32766/table 254, and priority
+32767/table 253. A complete bounded rule dump reports whether exactly this
+layout was observed. Additional/duplicate rules, selectors, suppression, flags
+or actions make the layout unsupported; no rule is changed or ignored to make
+a host fit. Missing priority on the local rule represents its kernel default
+of zero. A matching Table attribute must agree with a nonzero header table.
+Protocol is origin metadata only. SuppressPrefixLen equal to u32::MAX means
+no prefix suppression; any other value is unsupported. Duplicate comparison
+attributes and malformed family/length/table metadata reject inspection.
+
+Inspection shares the retained-worker multipart transport, 30-second maximum
+caller deadline, cancellation/owner loss, 32 KiB datagram, 64 KiB kernel queue
+and 64-datagram bounds. At most 64 rules plus terminal Done are admitted, with
+constant retained counters/bitset and one bounded parsed message. There are no
+background tasks, retries or host mutations. Debug contains only counts and
+layout classification. Concurrent changes invalidate observations; subscribe
+before inspection and freshly recheck around journaled capture publication.
+This classifier is not snapshot consistency, authorization to mutate rules,
+capture readiness or support for custom policy routing.
+
+### Initial journaled static IPv4 capture batch
+
+After creating the packet port, the retained TUN owner can publish the complete
+immutable IPv4 policy of one allocated host runtime (at most 4096 prefixes).
+The caller must start and retain the real runtime/packet owners first; the
+publication observation alone proves allocation, not task scheduling. No
+backend dispatch or connected readiness is inferred from capture publication.
+The owner retains the same runtime identity through failures and retirement.
+
+Admission requires the ordinary IPv4 rules and no overlapping local-table
+route or foreign main/default route at equal or greater specificity. Unknown
+rules fail as unsupported; conflicts preserve existing state before mutation.
+A bounded change subscription precedes inspection. Journal the full batch as
+Routing before adding any route; add each main-table static unicast link-scope
+route exclusively with destination, original TUN index and an instance-derived
+high-bit metric. Each mutation requires its correlated ACK, without replay.
+After all additions, subscribe afresh, recheck the complete batch/rules/link/
+address and a quiet queue, commit Captured, then check the queue again. Expected
+own-change notifications never stand in for fresh post-mutation verification.
+The retained monitor must be supervised; any later change or uncertainty
+invalidates capture readiness. No race-free kernel transaction is claimed.
+
+Native delivery categories describe the last request, not the entire batch.
+Partial or uncertain mutation leaves sticky failure, the full durable intent,
+the original device and runtime observation retained. No automatic retry,
+direct fallback or deletion follows. Withdrawal requires runtime quiescence
+and zero retained flows, with caller-owned packet/grace draining. Journal
+RoutesRetiring, inspect each exact recorded route key before deletion, preserve
+changed/foreign keys, await each deletion ACK, and verify absence before clearing
+the batch. Missing keys allow idempotent cleanup; different metadata at the same
+prefix/metric is a conflict. Explicit TUN close refuses an attached capture
+batch, even after an error, until withdrawal succeeds. Drop/crash still closes
+the original nonpersistent descriptor; restart reconciliation remains required.
+
+WTUN version four retains the 160-byte header and adds up to 4096 eight-byte
+canonical IPv4 prefix entries. Header bytes 140..142 hold count, 144..148 the
+metric, with remaining reserved bytes zero. Entries contain address, prefix
+length and three zero bytes in policy selection order. The maximum payload is
+32928 bytes. Legacy versions remain conservatively readable; only Retired
+permits fresh allocation. Routing/Captured/RoutesRetiring require a nonempty
+batch, address and device identity. Retiring/Retired may retain batch history;
+recorded data alone never authorizes touching a named/reused device or route.
+
+### Controlled traffic through journaled static capture
+
+The native application fixture now publishes its actual selected /32 through
+the retained production capture owner, rather than an `ip route add` command.
+The real runtime task is retained before publication, and native publication
+is joined outside the cancellable packet loop. Capture changes are supervised
+while kernel TCP traverses the production host, protected connector, SOCKS5 and
+relay adapters. The original numeric destination and exact request/response
+bytes remain asserted.
+
+The fixture quiesces after accepting its one stream, verifies that withdrawal
+rejects its still-live flow reference, then completes duplex data and FIN.
+After the controlled rejected SYN, joined relay and zero retained flows, it
+continues packet handling until a bounded two-millisecond output quiet interval.
+It joins native withdrawal before stopping the still-published runtime mapping.
+This controlled quiet interval is not a general kernel drain guarantee or DNS
+response grace policy. Error-driven forced flow draining, uncertain mutation
+recovery and the production service supervisor remain separate gates.
+
+### Explicit flow cancellation with retained capture mapping
+
+The admission controller also accepts an explicit `cancel_flows` command for
+error/deadline shutdown. It shares the one-command/unread-result reservation,
+retained receipt, wait cancellation and observer-loss semantics of quiescence.
+It first stops new admission, then cancels all driver flows and pending
+handshakes, drops driver-owned packet queues and retains the live interface,
+policy, input/output owners and reset handling. Existing accepted I/O wakes
+with Interrupted. No application payload is replayed or handed to another
+backend. Repeating the command does not restore admission or double-count
+canceled flows.
+
+Completion reports zero active driver flows but may report retained queued or
+application stream handles. The supervisor must cancel/join relays and release
+unread accepted streams; those references remain charged until their last drop.
+Already handed-off packets and in-flight native I/O remain supervisor-owned.
+`Egress::discard_pending` discards at most one configured queue capacity without
+closing the receiver or stopping the runtime. It is a bounded cleanup tool, not
+a kernel delivery/drain acknowledgment or DNS response-grace barrier. Only after
+flow references and packet/grace work retire may the supervisor withdraw native
+capture and stop the handler. No CLI state or authenticated command is added.
+
+### Native recorded-owner process observation
+
+A context can inspect the process identity in a recorded owner only after fresh
+runtime/boot/namespace/process revalidation. A different boot is reported as
+PreviousBoot; foreign namespaces or conflicting current-instance ownership fail
+without interpreting foreign PID numbers. Current identity is Alive. For a
+previous instance in the same scope, open a native close-on-exec PIDFD and poll
+without waiting. ESRCH or a terminated process descriptor reports Exited;
+otherwise read the bounded verified-procfs stat and compare start ticks. A
+changed start identifies PID reuse. Missing/unreadable evidence while the PIDFD
+remains live is uncertainty, never process death. No signals are sent.
+
+The operation has no mutation, retries, tasks, subprocesses or caller paths. It
+retains one transient PIDFD plus fixed procfs/stat handles and at most 4097 stat
+bytes; existing native-context revalidation costs also apply. Run it in a
+retained native worker: synchronous filesystem/syscall waits have no hard
+cancellation guarantee. PID numbers are interpreted only in the verified PID
+namespace. This is an observation, not authority to delete or adopt a recorded
+TUN/route. Recovery still needs protected journal comparison, proven object
+absence, fresh request checks and committed retirement.
+
+### Abandoned initial TUN journal retirement
+
+Recovery runs under a fresh native context/runtime lease in a retained worker.
+It reads only the fixed protected network journal, decodes the bounded WTUN
+record and compares native owner scope/process evidence. No record and an
+already Retired record are explicit idempotent observations. A live owner,
+foreign same-boot namespace, conflicting instance or uncertain evidence blocks
+retirement without changing the journal or host state.
+
+For a departed/reused same-boot owner, a recorded interface index must be absent
+and all recorded main-table prefix/metric keys must be absent on every current
+interface. Reused/foreign objects and changed surviving route keys are preserved
+as conflicts. Prepared intent with no recorded index relies on the private,
+nonpersistent descriptor/retained-lease invariant after verified process death.
+A different native boot ends old kernel ownership; current objects with reused
+identifiers are foreign and are never inspected for deletion or adopted.
+
+After fresh context/request checks, commit only the Retired journal stage under
+its observed revision. Preserve the old bounded identity/prefix history. Never
+send a link/route deletion or open a named TUN during this recovery. Pending or
+uncertain storage remains blocked until explicit protected journal inspection/
+resync/discard; staged data is never promoted. Caller cancellation/expiry before
+commit changes nothing, and commit uncertainty is surfaced. Filesystem waits
+still have no hard cancellation guarantee, so native jobs must be retained and
+joined. This operation does not implement desired-state restart, control-socket
+recovery, resolver recovery or connected readiness.
+
+## Ordinary-client credential file reader
+
+`warper_config::credential::read_secret(&Path) -> Result<Secret<String>, Error>`
+performs synchronous Unix file I/O with the client's current effective UID.
+It never consults sudo environment fields, changes credentials, expands paths,
+connects to a backend or approves service installation. Schema path resolution
+precedes this call. Privileged handlers must never call it on RPC paths.
+
+Open nonblocking, then inspect the descriptor: require a regular file owned by
+that UID or root with no group/other permissions. A symlink is allowed because
+validation and reads refer to the opened file. Bound input to 16 KiB including
+an optional final newline, with one overflow sentinel; metadata alone is not
+size authority. Compare descriptor identity, UID/GID, mode, length and mtime/
+ctime including nanoseconds after reading. Observed changes reject the import;
+this is not an exclusive lock or a guarantee against concurrent writers.
+
+Remove exactly one final LF or CRLF, require nonempty UTF-8, and retain every
+other character. Return only redacted secret Debug output and typed errors
+without file paths, contents or underlying OS error text. Backend-specific
+validation follows import. The reader allocates at most a bounded input buffer
+and its UTF-8 result; callers account for retained copies separately. Filesystem
+waits have no hard wall deadline: asynchronous clients retain/join a blocking
+worker rather than canceling and losing its task. Protected serialization,
+credential references, storage and the import CLI remain separate work.
+
+## Initial managed SOCKS5 snapshot
+
+`warper_config::managed::Snapshot::import(source, paths, platform)` runs in the
+ordinary native client. Validate schema and at most 64 SOCKS5 backends before
+opening selected password files; other backend imports return typed unsupported
+capability. Resolve password files with the credential reader, then enforce
+SOCKS5's nonempty 255-byte UTF-8 user/password limits. No service or network
+mutation occurs. Import is synchronous and retains the reader's worker rules.
+
+`Snapshot::encode() -> Result<Secret<Vec<u8>>, Error>` emits a bounded `WMCF`
+version-one envelope; `Snapshot::decode(bytes, platform)` performs only bounded
+in-memory validation and opens no files. The 16-byte big-endian header contains
+magic[4], version u32=1, normalized YAML length u32, credential count u16 and
+reserved u16=0. Follow with that YAML, then ascending unique credential entries:
+protocol index u16 (zero-based), user byte length u16, password byte length u16,
+reserved u16=0, then UTF-8 user and password bytes. Each length is 1..255; every
+index must name an existing SOCKS5 backend. The whole envelope is at most 1 MiB.
+Reject unknown versions, reserved fields, duplicate/out-of-order entries,
+truncation, trailing data and over-limit input before using it.
+
+The configuration section materializes every root default, backend ID and
+normalized routing/endpoint value in deterministic key order, without user,
+password or any file path. Decode requires exact canonical representation under
+version-one semantics before applying the separately bounded credential table.
+Never promote decoded values into networking readiness; service preflight still
+checks the currently supported static IPv4 slice and native resource budget.
+`Snapshot::config()` exposes the reconstructed typed configuration only to native
+code. Debug and errors redact both sections; neither encoded snapshots nor this
+in-memory accessor is an observable configuration RPC. Protected atomic storage,
+administrative installation, generation fencing and redacted views remain
+separate boundaries. Version-one defaults must remain stable; incompatible
+normalization/default changes require a new version or explicit migration.
+
+## Offline owner-intent recovery
+
+Offline owner-intent recovery uses a uniquely borrowed runtime lease rather
+than a manufactured control peer. The lease must be freshly acquired and must
+never have attempted endpoint publication. Its existing initial-user-namespace,
+actual UID and protected-lock validation supplies administrative authority.
+Inspection pins exactly the same bounded pending/committed objects as online
+recovery; discard repeats every unchanged-object and committed-policy check.
+Neither path promotes staged enrollment or removes committed owner policy.
+Publication permanently invalidates offline recovery through that lease even
+after its endpoint is dropped. A stopped-service command must reacquire the
+persistent flock before inspecting or discarding pending owner intent.
+
+`tun::inspect_abandoned` reads the protected committed network journal and
+checks the same recorded process, boot, interface absence and capture-route
+absence conditions as retirement. It reports NoRecord, Retired or Retirable
+without journal writes or kernel mutation. Pending/unknown state, live owners,
+foreign route keys, cancellation and unavailable evidence remain errors.
+Retirement independently rereads and revalidates before its revision-fenced
+journal write; an inspection result is never a mutation capability. The offline
+coordinator may apply the same read-only validation to the committed snapshot
+pinned by a pending token before discarding any unpublished state.
+
+The stopped-service `linux::recovery::inspect` coordinator acquires the actual
+exclusive native runtime lease before reading fixed owner, connection,
+configuration and network stores. It retains at most one bounded pending token
+per store, validates the corresponding committed snapshots, and reports only
+pending booleans plus endpoint/network retirement classifications. It performs
+no snapshot replacement, discard, sync or kernel mutation. Instance-lock
+creation during acquisition is permitted; the persistent inode is retained.
+Native queries share five seconds; synchronous filesystem reads retain their
+documented kernel-wait limitation. The synchronous command starts no executor
+or service tasks, has no user-selected path and releases all pins on return.
+
+Stopped-service repair performs that complete preflight before external changes.
+It retains the four pending tokens and exclusive runtime lease, retires only
+verified stale endpoint publication, discards unchanged unpublished intent,
+resyncs unchanged committed records, and reruns native ownership/absence checks
+before revision-fenced journal retirement. It never promotes pending bytes,
+changes committed owner/configuration/connection intent, starts a backend or
+deletes an inferred kernel object. Owner resync requires the same exclusive
+never-published lease and checks the pinned committed file before and after
+fsync, followed by directory sync. Partial failure is reported with its typed
+primary error and inspection guidance; completed safe steps are not rolled back
+or replayed automatically. All pins and the runtime lease survive until the
+repair operation returns.
+
+Online administrative recovery uses the authenticated serialized controller.
+WCTL v2 InspectRecovery (6, empty body) returns RecoveryReply (0x8006, u16):
+bit 0 means pending intent, bit 1 means recovery required, and bit 2 means live
+or retained service work prevents repair. No other bits are valid. Recover (9,
+empty body) returns Recovered (0x8009, empty body) only after completed repair.
+Older peers reject unknown operations; clients never retry automatically or
+fall back to an offline privileged path. Hello precedes recovery, but Status
+is not required because uncertain stores can prevent ordinary status reads.
+
+Repair refuses active/pending/retained network ownership. Before mutation it
+pins pending records, validates committed configuration and native ownership,
+and prepares operation-history/control admission changes. It then discards
+unchanged unpublished intent, resyncs committed records, refreshes approved
+in-memory configuration and retires proven-ended network ownership. It preserves
+accepted connection intent and never starts a backend. Admission changes are
+applied before acknowledgement. Root peer authorization is renewed at handlers
+and persistence boundaries. Policy corruption/unavailability can stop the daemon;
+unavailable service or retained ownership requires explicit stopped-service
+recovery, never a client-side bypass. Partial errors preserve typed causes and
+require fresh inspection, without replaying accepted payload or operations.
+
+Foreground diagnostics import normalized configuration with the same validated
+invoking-account materializer as the client. Only the daemon binary's
+presentation layer reuses that client helper; core service modules consume
+normalized bytes and accept no user paths. Before creating an async runtime,
+diagnostic preparation validates the candidate and all fixed protected stores,
+requires the exclusive instance lock and rejects pending state. It can retire
+proven stale publication/journal ownership but never discards pending state or
+changes managed configuration, enrollment or accepted connection intent.
+
+The diagnostic lease is explicit in-memory approval with generation zero,
+meaning no managed generation; it is never exposed through a control endpoint
+or accepted as a durable managed approval. It retains the same context and
+exclusive configuration ownership guard as managed leases. Diagnostics use the
+production Network supervisor, physical protection, TUN journal, queues, flow
+handling and cancellation/drain deadlines. No local control endpoint is
+published. SIGTERM/SIGINT/SIGHUP stop the foreground engine; loss of signal
+observation preserves its primary error alongside cleanup failure. Presentation
+output occurs before networking starts or after it stops, so output backpressure
+cannot stall forwarding. Verbose/debug summaries contain aggregate counts only.
+Synchronous import/bootstrap filesystem waits retain their documented absence
+of a hard kernel deadline. Service/diagnostic exclusion uses the same persistent
+flock inode; diagnostic operation never clears a saved connection intent.
+
+## Linux native import process
+
+The explicitly elevated CLI materializes configuration before starting its async
+executor. It validates the invoking sudo identity against the OS account
+database, then executes its own binary through the fixed `/usr/bin/setpriv`
+helper with that UID, primary GID, initialized account groups and
+`--no-new-privs`. The environment is cleared. No shell or user-selected executable
+is involved. The materializer verifies real/effective credentials and the exact
+account group set before path resolution or source reads. Root without a sudo
+identity imports as root. Required util-linux helper failure is an error.
+
+The private stdout pipe uses a 12-byte big-endian header: magic `WMIM`, version
+u16=1, status u16 and payload length u32. Status zero carries one canonical WMCF
+snapshot of at most 1 MiB. Error statuses 1 through 7 respectively mean source,
+schema, credential, size, identity, unsafe child and unsupported capability;
+they carry no payload.
+Reject unknown statuses, versions, truncation, trailing bytes and excess length.
+The child rejects stdout that is not a pipe. The parent bounds reads, validates
+the snapshot without opening paths, and always reaps the child; failed reads
+trigger termination before reaping. Cleanup errors retain the primary failure.
+Source/account I/O is synchronous without a hard filesystem deadline.
+
+After native service authentication, administrative CLI commands obtain a fresh
+status and compare the corresponding configuration generation or owner revision.
+Installation sends normalized bytes, never source paths. Enrollment sends an
+optional UID; UID 0 remains the administrative principal after owner removal.
+Administrative mutations are submitted once. A lost or invalid acknowledgement
+requires inspection before retrying; it never triggers automatic resubmission.
+
+## Protected managed configuration storage
+
+The Linux `warper_control::runtime::managed::ManagedStore` is synchronous fixed
+storage under the retained runtime lease, not an installation handler. It opens
+only root-owned `/etc/warper` mode 0700 beneath verified root-owned nonwritable
+parents, without symlink or mount traversal into the final directory. Creation
+belongs to installation. It never searches home directories or accepts a path.
+
+Reuse the network journal's bounded atomic storage mechanics with distinct
+fixed slots, magic and limits; do not change its on-disk format or capacity.
+The managed slot uses `configuration` and `configuration.pending`, and a `WCFG`
+version-one 24-byte envelope: magic[4], version u32=1, generation u64>0, payload
+length u32, reserved u32=0, followed by 1..=1 MiB of managed data. Files are
+root-owned regular mode 0600, single-link, without symlink or mount traversal.
+Payload semantics/`WMCF` decoding belong to service preparation before mutation.
+
+`read/inspect/replace/resync/inspect_pending/discard_pending` retain the network
+journal's revision comparison, inode/metadata/byte observation, exclusive staging,
+fsync/rename/fsync, uncertain-commit and explicit recovery rules. Tokens belong
+to one opened slot; a network token cannot discard managed state or vice versa.
+Pending bytes are never promoted. A stale observation or foreign replacement is
+preserved as conflict, including changed parent directories. Debug/errors redact
+all data. Each slot's input/pending/readback allocations are bounded by its own
+capacity and must be included in the eventual supervisor's native budget.
+
+Service handlers must freshly authorize administrators, validate managed data,
+serialize installation while disconnected, and fence the expected generation
+before calling replacement. The low-level runtime lease is not peer enrollment
+or administrative installation authority. No handler or CLI becomes reachable
+merely because this storage primitive exists. Blocking calls retain their worker
+and runtime references after observer cancellation; filesystem waits have no hard
+wall deadline. Native privileged evidence is required separately from local
+fixed-root filesystem tests.
+
+## Linux approved configuration ownership
+
+`warper_service::linux::configuration::Configurations` owns the fixed managed
+store and an immutable approved snapshot under `Arc<Context>`. A single-owner
+claim belongs to the exclusive runtime lease and is retained by the manager and
+all approved configuration leases. Dropping/reopening a manager cannot bypass
+outstanding leases, even through another native context sharing that runtime.
+The claim releases only after its final guard drops and keeps the runtime lock
+held throughout. All operations
+are synchronous retained-worker operations; no background task or network is
+started here. Open decodes WMCF and runs pure service preflight before exposing
+stored material. Missing data is generation zero with no default configuration.
+
+Each `lease()` first revalidates protected storage, then returns a cloneable
+`ConfigurationLease` retaining its approved generation, typed data and native
+context/runtime ownership. The
+supervisor must retain this lease from preparation through complete network
+retirement/cleanup, including failed startup and observer cancellation. Any
+outstanding lease makes installation Busy. Mutable manager access serializes
+admission; when only its own Arc remains, no external holder can begin a new
+clone. Dropping a client does not release a supervisor's lease.
+
+`install(peer, expected_generation, encoded)` revalidates native context and
+freshly authenticates the actual Unix peer as administrator before data handling.
+It refuses active leases, rechecks the observed protected generation and expected
+revision, decodes canonical managed data and runs pure service preflight before
+replacement. Only confirmed durable replacement publishes a new cached snapshot
+and generation. No raw paths are accepted. Uncertain storage stays blocked for
+explicit recovery, without claiming the proposal was applied or replaying it.
+`status()` and new leases recheck native/storage identity; external changed data
+is never silently adopted. This is a native installation boundary, not a control
+session handler, native-budget approval or connected/readiness declaration.
+
+## Linux authenticated control sessions
+
+`warper_control::session::Session` owns one nonblocking Tokio Unix stream, a
+nonzero service instance ID and an encoded-message ceiling. Construction does
+not publish a listener or prove a protected endpoint; the service retains its
+runtime lease and authenticates endpoint admission before creating sessions.
+UID-only sessions remain Linux-only; macOS requires its native identity gate.
+
+`receive(policy, deadline, cancellation)` freshly authenticates Observe access before reading
+one bounded frame, then retains it without dispatch. After reading, the service
+loads current protected policy again and calls synchronous `authorize(policy)`;
+that checks actual kernel identity and command access before exposing the frame.
+Hello must be first and occur once. Request IDs strictly increase within one
+connection; retries use a new frame ID with the original operation identity.
+Unsolicited replies, missing/repeated Hello or duplicate/decreasing IDs poison
+the session. Only one frame/request is pending per session.
+
+Hello, Status and OperationStatus require Observe; Connect/Disconnect require
+Operate; Enroll, InstallConfig, InspectRecovery and Recover require Administer. An
+`AuthorizedRequest` records the verified role and owns the redacted frame; it is
+not durable authority. A handler that queues/waits before mutation must reload
+protected policy and authorize again at its commit boundary. Global client,
+request, native-worker and retained-frame budgets belong to service admission.
+
+`respond(frame, deadline, cancellation)` requires the active request ID and appropriate reply
+kind (or ErrorReply). HelloReply must echo the session's actual instance ID.
+Successful HelloReply opens the session for commands; a failed Hello closes it.
+No next request may be read until its response is finished. Every frame read/
+write has an injected total deadline/cancellation receiver and encoded bound.
+The stream is moved out before asynchronous I/O: dropping an in-flight future,
+partial failure, expiry or cancellation closes it rather than permitting resume
+or payload replay. Authorization/protocol failures also close the session.
+Closing a control stream does not cancel service work or release networking.
+
+This boundary supplies framing, handshake, correlation and fresh-policy dispatch,
+not concrete command handlers, a daemon executable or client availability proof.
+
+### Linux control admission
+
+The service constructs one `admission::Admission` from a pure validated `Plan`
+and uses `Session::admitted` for every accepted client. The primitive
+`Session::new` remains available for callers that provide their own admission.
+Client and request ceilings are independently capped at 64. The encoded message
+ceiling is between 68 bytes and the wire maximum. Checked arithmetic reserves
+46 encoded reply bytes per client, then divides the remaining configured
+control buffer budget into whole maximum-message request reservations. At
+least one request must fit; effective request concurrency may be below the
+configured ceiling (seven with the current defaults).
+
+A non-cloneable client permit retains its admission owner. `receive` verifies
+Observe access, then acquires a request reservation before reading a header or
+allocating its body. Waiting shares the frame's absolute deadline and
+cancellation; cancellation/expiry/abandonment closes the session. Admission
+closure wakes waiters and rejects new permits without canceling admitted work.
+The reservation moves with `AuthorizedRequest`, so dropping the client session
+cannot release capacity while a retained worker still holds its frame. Failed
+framing/authorization releases the reservation. Handlers move the whole request
+into retained work and avoid unaccounted copies of its borrowed body.
+
+The buffer calculation covers logical encoded request buffers and one bounded
+reply per client. It does not claim a process RSS limit: allocator overhead,
+Unix socket kernel queues, protected storage copies, operation records, native
+workers and service metadata need separate reservations in the supervisor.
+Handlers must construct only one bounded reply at a time. This boundary does
+not supply event subscriptions or operation-history admission.
+
+Reconfiguration updates that same admission owner; it never creates a second
+quota pool. Each outstanding frame retains its original encoded-byte charge and
+its client lease through queued/native work, even if the session disconnects.
+A smaller plan admits nothing beyond its client, request and byte limits until
+old charges drain. Previously admitted buffers remain bounded by the previous
+plan and their original deadlines; a smaller limit does not claim to free or
+cancel them. An expansion accounts for old and new charges together. Session
+readers obtain their next frame size from the actual request reservation rather
+than caching the size from connection admission. Reply capacity remains reserved
+for the entire client lease. Closing or poisoned accounting cannot reopen through
+reconfiguration or a late release.
+
+## Linux retained packet pump
+
+`linux::packet::Pump` owns the original `Arc<PacketPort>`, host ingress and host
+packet egress. Its owner runs the pump in one retained task and joins it before
+retiring the native TUN owner. The pump polls an independent reader and writer
+inside that task; neither direction spawns detached work. `run` borrows the
+pump, so stopping packet I/O retains the host output receiver until explicit
+runtime shutdown is joined. Only then may the supervisor drop the pump. Each
+yields after at most eight ready packets so sustained I/O cannot starve its sibling or
+supervisor cancellation. A failure in either
+direction cancels and joins the other, preserving a secondary failure alongside
+the initial cause and bounded counters. Dropping the external cancellation
+sender is an ownership failure; explicit cancellation is an orderly stop.
+Dropping the run future is not a substitute for joining its task.
+
+The reader retains one 1281-byte sentinel buffer, passes at most 1280 bytes to
+bounded host ingress, and counts queue-full drops without retry or direct
+forwarding. Read waits renew after a 30-second idle deadline; idle is not a
+network failure. All other native read failures stop the pump. The writer owns
+at most one output packet, performs one original-device send with a positive
+write deadline no greater than 30 seconds, and never retries an uncertain or
+failed send. Cancellation may discard that pending packet, which is counted.
+Closed host ingress/egress and native errors surface to the supervisor.
+
+The existing `Plan::buffers().tun_io` reservation covers the sentinel buffer and
+one pending output packet; fixed counters and task metadata need supervisor
+accounting. The pump reports captured/sent bytes and packets, queue-full drops,
+discarded output and a fixed logarithmic write-wait histogram. It retains no
+payload in diagnostics or unbounded per-packet timing samples.
+
+The supervisor keeps this pump and the runtime mapping alive during flow
+quiescence and route withdrawal. After the native withdrawal acknowledgment it
+can cancel/join packet work, then stop/join the runtime and retire the TUN. A
+pump stop does not withdraw routes, prove flow drain, declare connected
+readiness or provide a general shutdown barrier on its own.
+
+## Linux network supervisor
+
+`linux::network::Network` is constructed from an approved configuration lease.
+It derives its context from that same lease, validates the pure networking plan
+and reserves one native worker before mutation. Phase 1 startup and shutdown
+budgets must be positive and no greater than 30 seconds. The supervisor retains
+the configuration through all native work, packet/runtime tasks and cleanup.
+Its cancellation channel belongs to the service, never a client connection.
+
+Startup journals and activates a fresh TUN, prepares protected physical backend
+paths, instantiates the admitted stack/relays, and polls both retained packet
+and runtime tasks before publishing capture. A task that finishes during its
+first poll cannot acknowledge startup. Connected is published only after the
+native capture acknowledgment and a final live-task check. The service must
+continue supervising runtime, packet and capture-monitor failures afterward.
+Individual relay failures remain per-flow outcomes; worker failure stops the
+network owner. Relay-capacity exhaustion drops only the newly accepted stream
+and increments bounded rejection counters; it does not stop established flows.
+Selected-backend failure never retries traffic directly.
+
+All blocking transitions use one retained native task slot. Its result returns
+the original owner even on operation failure. Observer cancellation/expiry
+leaves the accepted native task in the supervisor; cleanup first joins it with
+an independent service deadline. Panic/lost native ownership requires recovery.
+An unresolved native task prevents releasing its runtime, packet or mapping
+owners. `Network` itself stays retained when cleanup cannot establish retirement;
+`cleanup` retries owned work without replaying application payload.
+
+Stop first quiesces admission. An explicit stop permits existing accepted flows
+to drain for at most one quarter of the shutdown budget; failure stops skip
+this grace.
+It then cancels remaining driver/relay flows, drops queued accepted streams and
+joins relay work within that first-half deadline. Capture withdrawal requires
+zero retained flow references and keeps the packet pump and mapping alive.
+Only after acknowledged withdrawal does cleanup stop/join packet work, stop/
+join the runtime, release the original packet port and explicitly retire the
+TUN. A failed withdrawal leaves those owners retained and admission quiescent.
+Reports preserve the initial failure and separate cleanup-stage failures.
+
+Each native result and asynchronous task completion retains its own approved
+configuration lease until joined. Backend connector ownership pins the same
+lease through every relay task. Emergency owner drop aborts async tasks but
+does not claim journaled cleanup or retirement.
+
+The supervisor owns at most two asynchronous owner tasks, one native job and
+the preflight flow ceiling of relay tasks. Payload buffers retain the existing
+plan reservation; physical TCP queues remain bounded by the connector's stream
+ceiling and verified per-stream queue limits. This component does not admit
+control clients, install configuration or persist Connect/Disconnect intent;
+the daemon controller composes those independent ownership budgets.
+
+## Linux control endpoint restart recovery
+
+New endpoint publication writes a fixed 160-byte WCTL version 1 intent. It pins
+the persistent lock's device/inode identity, a Prepared or Bound stage, and
+(for Bound) the socket pathname inode's full recorded metadata. Prepared is
+synced before bind; Bound is synced after final socket mode and before listen.
+Each owned verification also compares the expected intent bytes. Legacy empty,
+torn, unsupported or changed intent is not automatically adopted.
+
+`endpoint::recover(&mut RuntimeLease)` requires uniquely owned runtime access
+and a lease that has never attempted endpoint publication. Publication marks
+that lease permanently; extracting its Arc after listener drop does not replace
+fresh flock acquisition. Retained service/context work therefore prevents a
+fresh eligible owner. Recovery verifies protected paths, lock identity and the
+recorded socket metadata before removing only the proven stale objects. It
+never removes the persistent lock. A Bound record with an absent socket can
+finish interrupted retirement; repeated recovery without either object is a
+no-op. Prepared plus an existing unidentified socket, a socket without intent,
+legacy intent and any foreign metadata remain explicit recovery conflicts.
+
+`endpoint::inspect(&RuntimeLease)` applies the same protected-path, fresh-lease,
+intent and socket verification without unlinking or syncing objects. Its only
+successful observations are Absent and Retirable. Neither is a capability for
+later mutation: `recover` repeats all checks. Inspection rejects a lease that
+attempted publication and preserves unknown or changed state. The caller retains
+the instance lock throughout inspection; only its owner may attempt recovery.
+
+## Linux daemon composition contract
+
+The daemon composes the verified native controller, shared admission owner and
+network supervisor. One retained native-worker reservation owns the synchronous
+control actor for its lifetime. Bounded command/event channels have 64 slots;
+queued commands retain their authorized frame and client reservation. The actor
+blocks on its inbox rather than polling. The network supervisor owns its own
+single native worker. No client owns either worker or the network cancellation
+sender.
+
+Bootstrap acquires fresh runtime ownership, reconciles endpoint publication and
+network intent, then publishes the protected listener. Readiness of that actual
+listener drives acceptance through a cloned owned Unix listener. Its async
+adapter owns readiness bookkeeping without a raw-descriptor registration.
+Native work verifies protected endpoint metadata and authenticates each accepted
+peer before framing. The cloned listener closes before endpoint retirement.
+Each accepted stream retains
+one native peer descriptor for fresh authorization. Peer descriptors are dropped
+before their final client quota can release. Each session has one request/reply
+at a time and five-second absolute I/O deadlines. Session tasks are retained in
+a bounded join set; closing a session never sends Disconnect.
+
+Native dispatch executes durable actions before delivering their replies.
+Controller callbacks consume actual network readiness and joined outcomes;
+unknown cleanup keeps the original Network owner for an explicit cleanup retry.
+Historical operation success cannot be repurposed as current network readiness.
+Changed admission limits update the existing owner and preserve outstanding
+charges. The encoded-buffer limit does not claim to cap allocator overhead,
+protected configuration copies, kernel peer-owned queues or total RSS.
+
+Stopping closes admission, cancels and joins session tasks, signals the network
+owner, and wakes the native actor. Queued mutations are discarded after stop is
+observed; already executing work remains owned and joined. The daemon keeps
+receiving native completions while stopping so a bounded event channel cannot
+prevent shutdown. Listener references are released and endpoint retirement runs
+in retained native work only after task ownership is settled. A 35-second daemon
+stop budget covers the initial network deadline (at most 30 seconds) and control
+drain. Kernel filesystem stalls are not claimed interruptible. A deadline leaves
+pending ownership retained and returns a typed cleanup failure; it never reports
+successful cleanup or removes foreign state. Runtime/process termination is a
+separate final boundary and leaves durable recovery obligations explicit.
+
+### Linux lifecycle tracing
+
+The service's `telemetry::LifecycleLog` is a scoped `tracing` subscriber for
+fixed lifecycle event names only. It retains at most 64 static names in a ring;
+all event fields, unknown names, other targets and spans are discarded. Event
+recording uses `try_lock`, performs no I/O and counts contention/overflow with
+a saturating atomic loss counter. Its memory bound is independent of traffic
+volume and control admission. It does not retain payloads or configuration.
+
+`warperd service` and `warperd run` share network-supervisor transition events.
+The current-thread runtime installs the scoped dispatcher; native blocking
+workers do not emit lifecycle events. The executable writes the ordered tail
+and loss count only after the command returns and its asynchronous forwarding runtime stops.
+Uncertain native cleanup may still retain ownership and recovery obligations;
+writing diagnostics does not establish successful retirement.
+It preserves the primary error/exit classification if the diagnostic writer also
+fails; a writer failure after operational success produces a failure exit.
+Presentation may wait after shutdown, never during forwarding. This is shutdown
+tracing, not a live log stream. Bounded nonblocking desktop delivery remains
+Phase 5 and must preserve these data exclusions and loss semantics.

@@ -5,12 +5,21 @@
 //! Fixed Linux runtime ownership. No listener, enrollment or network mutation.
 //! The persistent lock name must never be unlinked during ordinary shutdown.
 
-use std::{fmt, io, os::fd::OwnedFd};
+use std::{fmt, io, os::fd::OwnedFd, sync::atomic::AtomicBool};
 
 use rustix::fs::{
     AtFlags, FileType, FlockOperation, Mode, OFlags, ResolveFlags, Stat, flock, fstat, open,
     openat2, statat,
 };
+
+pub mod client;
+pub mod connection;
+pub mod endpoint;
+pub mod enrollment;
+pub mod journal;
+pub mod managed;
+mod state;
+mod storage;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -51,6 +60,8 @@ pub struct RuntimeLease {
     directory: OwnedFd,
     lock: OwnedFd,
     owner: u32,
+    managed_claim: AtomicBool,
+    endpoint_bound: AtomicBool,
 }
 
 impl RuntimeLease {
@@ -129,6 +140,8 @@ impl RuntimeLease {
             directory,
             lock,
             owner,
+            managed_claim: AtomicBool::new(false),
+            endpoint_bound: AtomicBool::new(false),
         };
         lease.validate_state()?;
         Ok(lease)
@@ -217,20 +230,31 @@ mod tests {
         fs::{self, OpenOptions},
         os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink},
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Mutex, MutexGuard,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     use super::*;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+    // fork temporarily inherits even CLOEXEC descriptors until exec. Keep the
+    // kill/reap fixture from borrowing another test's flock during its release
+    // assertion. Production acquisition still reports contention immediately.
+    static FIXTURE_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 
-    struct Fixture {
-        path: PathBuf,
-        owner: u32,
+    pub(super) struct Fixture {
+        pub(super) path: PathBuf,
+        pub(super) owner: u32,
+        _process_spawn: MutexGuard<'static, ()>,
     }
 
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
+            let process_spawn = FIXTURE_PROCESS_LOCK
+                .lock()
+                .expect("serialize fixture descriptor inheritance");
             let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
             let path =
                 std::env::temp_dir().join(format!("warper-runtime-{}-{id}", std::process::id()));
@@ -244,10 +268,11 @@ mod tests {
             Self {
                 path,
                 owner: nix::unistd::geteuid().as_raw(),
+                _process_spawn: process_spawn,
             }
         }
 
-        fn acquire(&self) -> Result<RuntimeLease, Error> {
+        pub(super) fn acquire(&self) -> Result<RuntimeLease, Error> {
             let anchor = open(
                 &self.path,
                 OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -257,7 +282,7 @@ mod tests {
             RuntimeLease::acquire_at(anchor, self.owner)
         }
 
-        fn lock_path(&self) -> PathBuf {
+        pub(super) fn lock_path(&self) -> PathBuf {
             self.path.join("run/warper/service.lock")
         }
     }
@@ -479,5 +504,184 @@ mod tests {
         ] {
             assert!(!error.to_string().contains("warper-runtime-"));
         }
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::{
+        endpoint::{ControlEndpoint, Error},
+        tests::Fixture,
+    };
+    use crate::{OwnerPolicy, Role};
+    use std::{
+        fs,
+        io::{Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixStream},
+        sync::Arc,
+    };
+
+    #[test]
+    fn worker_ownership_keeps_the_instance_locked_after_listener_retirement() {
+        let fixture = Fixture::new();
+        let lease = Arc::new(fixture.acquire().unwrap());
+        let endpoint = ControlEndpoint::bind(lease.clone()).unwrap();
+        let worker_lease = lease.clone();
+        let (release, finish) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            finish.recv().unwrap();
+            worker_lease.revalidate().unwrap();
+        });
+        drop(lease);
+        endpoint.close().unwrap();
+        let contention = fixture.acquire();
+        let remained_locked = matches!(contention, Err(super::Error::AlreadyRunning));
+        drop(contention);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(
+            remained_locked,
+            "listener retirement must not release worker ownership"
+        );
+        drop(fixture.acquire().unwrap());
+    }
+
+    #[test]
+    fn endpoint_authenticates_local_peers_and_retires_only_owned_state() {
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        let policy = OwnerPolicy::new(Some(fixture.owner)).unwrap();
+        assert!(endpoint.accept(&policy).unwrap().is_none());
+        let mut client = UnixStream::connect(fixture.path.join("run/warper/control.sock")).unwrap();
+        let mut accepted = endpoint.accept(&policy).unwrap().unwrap();
+        assert_eq!(
+            accepted.role,
+            if fixture.owner == 0 {
+                Role::Administrator
+            } else {
+                Role::Owner
+            }
+        );
+        client.write_all(b"synthetic control data").unwrap();
+        let mut bytes = [0; 22];
+        accepted.stream.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"synthetic control data");
+        drop(accepted);
+        drop(client);
+        endpoint.close().unwrap();
+        assert!(!fixture.path.join("run/warper/control.sock").exists());
+        assert!(!fixture.path.join("run/warper/control.intent").exists());
+        assert!(fixture.lock_path().exists());
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        endpoint.close().unwrap();
+    }
+
+    #[test]
+    fn endpoint_denies_foreign_policy_before_payload_is_returned() {
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        let client = UnixStream::connect(fixture.path.join("run/warper/control.sock")).unwrap();
+        let policy = OwnerPolicy::new(None).unwrap();
+        if fixture.owner != 0 {
+            assert!(matches!(
+                endpoint.accept(&policy),
+                Err(Error::Peer(crate::Error::PermissionDenied))
+            ));
+        } else {
+            drop(endpoint.accept(&policy).unwrap());
+        }
+        drop(client);
+        endpoint.close().unwrap();
+    }
+
+    #[test]
+    fn endpoint_drop_preserves_uncertain_state_and_restart_never_deletes_it() {
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        drop(endpoint);
+        assert!(
+            matches!(ControlEndpoint::bind(fixture.acquire().unwrap()), Err(failure) if failure.primary == Error::Conflict)
+        );
+        assert!(fixture.path.join("run/warper/control.sock").exists());
+        assert!(fixture.path.join("run/warper/control.intent").exists());
+    }
+
+    #[test]
+    fn endpoint_retirement_preserves_replaced_or_changed_socket_and_intent() {
+        for name in ["control.sock", "control.intent"] {
+            let fixture = Fixture::new();
+            let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+            let path = fixture.path.join("run/warper").join(name);
+            fs::rename(&path, fixture.path.join("retired")).unwrap();
+            fs::write(&path, b"foreign fixture state").unwrap();
+            assert!(endpoint.close().is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"foreign fixture state");
+        }
+        let fixture = Fixture::new();
+        let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+        let path = fixture.path.join("run/warper/control.sock");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(endpoint.close(), Err(Error::ChangedState));
+        assert!(path.exists());
+        assert!(fixture.path.join("run/warper/control.intent").exists());
+    }
+
+    #[test]
+    fn existing_intent_and_socket_objects_are_preserved_before_publication() {
+        for name in ["control.sock", "control.intent"] {
+            let fixture = Fixture::new();
+            let path = fixture.path.join("run/warper").join(name);
+            fs::write(&path, b"foreign fixture state").unwrap();
+            assert!(
+                matches!(ControlEndpoint::bind(fixture.acquire().unwrap()), Err(failure) if failure.primary == Error::Conflict)
+            );
+            assert_eq!(fs::read(path).unwrap(), b"foreign fixture state");
+        }
+    }
+
+    #[test]
+    #[ignore = "controlled endpoint publication/admission/retirement workload"]
+    fn endpoint_publication_workload() {
+        let fixture = Fixture::new();
+        let policy = OwnerPolicy::new(Some(fixture.owner)).unwrap();
+        let before_cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let started = std::time::Instant::now();
+        let mut waits = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let before = std::time::Instant::now();
+            let endpoint = ControlEndpoint::bind(fixture.acquire().unwrap()).unwrap();
+            let mut client =
+                UnixStream::connect(fixture.path.join("run/warper/control.sock")).unwrap();
+            let mut accepted = endpoint.accept(&policy).unwrap().unwrap();
+            client.write_all(&[1]).unwrap();
+            let mut byte = [0];
+            accepted.stream.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [1]);
+            accepted.stream.write_all(&[2]).unwrap();
+            client.read_exact(&mut byte).unwrap();
+            assert_eq!(byte, [2]);
+            drop(accepted);
+            drop(client);
+            endpoint.close().unwrap();
+            waits.push(before.elapsed().as_nanos());
+        }
+        waits.sort_unstable();
+        let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let cpu_ns = (i128::from(after.tv_sec) - i128::from(before_cpu.tv_sec)) * 1_000_000_000
+            + i128::from(after.tv_nsec)
+            - i128::from(before_cpu.tv_nsec);
+        let elapsed_ns = started.elapsed().as_nanos();
+        let memory = fs::read_to_string("/proc/self/status").unwrap();
+        let peak = memory
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .unwrap();
+        println!(
+            "endpoint_publication scope=private_fixture lifecycle_count=100 clients=1 payload_bytes=200 elapsed_ns={elapsed_ns} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} failures=0 kernel_drops=unmeasured {peak}",
+            waits[49], waits[94], waits[98]
+        );
+        assert!(!fixture.path.join("run/warper/control.sock").exists());
+        assert!(!fixture.path.join("run/warper/control.intent").exists());
+        assert!(fixture.lock_path().exists());
     }
 }

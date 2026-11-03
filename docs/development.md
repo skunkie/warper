@@ -14,13 +14,26 @@ The current repository contains contracts, development infrastructure,
 experimental Rust stack probes, and the first production core static-routing
 policy, offline configuration paths, and native Unix account lookup/bounded
 YAML decoding/schema validation in `warper-config`. The thin `warper-cli`
-package implements offline check-config and help/version. Runtime preflight
-and service control remain unimplemented. There is no production networking
-service yet.
-`warper-control` contains the first Linux kernel peer/authorization boundary;
-it neither starts a control listener nor enrolls owners or changes service state.
+package implements offline check-config, authenticated Linux status/lifecycle
+control and elevated managed import/owner enrollment. `warperd service` runs the
+foreground Linux daemon with static IPv4 SOCKS5 TCP forwarding. The
+[Linux source installation](linux-service.md) includes a systemd unit; installed
+idle-unit lifecycle acceptance remains separate from the native daemon traffic gate.
+`warper-control` supplies kernel peer authentication, protected persistence,
+framing and bounded local sessions. See the implementation status for the
+remaining phase gates and capability limits.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
+
+The owner-dispatched CI workflow has a separate installed-unit gate on a
+disposable GitHub-hosted Linux VM. `scripts/systemd_acceptance.py` refuses
+ordinary developer and self-hosted environments, requires explicit VM
+acknowledgement, and refuses existing installation/state paths. It installs the
+actual binaries/unit, checks owner control across restart and SIGKILL recovery,
+verifies stop/lock preservation and independently removes its installed files.
+The gate approves no network configuration and verifies that resolver identity
+and bytes remain unchanged. Retained protected directories belong to the
+discarded VM. Actual TUN traffic has the separate private-namespace gate.
 
 ## Local checks
 
@@ -86,6 +99,35 @@ path, printing account fields, or consulting sudo variables. It can block in
 the system account database; automated unit tests instead use synthetic records
 and injected lookup outcomes. Linux evidence does not establish native macOS
 account lookup. This example is not an installed CLI command.
+
+The production host TCP adapter has a controlled in-process workload:
+
+```sh
+cargo test --locked -p warper-stack
+cargo run --locked --release -p warper-stack --example host_workload
+```
+
+It checks 100 synthetic 64 KiB exchanges in batches of four, including FIN,
+original tuples and backend selection. Record stdout plus environment/toolchain
+and source hashes under `target/evidence/phase-1/host-tcp-adapter/`. CPU/RSS
+include the controlled peer stack. Packet/drop counts describe bounded runtime
+queues, not a physical network or kernel TUN. Its fixed MTU, TCP-only capability
+and sixteen-flow maximum are documented in ADR 0012 and contract section 28.
+
+Service relay verification uses controlled TCP peers in both destination and
+physical address families. A separate release workload repeats the IPv4 flow
+100 times in batches of four:
+
+```sh
+cargo test --locked -p warper-service
+cargo test --locked --release -p warper-service --test socks5 service_workload -- --ignored --exact --nocapture
+```
+
+The workload prints byte counts, elapsed time and latency percentiles. Record
+process CPU/RSS and loopback drop deltas alongside stdout and environment under
+`target/evidence/phase-1/service-relays/`; counters include fixture peers. This
+is a controlled loopback service-relay baseline, not a TUN or physical-path
+result. Normal tests do not execute the repeated workload.
 
 ## Repository stages and CI
 
@@ -160,6 +202,82 @@ changed named state. Child readiness has a five-second deadline and the parent
 kills/reaps it on failure. Public root acquisition and runtime submount
 rejection require separate disposable privileged evidence and remain unverified;
 the fixture is not a production rootless override. See ADR 0009.
+
+Control endpoint tests use the same private fixture: real pathname sockets,
+nonblocking admission, owner-policy denial before returning a stream, explicit
+retirement/republication and preserved replaced objects or changed permissions.
+Drop/restart must refuse uncertain socket/intent state. Intent and directory
+syncs run on the local fixture filesystem. Actual privileged publication and
+injected syscall failures are not established by these tests.
+
+Enrollment tests use private state directories with the current real UID and
+actual file writes, fsync, rename and reopen. The public constructor still
+accepts only fixed root-owned state and a held runtime lease. Tests cover
+revision conflicts/exhaustion, owner removal, malformed/unsafe/pending state,
+changed objects, bounded records, native administrative denial before reads,
+and injected final directory-sync failure after actual rename. That failure
+must retain the new snapshot and report CommitUncertain. Positive public root
+enrollment, pending recovery and service revocation need separate evidence.
+
+Control framing tests use bounded Tokio duplex streams and a paused clock.
+They cover all kinds, maximum admitted configuration size, partial header/body
+and write deadlines, cancellation during a frame, closed cancellation channels,
+EOF, redaction and malformed header/body boundaries. Header-only invalid inputs
+must return the validation error before attempting a body read. These codec
+probes do not establish authenticated session order or implemented handlers.
+
+Production SOCKS5 checks can run separately:
+
+```sh
+cargo test --locked -p warper-core -p warper-backends
+cargo run --locked --release -p warper-backends --example socks5_workload
+```
+
+The test suite uses controlled duplex peers plus real loopback proxy/target
+servers in all four destination/physical address-family combinations, with
+joined tasks and exact bytes/FIN checks. The Linux release workload records
+latency percentiles, application bytes, process CPU ticks/RSS and loopback drop
+deltas for 100 64 KiB echoes at concurrency four. Capture OS/toolchain/CPU-clock
+conditions alongside JSON; counters include fixture servers and unrelated
+loopback activity may affect drops. It does not mutate routes or DNS and does
+not establish TUN performance, physical protection or service acceptance.
+
+The `privileged-control` CI job runs only on explicit workflow_dispatch by
+this repository's owner in `skunkie/warper`. PR/push events cannot launch it;
+reusable callers inherit the same owner-dispatch restriction. It uses a
+standard GitHub-hosted Ubuntu VM with passwordless sudo, never a container or
+self-hosted desktop. It builds the actual control probe and runs:
+
+```sh
+sudo -n -- python3 scripts/control_acceptance.py \
+  --probe "$PWD/target/debug/examples/control_privileged" \
+  --evidence "$PWD/target/evidence/phase-1/privileged-control"
+```
+
+Run reviewed code on a disposable VM only. The harness retains the initial
+user namespace while creating private mount/network/PID namespaces. Inherited
+namespace handles guard against accidental unisolated invocation. It privately
+mounts `/run`, `/var/lib`, `/etc` and `/proc`, supplies a real bounded UDP/TCP
+NXDOMAIN fixture and dedicated D-Bus instance, and joins both. Actual root,
+owner UID 1000 and foreign UID 1001 exercise protected state, native root/owner
+policy, revisioned enrollment and endpoint retirement. The artifact is copied
+to the private runtime directory so peer users need no runner-home access.
+The real namespace/UID gate is never overridden.
+
+The independent outer supervisor bounds runtime, kills/reaps the process group
+on timeout or leaked descendants, compares stable host links/routes and resolver
+hash before/after, and uploads logs plus exact revision/probe hash even on
+failure. Artifacts refuse preexisting names/symlinks and use explicit readable
+permissions for the non-root uploader. Harness unit tests cover real temporary
+resolver sockets/joining, namespace refusal, supervisor timeout/failure,
+artifact preservation, primary/cleanup diagnostics and the workflow trust guard.
+A passing boundary job is not full UX-01 or Phase 1 service/TUN acceptance.
+A complete passing privileged run is required; local compilation is not
+evidence. The initial native boundary now has a passing
+[owner-dispatched run](https://github.com/skunkie/warper/actions/runs/41181399851)
+with downloaded artifacts indexed in implementation-status.md. The private D-Bus health query must explicitly address the bus daemon
+and its fixture-only policy must allow method replies. It never contacts or
+changes the host bus.
 
 CI runs on pull requests, pushes to `main`, manual dispatch, and reusable
 workflow calls. It uses read-only repository permissions, disables stored
@@ -568,6 +686,25 @@ decision consequences in documentation. Keep per-run validation history in
 CI logs and commit messages. The [phase ledger](implementation-status.md) records which
 gates remain open and where their evidence is produced.
 
+### Candidate native Linux TUN API
+
+ADR 0014 describes the development-only `linux_network_probe` example. Build it
+with `cargo build --locked -p warper-service --example linux_network_probe` and
+run only through `scripts/control_acceptance.py` on a disposable root VM. The
+harness supplies private device nodes as well as private mount/network/PID,
+state, resolver and bus ownership. The owner-dispatched privileged CI job runs
+both the control boundary and this candidate API probe. Ordinary PR/push CI
+never starts the root job.
+
+The probe sends actual kernel TCP through the production host, SOCKS5 and relay
+adapters, checks a retained foreign TUN/name collision and last-owner cleanup,
+and independently joins its workers. A controlled proxy verifies the invented
+numeric destination before mapping it to its loopback target. This does not
+establish journaled production OS changes, physical interface protection or a
+running control service. The scoped native API gate has successful creation/collision/I/O/drop and
+independent host preservation evidence (ADR 0014). Production driver and daemon
+acceptance remain separate open gates.
+
 ## Release readiness
 
 When real `client/` code is introduced, pin the package manager and lockfile,
@@ -884,3 +1021,42 @@ time drives TCP retries. The fixture's server/control/global bounds remain
 15/16/20 seconds. This extends the existing `--router-mtu-check` scope; there
 are no new flags. See contract section 24. General production migration/state,
 router trust and minimum-size IPv4 quotes remain unresolved.
+
+The owner-dispatched root job also builds `linux_recovery_probe` and runs it
+through `scripts/control_acceptance.py` in a separate fresh private state/mount/
+network/PID namespace fixture. It kills/reaps actual prepared, allocated, enabled
+and captured owners, then tests native absence reconciliation, foreign claims,
+pending storage, idempotence and fresh allocation. Reproduce only on a disposable
+Linux VM with the existing harness; never run these mutations against live host
+resolver/bus/state. Evidence is nested under the same exact-commit CI artifact
+in `tun-recovery/`. Compilation is not privileged acceptance.
+
+The control fixture also exercises the fixed root-owned `/etc/warper` managed
+slot in its private `/etc` mount: generation fencing, ordinary owner/foreign
+read denial, reopened state, pending-token separation from the network journal
+and explicit discard without promotion. Its synthetic opaque payload tests
+storage, not semantic WMCF installation or a running service. The harness creates
+the protected directory after mounting private state; never create these paths
+on the developer host to run this probe.
+
+The TUN API fixture's retained bootstrap worker also exercises the native
+configuration installation owner before any network mutation. It tests a
+controlled UID-1000 Unix peer, root installation, preflight rejection before
+storage, Busy while approved leases remain, stale generations, reopened state
+and external replacement rejection. This is native API evidence, not a running
+control session or CLI. Its owned peer process has bounded waits and is reaped
+on both success and failure.
+
+Control session tests use controlled Unix peers, policy changes and bounded
+socket backpressure:
+
+```sh
+CARGO_INCREMENTAL=0 cargo test --locked -p warper-control --test session
+```
+
+The privileged control fixture also uses actual root and UID-1000 clients over
+the protected endpoint for Hello, native instance IDs, status correlation and
+administrative session dispatch. It reloads protected enrollment after frame
+reads. The fixture has no network session and its small replies establish
+protocol behavior, not daemon readiness. Native acceptance still requires the
+owner-dispatched private-state harness; ordinary compilation cannot substitute.

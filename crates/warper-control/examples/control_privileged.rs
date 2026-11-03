@@ -1,0 +1,518 @@
+// SPDX-FileCopyrightText: 2026 skunkie
+//
+// SPDX-License-Identifier: MIT
+
+//! Real root/owner/foreign-peer fixture. Run only through control_acceptance.py.
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::{
+        fs,
+        io::{Read, Write},
+        os::unix::{
+            fs::{MetadataExt, PermissionsExt},
+            net::UnixStream,
+        },
+        process::{Child, Command},
+        time::{Duration, Instant},
+    };
+    use warper_control::{
+        Access, Error, Role, namespace,
+        runtime::{
+            RuntimeLease,
+            connection::{Acceptance, ConnectionStore, Desired, Request as IntentRequest},
+            endpoint::ControlEndpoint,
+            enrollment::OwnerStore,
+            journal::{Error as JournalError, NetworkJournal},
+            managed::ManagedStore,
+        },
+        unix,
+    };
+    type Failure = Box<dyn std::error::Error>;
+
+    mod endpoint_fixture;
+    mod session_fixture;
+
+    struct Client(Child);
+    impl Client {
+        fn start(uid: u32, mode: &str) -> Result<Self, Failure> {
+            Ok(Self(
+                Command::new("/usr/bin/setpriv")
+                    .args([
+                        "--reuid",
+                        &uid.to_string(),
+                        "--regid",
+                        &uid.to_string(),
+                        "--clear-groups",
+                    ])
+                    .arg(std::env::current_exe()?)
+                    .args(["--client", mode])
+                    .spawn()?,
+            ))
+        }
+        fn join(&mut self) -> Result<(), Failure> {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(status) = self.0.try_wait()? {
+                    if status.success() {
+                        return Ok(());
+                    }
+                    return Err("controlled client failed".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err("controlled client deadline expired".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+    impl Drop for Client {
+        fn drop(&mut self) {
+            if self
+                .0
+                .try_wait()
+                .expect("inspect controlled client")
+                .is_none()
+            {
+                self.0.kill().expect("kill controlled client");
+            }
+            self.0.wait().expect("reap controlled client");
+        }
+    }
+
+    fn root() -> Result<(), Failure> {
+        namespace::require_initial_user_namespace()?;
+        if !nix::unistd::geteuid().is_root() {
+            return Err("fixture requires actual initial-namespace UID 0".into());
+        }
+        let (a, _b) = UnixStream::pair()?;
+        unix::authenticate_service(&a)?;
+        Ok(())
+    }
+    fn isolated(mount_fd: &str, net_fd: &str) -> Result<(), Failure> {
+        root()?;
+        for (kind, anchor) in [("mnt", mount_fd), ("net", net_fd)] {
+            let fd: u32 = anchor.parse()?;
+            let path = format!("/proc/self/fd/{fd}");
+            let label = fs::read_link(&path)?;
+            let label = label.to_str().ok_or("invalid namespace anchor")?;
+            let file = fs::File::open(&path)?;
+            // Linux NSFS_MAGIC. Ordinary descriptors must not pass an accidental
+            // direct invocation of this development-only fixture.
+            if rustix::fs::fstatfs(&file)?.f_type as u64 != 0x6e736673
+                || !label.starts_with(&format!("{kind}:["))
+                || !label.ends_with(']')
+            {
+                return Err("fixture requires inherited namespace handles".into());
+            }
+            let parent = file.metadata()?;
+            let current = fs::metadata(format!("/proc/thread-self/ns/{kind}"))?;
+            if parent.dev() == current.dev() && parent.ino() == current.ino() {
+                return Err("fixture must use independent mount and network namespaces".into());
+            }
+        }
+        Ok(())
+    }
+    fn connection_intent(lease: &RuntimeLease) -> Result<(), Failure> {
+        let mut store = ConnectionStore::open(lease)?;
+        if store.read(lease)?.is_some() {
+            return Err("intent fixture must begin empty".into());
+        }
+        let mut connect_operation = [1; 16];
+        connect_operation[..8].copy_from_slice(&0u64.to_be_bytes());
+        let connect = IntentRequest {
+            operation: connect_operation,
+            expected_configuration: 7,
+            expected_revision: 0,
+            expected_instance: store.instance_id(),
+            desired: Desired::Up,
+        };
+        if !matches!(store.accept(lease, 7, connect)?, Acceptance::Accepted(snapshot) if snapshot.revision()==1)
+            || !matches!(store.accept(lease, 7, connect)?, Acceptance::AlreadyAccepted(snapshot) if snapshot.revision()==1)
+        {
+            return Err("durable intent acceptance/repeat differs".into());
+        }
+        let mut disconnect_operation = [2; 16];
+        disconnect_operation[..8].copy_from_slice(&1u64.to_be_bytes());
+        let disconnect = IntentRequest {
+            operation: disconnect_operation,
+            expected_revision: 1,
+            desired: Desired::Down,
+            ..connect
+        };
+        store.accept(lease, 7, disconnect)?;
+        drop(store);
+        let mut reopened = ConnectionStore::open(lease)?;
+        let record = reopened.read(lease)?.ok_or("durable intent disappeared")?;
+        if record.revision() != 2
+            || record.desired() != Desired::Down
+            || !record.same_boot(&reopened.boot_id())
+            || reopened.instance_id() == connect.expected_instance
+            || !matches!(reopened.accept(lease, 7, connect), Err(failure) if failure.primary==warper_control::runtime::connection::Error::Conflict)
+        {
+            return Err("durable intent restart fence or preservation differs".into());
+        }
+        reopened.resync(lease)?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::write("/var/lib/warper/connection.pending", b"partial")?;
+        fs::set_permissions(
+            "/var/lib/warper/connection.pending",
+            fs::Permissions::from_mode(0o600),
+        )?;
+        let inspection = reopened
+            .inspect_pending(lease)?
+            .ok_or("pending intent was not inspected")?;
+        if inspection.pending_len() != 7
+            || inspection.committed().map(|record| record.revision()) != Some(2)
+        {
+            return Err("pending intent inspection differs".into());
+        }
+        reopened.discard_pending(lease, inspection)?;
+        if reopened.read(lease)?.map(|record| record.desired()) != Some(Desired::Down) {
+            return Err("pending intent discard changed committed desired state".into());
+        }
+        println!(
+            "PASS durable root connection intent, repeat suppression, restart fencing and resync without network actions"
+        );
+        Ok(())
+    }
+    fn network_journal(lease: &RuntimeLease) -> Result<(), Failure> {
+        let mut journal = NetworkJournal::open(lease)?;
+        if journal.read(lease)?.is_some() {
+            return Err("private network journal was not initially empty".into());
+        }
+        let first = journal.replace(lease, 0, b"invented prepared network metadata")?;
+        if first.revision() != 1
+            || journal.replace(lease, 0, b"stale metadata") != Err(JournalError::Conflict)
+        {
+            return Err("native journal revision fencing differs".into());
+        }
+        let committed = journal.replace(lease, 1, b"invented committed network metadata")?;
+        drop(journal);
+        let mut reopened = NetworkJournal::open(lease)?;
+        if reopened.read(lease)? != Some(committed.clone()) {
+            return Err("native journal reopen differs".into());
+        }
+        reopened.resync(lease)?;
+        fs::write("/var/lib/warper/network.pending", b"WJ")?;
+        fs::set_permissions(
+            "/var/lib/warper/network.pending",
+            fs::Permissions::from_mode(0o600),
+        )?;
+        if reopened.read(lease) != Err(JournalError::RecoveryRequired) {
+            return Err("partial native journal did not block normal reads".into());
+        }
+        let token = reopened
+            .inspect_pending(lease)?
+            .ok_or("missing private journal pending token")?;
+        if token.staged_length() != 2 || token.committed() != Some(&committed) {
+            return Err("native journal recovery inspection differs".into());
+        }
+        reopened.discard_pending(lease, token)?;
+        if reopened.read(lease)? != Some(committed) {
+            return Err("native journal discard changed committed metadata".into());
+        }
+        println!(
+            "PASS durable root network journal revisions, reopen and partial discard without network actions"
+        );
+        Ok(())
+    }
+
+    fn managed_storage(lease: &RuntimeLease) -> Result<(), Failure> {
+        let mut managed = ManagedStore::open(lease)?;
+        if managed.read(lease)?.is_some() {
+            return Err("private managed slot was not initially empty".into());
+        }
+        // These are synthetic opaque storage bytes. Semantic WMCF validation
+        // belongs to service preparation; this fixture tests the native store.
+        let first = managed.replace(lease, 0, b"invented approved managed bytes")?;
+        if first.revision() != 1
+            || managed.replace(lease, 0, b"stale managed bytes") != Err(JournalError::Conflict)
+        {
+            return Err("native managed generation fencing differs".into());
+        }
+        let metadata = fs::metadata("/etc/warper/configuration")?;
+        if metadata.uid() != 0 || metadata.mode() & 0o7777 != 0o600 || metadata.nlink() != 1 {
+            return Err("managed file protection differs".into());
+        }
+        for uid in [1000, 1001] {
+            Client::start(uid, "private-config")?.join()?;
+        }
+        drop(managed);
+        let mut managed = ManagedStore::open(lease)?;
+        if managed.read(lease)? != Some(first.clone()) {
+            return Err("managed reopen differs".into());
+        }
+        let mut network = NetworkJournal::open(lease)?;
+        let network_before = network.read(lease)?;
+        for path in [
+            "/etc/warper/configuration.pending",
+            "/var/lib/warper/network.pending",
+        ] {
+            fs::write(path, b"partial invented intent")?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        if managed.read(lease) != Err(JournalError::RecoveryRequired) {
+            return Err("pending managed bytes did not block reads".into());
+        }
+        let foreign_token = network
+            .inspect_pending(lease)?
+            .ok_or("network token missing")?;
+        if managed.discard_pending(lease, foreign_token) != Err(JournalError::Conflict) {
+            return Err("network token could discard managed staging".into());
+        }
+        let token = managed
+            .inspect_pending(lease)?
+            .ok_or("managed token missing")?;
+        if token.committed() != Some(&first) {
+            return Err("managed inspection changed committed state".into());
+        }
+        managed.discard_pending(lease, token)?;
+        let token = network
+            .inspect_pending(lease)?
+            .ok_or("network staging was changed")?;
+        network.discard_pending(lease, token)?;
+        if managed.read(lease)? != Some(first) || network.read(lease)? != network_before {
+            return Err("managed recovery changed committed slot state".into());
+        }
+        managed.replace(lease, 1, b"invented replacement managed bytes")?;
+        println!(
+            "PASS root managed storage generations, private owner/foreign reads, reopen and isolated pending discard"
+        );
+        Ok(())
+    }
+
+    fn configure(stream: &UnixStream) -> Result<(), Failure> {
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+        Ok(())
+    }
+    fn client(mode: &str) -> Result<(), Failure> {
+        if mode == "private-config" {
+            if !matches!(nix::unistd::geteuid().as_raw(), 1000 | 1001) {
+                return Err("private-config fixture requires an ordinary controlled UID".into());
+            }
+            return match fs::read("/etc/warper/configuration") {
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+                _ => Err("ordinary client could read protected managed bytes".into()),
+            };
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (_cancellation, cancel) = tokio::sync::watch::channel(false);
+        let connected = runtime.block_on(warper_control::runtime::client::connect(
+            tokio::time::Instant::now() + Duration::from_secs(2),
+            cancel,
+        ));
+        if mode == "unsafe-endpoint" {
+            return match connected {
+                Err(warper_control::runtime::client::Error::UnsafeEndpoint) => Ok(()),
+                _ => Err("unsafe endpoint was not rejected before connection".into()),
+            };
+        }
+        if matches!(mode, "session-owner" | "session-admin") {
+            return runtime.block_on(session_fixture::client(connected?, mode == "session-admin"));
+        }
+        let mut stream = connected?.into_std()?;
+        configure(&stream)?;
+        unix::authenticate_service(&stream)?;
+        match mode {
+            "allowed" => {
+                stream.write_all(b"probe")?;
+                let mut reply = [0];
+                stream.read_exact(&mut reply)?;
+                if reply != [1] {
+                    return Err("controlled authorization reply differs".into());
+                }
+            }
+            "denied" => {
+                let mut reply = [0];
+                if stream.read(&mut reply)? != 0 {
+                    return Err("foreign peer received metadata".into());
+                }
+            }
+            _ => return Err("unknown client fixture mode".into()),
+        }
+        Ok(())
+    }
+
+    fn exercise(mount_fd: &str, net_fd: &str) -> Result<(), Failure> {
+        isolated(mount_fd, net_fd)?;
+        let lease = RuntimeLease::acquire()?;
+        if !matches!(
+            RuntimeLease::acquire(),
+            Err(warper_control::runtime::Error::AlreadyRunning)
+        ) {
+            return Err("second root instance acquired ownership".into());
+        }
+        let endpoint = ControlEndpoint::bind(lease)?;
+        endpoint_fixture::changed_permissions(endpoint)?;
+        let mut lease = RuntimeLease::acquire()?;
+        let mut store = OwnerStore::open(&lease)?;
+        if store.read(&lease)?.revision() != 0 {
+            return Err("fixture must start with empty enrollment".into());
+        }
+        let offline_pending = "/var/lib/warper/owner.pending";
+        fs::write(offline_pending, b"WOWN")?;
+        fs::set_permissions(offline_pending, fs::Permissions::from_mode(0o600))?;
+        let inspection = store
+            .inspect_pending_offline(&mut lease)?
+            .ok_or("offline owner inspection did not pin partial intent")?;
+        if fs::read(offline_pending)? != b"WOWN"
+            || store
+                .discard_pending_offline(&mut lease, inspection)?
+                .revision()
+                != 0
+            || fs::symlink_metadata(offline_pending).is_ok()
+        {
+            return Err("offline owner recovery changed committed policy".into());
+        }
+        store.resync_offline(&mut lease)?;
+        let endpoint = ControlEndpoint::bind(lease)?;
+        let (admin, _other) = UnixStream::pair()?;
+        let enrolled = store.enroll(endpoint.runtime(), &admin, 0, Some(1000))?;
+        if enrolled.revision() != 1 {
+            return Err("bootstrap revision differs".into());
+        }
+        let policy = enrolled.policy();
+        let mut old_owner = None;
+        for (uid, mode, expected) in [
+            (0, "allowed", Some(Role::Administrator)),
+            (1000, "allowed", Some(Role::Owner)),
+            (1001, "denied", None),
+        ] {
+            let mut child = Client::start(uid, mode)?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match endpoint.accept(&policy) {
+                    Ok(Some(mut accepted)) => {
+                        if Some(accepted.role) != expected {
+                            return Err("controlled role differs".into());
+                        }
+                        let admin_result = unix::authenticate_client(
+                            &accepted.stream,
+                            &policy,
+                            Access::Administer,
+                        );
+                        if uid == 0 {
+                            if admin_result != Ok(Role::Administrator) {
+                                return Err("root cannot administer".into());
+                            }
+                        } else if admin_result != Err(Error::PermissionDenied) {
+                            return Err("ordinary owner can administer".into());
+                        }
+                        configure(&accepted.stream)?;
+                        let mut bytes = [0; 5];
+                        accepted.stream.read_exact(&mut bytes)?;
+                        if &bytes != b"probe" {
+                            return Err("controlled request differs".into());
+                        }
+                        accepted.stream.write_all(&[1])?;
+                        if uid == 1000 {
+                            old_owner = Some(accepted.stream);
+                        }
+                        break;
+                    }
+                    Err(warper_control::runtime::endpoint::Error::Peer(
+                        Error::PermissionDenied,
+                    )) if expected.is_none() => break,
+                    Ok(None) => {}
+                    _ => return Err("controlled peer admission differs".into()),
+                }
+                if Instant::now() >= deadline {
+                    return Err("controlled accept deadline expired".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            child.join()?;
+        }
+        session_fixture::exercise(&endpoint)?;
+        let replaced = store.enroll(endpoint.runtime(), &admin, 1, Some(1001))?;
+        let old_owner = old_owner.ok_or("owner snapshot is missing")?;
+        if unix::authenticate_client(&old_owner, &replaced.policy(), Access::Observe)
+            != Err(Error::PermissionDenied)
+        {
+            return Err("old kernel credential snapshot retained owner permission".into());
+        }
+        let cleared = store.enroll(endpoint.runtime(), &admin, 2, None)?;
+        if cleared.revision() != 3 {
+            return Err("owner removal revision differs".into());
+        }
+        let pending = "/var/lib/warper/owner.pending";
+        fs::write(pending, b"WOWN")?;
+        fs::set_permissions(pending, fs::Permissions::from_mode(0o600))?;
+        if !matches!(
+            store.inspect_pending(endpoint.runtime(), &old_owner),
+            Err(warper_control::runtime::enrollment::Error::Peer(
+                Error::PermissionDenied
+            ))
+        ) {
+            return Err("ordinary peer inspected administrative recovery state".into());
+        }
+        let inspection = store
+            .inspect_pending(endpoint.runtime(), &admin)?
+            .ok_or("partial enrollment intent was not inspected")?;
+        if inspection.committed().revision() != 3 || inspection.pending_len() != 4 {
+            return Err("pending enrollment inspection differs".into());
+        }
+        if store
+            .discard_pending(endpoint.runtime(), &admin, inspection)?
+            .revision()
+            != 3
+            || fs::symlink_metadata(pending).is_ok()
+        {
+            return Err("partial enrollment recovery did not preserve committed revision".into());
+        }
+        drop(old_owner);
+        connection_intent(endpoint.runtime())?;
+        network_journal(endpoint.runtime())?;
+        managed_storage(endpoint.runtime())?;
+        let reopened = OwnerStore::open(endpoint.runtime())?;
+        if reopened.read(endpoint.runtime())?.revision() != 3 {
+            return Err("protected owner snapshot did not persist".into());
+        }
+        drop(reopened);
+        drop(store);
+        drop(admin);
+        endpoint.close()?;
+        if fs::symlink_metadata("/run/warper/control.sock").is_ok()
+            || fs::symlink_metadata("/run/warper/control.intent").is_ok()
+        {
+            return Err("owned endpoint did not retire".into());
+        }
+        drop(RuntimeLease::acquire()?);
+        endpoint_fixture::crash_recovery(mount_fd, net_fd)?;
+        println!(
+            "PASS root ownership, bootstrap enrollment, actual owner/foreign peers, policy replacement, pending recovery, persistence and endpoint retirement"
+        );
+        Ok(())
+    }
+
+    pub fn run() -> Result<(), Failure> {
+        let args: Vec<_> = std::env::args().skip(1).collect();
+        match args.as_slice() {
+            [mode] if mode == "--require-initial-root" => {
+                root()?;
+                println!("PASS initial user namespace and real root kernel peer");
+                Ok(())
+            }
+            [mode, mount_fd, net_fd] if mode == "--exercise" => exercise(mount_fd, net_fd),
+            [mode, client_mode] if mode == "--client" => client(client_mode),
+            [mode, mount_fd, net_fd] if mode == "--endpoint-child" => {
+                endpoint_fixture::child(mount_fd, net_fd)
+            }
+            _ => Err("use the controlled privileged harness".into()),
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    linux::run()
+}
+#[cfg(not(target_os = "linux"))]
+fn main() -> std::process::ExitCode {
+    eprintln!("UnsupportedIntegration: privileged control fixture requires Linux");
+    std::process::ExitCode::FAILURE
+}

@@ -46,6 +46,10 @@ const WIREGUARD: &[&str] = &[
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(value)
+    }
+
     pub fn expose(&self) -> &T {
         &self.0
     }

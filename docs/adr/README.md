@@ -21,6 +21,20 @@ need their own record.
 | [0007](0007-linux-control-peer-identity.md) | Accepted boundary; service integration pending | Linux kernel UID snapshots and owner/root policy, with namespace and protected-endpoint gates |
 | [0008](0008-initial-user-namespace.md) | Accepted for Linux admission | Guarded procfs namespace identity is mandatory before peer credentials; noninitial namespaces fail closed |
 | [0009](0009-linux-runtime-ownership.md) | Accepted ownership boundary; service integration pending | Fixed protected Linux runtime directory and persistent nonblocking instance lease |
+| [0010](0010-linux-owner-snapshots.md) | Accepted storage boundary; privileged integration pending | Fixed protected atomic owner snapshots with revision checks and uncertain-commit reporting |
+| [0011](0011-production-socks5-tcp.md) | Accepted protocol boundary; service integration pending | Production core TCP setup and bounded SOCKS5 CONNECT over protected connector injection |
+| [0012](0012-production-host-tcp.md) | Accepted scoped TCP boundary | Bounded host TCP adapter with retained runtime ownership |
+| [0013](0013-service-tcp-relays.md) | Accepted relay boundary | Retained service TCP setup and relay tasks |
+| [0014](0014-linux-tun-api.md) | Accepted scoped native API | Unnamed exclusive-lifetime TUN creation with collision preservation |
+| [0015](0015-durable-connection-intent.md) | Accepted persistence boundary | Revision-bound durable connection intent with native root evidence |
+| [0016](0016-bounded-linux-route-lookups.md) | Accepted read-only boundary | Bounded native IPv4 TCP observations without physical-path authority |
+| [0017](0017-protected-network-journal-storage.md) | Accepted local storage boundary | Fixed bounded network snapshots with explicit pending/uncertain recovery |
+| [0018](0018-native-journal-owner-context.md) | Accepted read-only evidence boundary | Pinned native boot, namespaces, instance and process-start context |
+| [0019](0019-journaled-initial-tun-lifecycle.md) | Accepted scoped native lifecycle | Durable preparation, fresh descriptor ownership and verified TUN retirement |
+| [0020](0020-journaled-initial-ipv4-address.md) | Accepted scoped address transaction | Journaled exclusive IPv4 /32 assignment on an owned down TUN |
+| [0021](0021-linux-bound-tcp-egress.md) | Accepted scoped protected TCP connector | Source/device-bound TCP under competing capture routing |
+| [0022](0022-journaled-static-ipv4-capture.md) | Accepted scoped static IPv4 capture | Journaled exclusive static IPv4 capture batches |
+| [0023](0023-managed-configuration-ownership.md) | Accepted scoped managed boundary | Approved managed generations and retained installation ownership |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or

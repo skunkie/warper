@@ -11,11 +11,17 @@
 
 use std::{fmt, io};
 
+#[cfg(target_os = "linux")]
+pub mod admission;
+pub mod message;
 pub mod namespace;
 #[cfg(target_os = "linux")]
 pub mod runtime;
+#[cfg(target_os = "linux")]
+pub mod session;
 #[cfg(unix)]
 pub mod unix;
+pub mod wire;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Access {

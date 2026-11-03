@@ -18,7 +18,14 @@ path = "src/main.rs"
 warper-config = { path = "../warper-config" }
 warper-core = { path = "../warper-core" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["user"] }
+tokio.workspace = true
+warper-control = { path = "../warper-control" }
+rustix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 
 [lints]

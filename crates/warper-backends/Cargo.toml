@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "warper-backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio.workspace = true
+warper-core = { path = "../warper-core" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "test-util"] }
+
+[lints]
+workspace = true

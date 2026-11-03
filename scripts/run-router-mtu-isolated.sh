@@ -22,12 +22,21 @@ client_anchor=
 server_anchor=
 peer_process=
 control_process=
+client_process=
 links=()
 cleanup() {
     local status=${1:-$?}
     local failed=false
     local child_status
     trap - EXIT
+    if [[ -n "$client_process" ]]; then
+        if kill -0 "$client_process" 2>/dev/null; then
+            if ! kill -- -"$client_process" 2>/dev/null; then failed=true; fi
+        fi
+        child_status=0
+        wait "$client_process" || child_status=$?
+        if [[ "$child_status" != 0 && "$child_status" != 1 && "$child_status" != 143 ]]; then failed=true; fi
+    fi
     if [[ -n "$control_process" ]]; then
         if kill -0 "$control_process" 2>/dev/null; then
             if ! kill "$control_process" 2>/dev/null; then failed=true; fi
@@ -254,8 +263,25 @@ supervise_interruptions() {
 supervise_interruptions > "$control_directory/control.log" 2>&1 &
 control_process=$!
 status=0
-nsenter --net="/proc/$client_anchor/ns/net" "$probe" --router-mtu-check "$control_directory" || status=$?
-if [[ "$status" == 0 ]]; then
+# Retain the client process group while observing controller failure. A failed
+# controller cannot satisfy the client's next marker wait; stop it immediately
+# instead of waiting for the enclosing namespace deadline.
+timeout --signal=TERM --kill-after=2s 16s nsenter --net="/proc/$client_anchor/ns/net" \
+    "$probe" --router-mtu-check "$control_directory" &
+client_process=$!
+while kill -0 "$client_process" 2>/dev/null; do
+    if ! kill -0 "$control_process" 2>/dev/null; then
+        control_status=0
+        wait "$control_process" || control_status=$?
+        control_process=
+        if [[ "$control_status" != 0 ]]; then cleanup 1; fi
+        break
+    fi
+    sleep 0.01
+done
+wait "$client_process" || status=$?
+client_process=
+if [[ "$status" == 0 && -n "$control_process" ]]; then
     control_status=0
     wait "$control_process" || control_status=$?
     control_process=

@@ -7,15 +7,18 @@ SPDX-License-Identifier: MIT
 # Canonical Configuration and CLI Contract
 
 Status: offline YAML/schema/semantic validation and the `warper check-config`
-CLI are implemented; runtime preflight and service control remain unimplemented.
+CLI are implemented. Linux native status/up/down clients and static IPv4
+SOCKS5/TCP preflight exist. `warperd service` now composes native authenticated
+control and supervised networking; its new executable acceptance remains
+unverified. Administrative CLI and service-manager installation remain open.
 Core implements offline path resolution and injectable invoking-account
 validation in `crates/warper-core/src/configuration/paths.rs`, with Unix OS
 account lookup in `crates/warper-config/src/identity.rs`. Bounded YAML decoding
 is implemented in `warper-config::yaml`, following
 [ADR 0006](adr/0006-bounded-yaml-decoding.md). `warper-config::schema::Config::parse`
 applies the offline contract with injected paths and an explicit platform.
-`warper-cli` supplies the thin offline command. This document defines the initial
-schema.
+`warper-cli` supplies offline checks and the Linux control client. This document
+defines the initial schema.
 Update it, its examples, and fixtures together when a justified decision changes
 the contract.
 
@@ -42,6 +45,185 @@ This is a library ownership boundary, not a service command, journal, recovery
 operation or active listener. Crash-stale sockets remain untouched. Packaging,
 protected listener lifecycle and durable owner enrollment are still required.
 
+### Linux control endpoint
+
+The runtime lease publishes fixed `/run/warper/control.sock` as a nonblocking
+Unix stream listener with backlog 32 and root-owned mode 0666. Permissions
+allow connections, not access to metadata: kernel peer authorization precedes
+returning an accepted stream, and each request must recheck current policy.
+No socket path override or abstract socket is provided. Root and the launch
+mount namespace are trusted; no process-global cwd or umask is changed.
+
+Before binding, exclusively create empty root-owned mode-0600 `control.intent`
+and sync it and its directory. Existing socket or intent objects are conflicts,
+including uncertain crash state. Explicit endpoint close stops admission and
+removes only the pinned, unchanged socket and intent while retaining the lease.
+Changed identity, owner, link count or mode fails cleanup and preserves evidence.
+Drop closes descriptors without unlinking. An accepted connection is separately
+owned and must be drained/joined by the future supervisor before explicit close.
+The endpoint accepts owned or `Arc<RuntimeLease>` ownership. The service can
+retain the same lease in networking/filesystem workers; retiring the listener
+releases only its reference. Instance flock remains held until the last worker
+reference drops. The supervisor must cancel/join those workers before reporting
+shutdown or allowing another instance to acquire ownership.
+Publication errors preserve the primary failure alongside cleanup failure.
+There is no automatic stale-endpoint recovery or service executable yet.
+
+The Linux client connects only through `runtime::client::connect`: verify the
+initial user namespace and fixed root-owned directory chain, pin the pathname
+socket inode, and require socket mode 0666 with one hard link. Connect through
+the pinned descriptor's procfs path, authenticate the actual UID-0 kernel peer,
+then revalidate named identities and metadata before returning any stream. No
+payload is sent during this admission. There is no path, UID or abstract-socket
+override. Missing, changed, unsafe and non-root endpoints fail closed without
+repair or fallback. Trusted root and the launch mount namespace remain part of
+the deployment contract.
+
+An absolute Tokio deadline and cancellation owner bound asynchronous connect;
+pre-expired/cancelled admission touches no endpoint. Owner loss cancels setup.
+Filesystem/procfs inspections are synchronous and have no hard kernel-operation
+wall bound. The caller retains the cancellation owner and must negotiate the
+wire version before configuration transfer. A returned stream is independently
+owned: closing that client connection does not request service disconnect.
+
+### Linux owner enrollment storage
+
+The service stores enrollment only in fixed `/var/lib/warper/owner`, outside
+imported YAML. Installation provisions `/var/lib/warper` as root mode 0700;
+`/`, `/var` and `/var/lib` must be root-owned without group/other write access.
+Startup never creates or repairs these directories. The state directory and
+its files cannot be symlinks or separate mounts beneath `/var/lib`.
+
+Owner records are immutable atomic snapshots: exactly 24 bytes consisting of
+`WOWN`, big-endian u32 version 1, u64 revision, u32 presence (0/1), and u32 UID.
+A stored revision is nonzero; an absent owner uses presence 0 and UID 0. A
+present owner cannot use the reserved u32-max UID. A missing record means no
+owner, revision 0. Files must be regular root-owned mode 0600 with one hard link.
+No malformed/unsafe record is treated as an unenrolled installation.
+
+Enrollment/replacement/removal requires a live kernel-authenticated UID-0 peer,
+a held runtime lease, and the expected current enrollment revision. Create
+`owner.pending` exclusively, write/sync the complete next revision, revalidate
+current state, rename atomically and sync the state directory before success.
+An existing pending record requires recovery; it is never automatically deleted.
+Before publication, errors attempt cleanup of only the unchanged owned pending
+file and retain primary/cleanup failures. A post-rename sync failure reports
+uncertain commit and requires inspection, never a blind rollback or replay.
+Normal reads refuse pending state. Per-request policy refresh and connection
+revocation still belong to service integration. No generic file/path operation
+or enrollment CLI is introduced by the storage boundary.
+
+Administrative pending recovery is explicit and discards only unpublished
+intent; it never promotes a pending owner. `inspect_pending` authenticates a
+live UID-0 peer and revalidates the runtime lease and fixed store, then pins the
+committed owner and a regular root-owned mode-0600 single-link pending file of
+at most 24 bytes. Empty or partial pending writes can be inspected; unsafe or
+oversized files remain untouched. The opaque in-process inspection exposes
+only committed enrollment and pending length, with redacted diagnostics.
+
+`discard_pending` consumes that inspection under fresh administrative
+authentication. Revalidate the store, committed revision/content/identity, and
+pending identity, metadata timestamps and bytes before unlinking only the
+inspected pending pathname and syncing the directory. Any mismatch preserves
+state and requires a fresh inspection. The committed owner is never removed,
+replaced or reset. A post-unlink sync error reports uncertain durability; it
+must be inspected again rather than replayed blindly. Inspection abandonment
+performs no cleanup. These synchronous operations have no hard filesystem wall
+bound. The future service serializes enrollment/recovery and revokes sessions
+when committed owner policy changes; no recovery CLI/API handler exists yet.
+
+### Linux connection intent storage
+
+The service persists accepted connection intent in fixed root-owned mode-0600,
+single-link `/var/lib/warper/connection`, using the same protected directory
+checks as enrollment. `connection.pending` is exclusive durable staging; an
+existing pending object blocks reads/acceptance and requires inspection. Missing
+state is revision zero. Invalid, unsafe or changed state is never reset to zero.
+No YAML path, generic file operation or ordinary-user ownership override exists.
+
+A stored record is exactly 80 bytes: `WCIN`, big-endian u32 version 1, nonzero
+u64 desired revision, 16-byte boot ID, 16-byte accepting service instance ID,
+16-byte operation ID, u64 configuration generation, desired state u8 (0 down,
+1 up), and seven zero reserved bytes. All IDs are nonzero. Up requires a nonzero
+configuration generation. No source YAML, credentials or packet payloads are
+stored. Native boot identity comes from bounded verified procfs reads; service
+instance IDs use native nonblocking entropy without configured values/fallback.
+
+`ConnectionStore` is root service persistence, not an authenticated RPC handler.
+The retained runtime lease is revalidated for every operation. The service must
+first refresh enrollment and authorize each command. Supply the current
+approved configuration generation independently of the decoded request.
+Acceptance checks that generation, expected service instance and desired
+revision; exact repeats of the last
+operation retain the same command/configuration/previous revision and return
+AlreadyAccepted without rewriting. Conflicting ID reuse and stale revisions are
+rejected. Increment the desired revision, exclusively stage/sync a complete
+snapshot and directory, revalidate prior identity/content, atomically rename,
+and sync before returning Accepted. Post-rename sync failure is CommitUncertain,
+never permission to apply OS changes or replay; preserve primary/cleanup errors.
+The live store blocks further acceptance after uncertainty. Explicit `inspect`
+reports the unchanged record, and `resync` makes that file/directory durable
+without accepting or applying another operation. A changed/deleted previously
+observed snapshot fails closed instead of becoming revision zero.
+
+Administrative pending inspection/discard pins at most an 80-byte staged file
+and the committed snapshot. It exposes only length/current intent and consumes
+an opaque token after revalidating runtime/store/current/pending identity,
+timestamps and bytes. Never promote the unpublished request. Abandonment or
+mismatch preserves all state. Post-unlink sync uncertainty blocks acceptance
+until explicit resync; authentication/inspection admission belongs to the
+service. No serialized path or descriptor override is provided.
+
+Operation IDs bind their first eight big-endian bytes to the original expected
+desired-state revision and use a fresh nonzero eight-byte nonce as the suffix.
+Retry never changes either part or the original fields. Refreshing revision
+fields while retaining an old ID is rejected even after result eviction. The
+shared `wire::operation_id` constructor and codec validate this format, and the
+connection store independently enforces it before mutation. The persisted ID
+prefix must equal the stored revision minus one. This bounds replay protection
+without retaining an unlimited set of historical opaque UUIDs.
+
+The store retains only the last acceptance; the service separately bounds
+operation results. An evicted older command cannot run again because its
+expected revision is stale, and a service restart changes the instance fence.
+Stored intent survives same-boot service restarts; fresh-boot autoconnect policy
+must be approved and persisted before acting. This snapshot is not observed
+network readiness or the OS recovery journal. Service handlers, boot policy,
+managed configuration and journaled network application remain independent
+gates. Filesystem operations are synchronous with no hard
+kernel wait bound and must run under retained service worker ownership.
+
+### Initial Linux service preparation
+
+Offline schema acceptance is broader than the initial running capability.
+`warper-service::preflight::Plan::prepare` performs pure preparation before any
+filesystem, network or privilege mutation. It currently admits static IPv4
+SOCKS5/TCP only, MTU 1280, numeric IPv4 endpoints and inline/no authentication.
+DNS fields, dynamic/mixed routing, captured IPv6, SSH/WireGuard and endpoint
+hostnames return typed unsupported capability. File-valued credentials require
+ordinary-client import into protected managed material first; preparation never
+opens a path from imported YAML. Non-Linux preparation is unsupported.
+
+The host adapter imposes an additional sixteen-flow ceiling. Effective capacity
+is `min(limits.max_tcp_flows, 16)` and is exposed by the plan; configured maxima
+are admission ceilings, not guaranteed reservations. At most 64 backend entries
+are prepared, with exactly one immutable core registry ID per entry. Static
+routes retain deterministic longest-prefix selection. Preparation rejects
+invalid mutated snapshots and configuration/credential values without logging
+them; it does not silently ignore unsupported fields.
+
+Before returning a plan, reserve conservative payload capacity for the host
+runtime (packet channels of capacity 64), relay buffers, one 1281-byte TUN input
+buffer and one 1280-byte pending output, per-flow SOCKS5 setup buffers (792
+bytes), and copied credential bytes. Their checked sum must fit
+`limits.max_buffered_bytes_total`. Route/registry/task/allocator metadata,
+protected configuration and kernel socket buffers are separate bounded owners;
+physical connector/kernel socket reservations remain a later preflight gate.
+Setup/idle/age/shutdown durations must fit the production adapters' bounds.
+A prepared plan is not OS approval, verified physical egress or network readiness.
+Managed configuration, endpoint exemptions, native privilege/conflict checks and
+journaled platform application remain required before a session can connect.
+
 ## 1. Parsing and Path Rules
 
 - Accept one UTF-8 YAML document containing a mapping. Reject unknown keys at every level, duplicate mapping keys, null values, custom tags, anchors/aliases, multiple documents, and wrong scalar types. A boolean must be a boolean; integer fields do not accept strings, floats, or booleans. Secrets and addresses are strings. An omitted optional value uses its documented default.
@@ -50,6 +232,7 @@ protected listener lifecycle and durable owner enrollment are still required.
 - Expand `~` and `~/` to the invoking user's home, including under sudo; reject `~otheruser`. Resolve relative paths inside YAML against the configuration file's directory. Resolve a relative `--config` against the original working directory. Do not change identity/home semantics for privilege preflight.
 - Resolve accounts from OS records rather than `HOME`. Only an elevated root caller uses sudo identity fields; an ordinary user cannot select another account through those variables. Reject empty paths and embedded NUL bytes. Resolution is lexical: preserve symlinks and `..`, and do not require referenced files to exist during offline validation.
 - File-valued secrets are UTF-8, nonempty, and limited to 16 KiB; remove one final LF or CRLF, preserving all other characters. At runtime, require a regular file, owned by the invoking user or root, without group/other permissions. Read with checks that avoid a check/open race; never print its contents.
+- The native client's secret reader opens nonblocking before checking the descriptor, permits source symlinks, and reads at most 16 KiB plus one sentinel byte. The size limit includes the optional final newline. Recheck descriptor identity, ownership, permissions, length and modification/change timestamps after reading; reject an observed change. This does not lock out concurrent writers. Backend-specific limits, including the SOCKS5 255-byte password limit, apply after newline removal. This synchronous reader belongs to ordinary-client import, never a privileged handler accepting file paths; callers retain and join its blocking worker.
 - `check-config` performs parsing, normalization, path resolution, and semantic validation without opening credential/trust files, making network requests, or changing host state. Import reads selected credential/trust material in the ordinary-user native client. Service preflight reads only its protected managed material, validates keys, detects host conflicts, and checks privileges; a control request never redirects privileged file reads.
 
 ### Decoder boundary
@@ -176,6 +359,23 @@ Require exactly one of `password`, `password_file`, or `private_key_file`. If a 
 
 Allow either no authentication fields or `user` plus exactly one password source. Reject partial credentials instead of silently ignoring them. TCP is the required initial capability; no UDP enablement key is reserved until that extension has a tested contract.
 
+The production SOCKS5 adapter offers only no-authentication when credentials
+are absent, or only username/password when supplied. A proxy cannot downgrade
+configured credentials to no-authentication. Credentials are bounded by UTF-8
+byte length and never logged. Original numeric IPv4/IPv6 destination and port
+are sent in CONNECT; no destination lookup occurs in the adapter. Consume the
+entire bound-address reply before exposing the stream. SOCKS5 UDP remains
+unsupported, with no direct fallback.
+
+The service supplies a protected physical endpoint connector; the protocol
+adapter neither discovers routes nor constructs a default direct connector.
+One absolute setup deadline/cancellation owner covers physical connect and all
+negotiation. There are no internal retries or detached dial tasks. A permit
+bounds pending and established TCP streams and is retained through half-close
+until the stream is dropped. Configured limits above the semaphore's supported
+range fail runtime preparation rather than panic. This intentionally replaces
+the Go adapter's redial loop with bounded single-attempt setup.
+
 ### WireGuard
 
 | Key | Type | Required/default | Rules |
@@ -228,7 +428,28 @@ All values below are positive integers; none accepts an unlimited sentinel. Reje
 | `max_control_inflight_requests` | 64 | Pending control requests across clients |
 | `max_control_events_per_client` | 256 | Subscriber queue limit before disconnect/resynchronization |
 | `max_control_buffered_bytes_total` | 8388608 | Aggregate control buffers, separate from data-plane buffers |
-| `max_control_operations` | 256 | Retained operation records; active operations are not silently evicted |
+| `max_control_operations` | 256 | Retained operation records, at most 4096 in the Linux service; active operations are not silently evicted |
+
+The Phase 1 Linux network supervisor requires `timeouts.connect_ms` and
+`timeouts.shutdown_ms` to be between 1 and 30000 milliseconds. Managed approval
+rejects higher values before storage. Startup shares one absolute connect
+deadline across native preparation and capture publication. Shutdown reserves
+at most one quarter of its budget for graceful flow drain, the first half for
+flow cancellation/join, and the remaining time for native withdrawal and owner
+retirement. Expiry leaves unverified ownership retained for cleanup/recovery;
+it never reports a completed Disconnect.
+
+The Phase 1 Linux control admission adapter supports 1–64 clients and 1–64
+in-flight requests. Its encoded message ceiling is 68 bytes through the wire
+maximum (1 MiB plus 28 bytes). It reserves 46 reply bytes per client and one
+maximum-size encoded buffer per admitted request. The effective request count
+is the smaller of the configured count and the number that fits the remaining
+control buffer budget; at least one must fit. Defaults admit up to seven
+simultaneous retained requests and 16 clients. Unsupported limits produce a
+typed resource error before managed configuration installation. Kernel queues,
+metadata, storage copies and retained operation records require separate
+supervisor accounting; this adapter alone does not establish a daemon-wide
+memory bound.
 
 Do not evict an active committed route to admit a new one. DNS/route queue exhaustion returns a defined failure (SERVFAIL for a parsed DNS request); new TCP admission fails, excess UDP datagrams are dropped with a counter, and UI logs use a bounded drop-oldest ring. TCP buffers use backpressure within budgets. Charge one allocation to one budget owner; account for actual capacities rather than advertised payload length. Set and document additional stack-internal limits in the post-feasibility contracts.
 
@@ -293,6 +514,8 @@ warper logs [--follow]
 warper explain NAME [--json]
 warper check-config [--config PATH]
 warper config install [--config PATH]
+warper owner enroll [--uid UID]
+warper owner clear
 warper recover [--inspect]
 warper --help
 warper --version
@@ -306,6 +529,20 @@ Bare `warper` shows status; it never starts an engine or terminal UI. Client
 explicit privileged foreground diagnostic mode sharing the service lock;
 `--headless`/`--verbose` are accepted legacy aliases there. Its signals stop
 that foreground runtime. GUI/CLI exit never implicitly disconnects.
+
+On Linux, `warperd run` imports the selected YAML and credentials under the
+validated invoking account before synchronous native bootstrap. The service must
+be stopped; both modes hold the same exclusive persistent lock. Diagnostics
+reject pending state and preserve managed configuration, enrollment and saved
+connection intent. They can reconcile proven-ended ownership, then use a
+transient in-memory configuration through the production network supervisor.
+No control endpoint is published. `--headless` is a legacy alias; `--verbose`
+and `--debug` enable a startup message and aggregate shutdown summary without
+packet contents, secrets or raw configuration. Repeated/unknown flags and invalid
+configuration-path forms exit 2. SIGTERM/SIGINT/SIGHUP cancel and drain the engine;
+success requires verified retirement and prints exactly `Diagnostic stopped.`.
+Output occurs outside active networking, so a blocked consumer cannot stall
+forwarding. Import and bootstrap filesystem waits have no hard kernel deadline.
 
 `up`/`down` return an operation ID and wait for completion by default, with
 `--wait-ms` default 30000. Wait expiry exits 1 and prints the operation ID;
@@ -333,12 +570,60 @@ deadline; the source reader performs no backend/DNS network operation.
 
 Successful inspection exits 0 and prints exactly
 `Configuration is valid (offline).` on stdout; it makes no availability,
-trust, cryptographic, or connectivity claim. Bare `warper` and the documented
-service commands currently exit 1 with `UnsupportedCapability`, without IPC,
-source reads, or network mutation. Malformed command forms exit 2. A failed
-stdout write becomes an output error; a failed diagnostic write retains the
-primary failure and its exit code. Only the offline command is implemented;
-service command execution and client debug logging remain unavailable.
+trust, cryptographic, or connectivity claim. On Linux, bare `warper`, `status`,
+`up` and `down` connect to the fixed protected control endpoint and verify its
+initial-user-namespace root peer before sending Hello. They negotiate wire
+version two and correlate every reply. Linux administrative import/enrollment
+commands are described below. Remaining service commands, and native service
+commands on other platforms, still return `UnsupportedCapability`.
+`warperd service` runs the foreground Linux daemon against already approved
+managed configuration and enrolled owner policy. It keeps networking independent
+of clients, handles SIGTERM/SIGINT through owned shutdown and shares the fixed
+instance lock. No service-manager installation is performed by building the
+binary. Foreground diagnostics and stopped-service
+`warperd recover [--inspect]` are available on Linux.
+A missing service fails with exit 1;
+offline checks never attempt IPC.
+
+A control connection and each request/reply exchange have a five-second
+absolute deadline. Filesystem identity inspection remains synchronous and does
+not gain a hard kernel-I/O wall deadline. The client observes accepted operations
+at intervals of at least 100 ms, bounded by the requested wait deadline; its
+wait starts after Accepted. It never automatically resubmits Connect/Disconnect.
+A lost acceptance or observation failure prints the original operation ID and
+exits 1; status must be refreshed before an explicit new command. Successful
+waits report operation completion, rather than claiming that a historical
+completion proves current network readiness. `status --json` prints state,
+configuration_generation, owner_revision, configuration_present and
+desired_revision; plain status presents those same fields. Client logging and
+additional service commands remain unavailable.
+
+Malformed command forms exit 2. A failed stdout write becomes an output error;
+a failed diagnostic write retains the primary failure and its exit code.
+
+`config install` and owner enrollment require an administrative native peer;
+invoke the CLI through explicit OS elevation. The client does not elevate itself.
+Under sudo, configuration materialization runs in a separate child with the
+validated invoking UID, its primary GID, and ordinary account groups from the
+OS database. No inherited administrative groups survive; non-root accounts also
+receive empty ambient, inheritable and bounding capability sets. The Linux client uses
+`/usr/bin/setpriv` from util-linux with no-new-privileges before executing the
+materializer; the child verifies actual credentials and group membership before
+reading sources. The root parent receives
+at most 1 MiB of normalized managed bytes through a private pipe, validates them,
+and sends no user-selected paths to the service. Import errors and child failures
+are redacted, bounded and never print the secret-bearing envelope. Root without
+sudo imports as the root account. Source/account I/O remains synchronous and does
+not gain a hard kernel-filesystem deadline.
+
+`owner enroll` uses `--uid UID`, or the validated invoking sudo account when
+omitted. UID must be an unsigned decimal integer below the reserved u32 maximum.
+`owner clear` removes the enrolled account; UID 0 remains the administrative
+principal. Both commands compare the freshly observed owner revision before
+mutation and report the resulting revision. They do not change networking intent.
+Configuration installation likewise compares the observed configuration generation
+and requires disconnected, unretained approval. No administrative request is
+silently retried after an uncertain reply.
 
 Import/configuration installation is a separate authorized operation. The
 native client reads selected files with user access and submits normalized
@@ -352,6 +637,60 @@ owner fields accepted from arbitrary imported YAML.
 `warperd recover` is the stopped-service administrative path and requires
 its instance lock; inspection is read-only/redacted. Neither requires backend
 DNS. Logs go to stderr; stdout contains command results only.
+
+Linux `warperd recover --inspect` acquires the exclusive instance lock and fails
+if the daemon still holds it. It reads only fixed protected state, validates
+committed managed configuration, pins pending records, and checks native
+network ownership without starting a backend or connecting. It does not unlink,
+sync or rewrite inspected state. Acquiring the persistent instance lock may
+create its inode when absent; it is never removed by inspection. Successful
+output has exactly these labels and value sets, each on its own line:
+
+```text
+Control endpoint: absent|retirable
+Owner pending intent: no|yes
+Configuration pending intent: no|yes
+Connection pending intent: no|yes
+Network pending intent: no|yes
+Network ownership: absent|retired|retirable
+```
+
+Values after `:` above are alternatives, not literal output. Retirable means
+the current observation passed retirement checks, never that cleanup occurred.
+Changed/unknown objects, live recorded owners and surviving foreign route keys
+remain errors. There is no configuration path, sudo-home search or secret output.
+Native network queries share a five-second deadline; synchronous filesystem
+inspection has no hard kernel deadline.
+
+Linux `warper recover --inspect` uses the authenticated service and requires an
+administrative peer. It prints `Pending intent: no|yes`,
+`Recovery required: no|yes`, and `Busy: no|yes`, each on a separate line. The
+values shown here are alternatives. Busy includes active or retained network
+work. Inspection does not require successful ordinary Status reads and performs
+no persistence mutation. Detected ownership/persistence faults retain the
+controller's protective failure behavior. Unknown/unsafe state remains an error.
+
+`warper recover` requires no active or pending network owner and no retained
+configuration approval. It prevalidates all stores and new control budgets,
+discards only unchanged unpublished intent, resyncs committed state, refreshes
+in-memory approval and retires proven-ended journal ownership. It preserves
+accepted connection intent and starts no backend. Admission changes apply before
+acknowledgement; success prints exactly `Recovery completed.`. Partial failures
+remain explicit recovery state and instruct `recover --inspect` before retrying.
+The client never automatically resubmits recovery. A missing/stopped service,
+unavailable owner policy or retained network work requires the separate explicit
+stopped-service path; the client never bypasses authentication or instance locks.
+
+Without `--inspect`, `warperd recover` performs that complete preflight before
+mutation. It retires verified stale endpoint publication, discards only unchanged
+unpublished intent in all four stores, resyncs unchanged committed records, and
+rechecks native ownership/absence before marking the network journal retired.
+Committed owner, configuration and connection intent are preserved. It neither
+starts networking nor deletes inferred kernel objects. Success prints exactly
+`Recovery completed.` and exits 0. Partial failure exits 1 with its primary error
+and inspection guidance; completed safe steps are not rolled back or retried
+automatically. A later service start still applies the preserved connection
+intent according to boot policy.
 
 Exit codes: 0 for completed success, valid inspection, or explicitly requested
 operation acceptance; 2 for CLI/configuration errors; 1 for runtime, preflight,
@@ -479,3 +818,163 @@ negative control has the separate `--raw-mtu-check` flag and intentionally
 fails. These commands do not add installed CLI or YAML fields. The link ingress
 MTU and TCP egress path budget are separate; the supported downward PMTU floor
 is 1280, with below-range feedback failing the selected stream explicitly.
+
+### Protected native network journal storage
+
+The Linux service's network journal uses fixed root-owned mode-0600
+`/var/lib/warper/network.journal` and exclusive `network.pending` staging under
+the existing protected mode-0700 state directory. No source path, caller UID or
+file descriptor override is accepted. This storage boundary requires native
+root and the retained runtime lease. It does not itself establish OS ownership,
+authorize RPC requests or replay an operation.
+
+The version-one envelope is `WJNL`, big-endian u32 version 1, nonzero u64 revision,
+u32 payload length, four reserved zero bytes and 1..65536 payload bytes. The
+platform owns the payload schema and must store only bounded, validated network
+metadata, never credentials, packet contents or raw imported configuration.
+Unknown/malformed envelopes and unsafe or changed files fail closed. Replacement
+requires the observed revision, stages/syncs the complete file and directory,
+revalidates current/pending ownership and bytes, then renames/syncs before
+returning its new revision. A positive result proves storage durability only.
+
+A failed staging operation preserves the pending file for explicit inspection;
+never promote or blindly delete it. Pending state blocks new replacements.
+Post-rename or discard sync uncertainty blocks further normal operations until
+explicit unchanged inspection/resync. Pending discard consumes an in-process
+inspection token bound to the store, directory, prior snapshot and staged
+identity/timestamps/bytes; mismatch preserves evidence. Service recovery handlers
+must require fresh administrative authorization and bound retained tokens.
+Filesystem work runs in retained blocking workers, outside application locks;
+kernel filesystem waits have no hard deadline. Workers retain runtime ownership
+until joined, including after a caller stops waiting. Driver intent/commit
+payloads, native ownership checks and recovery application remain separate gates.
+
+Native journal ownership uses a fixed 88-byte `WNOC` version-one component with
+boot, network/PID namespace, service instance and process-start identity. None
+of these identities is configurable or accepted from a client as native proof.
+The service pins namespace descriptors and retains the runtime lease until
+native resources retire. Stored identities permit classification/inspection;
+process liveness and full object ownership checks remain necessary for recovery.
+
+The initial native TUN owner accepts only MTU 1280 and a validated optional Linux
+name. It creates an unnamed down nonpersistent device, journals ownership and
+renames that newly owned descriptor through the kernel. No existing named TUN
+is adopted. Cleanup verifies retirement of the owned descriptor and leaves
+foreign/reused names untouched. Its fixed 160-byte WTUN payload
+adds one IPv4 address and Addressing/Addressed stages to the original TUN
+lifecycle. A version-one Retired record remains readable for fresh preparation;
+active or uncertain prior state requires recovery. The internal address operation
+requires one unicast non-loopback /32, exclusive kernel addition and
+IFA_F_NOPREFIXROUTE. It rejects existing addresses across the namespace and
+verifies a correlated ACK and exact readback before committing ownership.
+It leaves the interface down. UP, capture routes, exemptions and service
+readiness are not supplied by successful allocation or address assignment.
+
+The internal initial TUN activation operation requires committed address
+ownership, journals intent and sets only IFF_UP. It verifies kernel ACK, UP state
+and address ownership before success. WTUN version three extends the same
+160-byte layout with Enabling/Enabled, retaining conservative decoding of prior
+versions. Activation alone supplies no capture routes or connected readiness.
+
+Native TUN allocation requires an I/O-enabled Tokio service runtime. After
+committed activation, one bounded packet port can use the original descriptor.
+It cannot reconfigure the TUN or publish routes. Shutdown must join packet work
+and drop the port before explicit descriptor retirement; a live port returns
+PacketPortActive without pretending cleanup succeeded.
+Packet waits check the actual monotonic deadline before each device poll,
+including resumed readiness, and release their direction reservation on expiry.
+An uncertain/partial send is never retried automatically.
+
+The initial Linux protected TCP connector admits at most 64 numeric IPv4
+endpoints and 16 simultaneous setup/stream owners. It supports unstacked
+Ethernet/veth unicast paths and explicit local loopback endpoints, rejecting
+other path types rather than falling back. Each dial binds the observed source
+and interface and verifies its actual tuple; each stream invalidates on network
+change/loss. Its native kernel socket/monitor budgets remain separate from the
+existing payload-buffer accounting and must be admitted by the service.
+
+The host TCP runtime supports one retained quiescence command/result at a time.
+It stops new acceptance and rejects selected new SYNs with RST while preserving
+accepted streams and packet processing. A caller wait timeout does not cancel
+accepted quiescence. This internal barrier does not change CLI connection state
+or authorize removing routes; the supervisor must still drain references and
+complete native retirement before reporting disconnected cleanup success.
+
+The internal read-only IPv4 route inventory accepts at most 8192 entries, 64
+netlink datagrams and 16384 messages per completed dump. Its 32 KiB datagram
+bound and at most 64 KiB kernel receive queue are independent of payload-buffer
+limits. These are implementation ceilings, not configurable route capacity or
+permission to capture traffic. Unknown route selectors remain visible to
+conflict checks but cannot establish exact ownership metadata.
+
+Initial IPv4 capture admission supports only the three ordinary unconditional
+local/main/default policy rules. Its read-only classifier admits at most 64
+rules and shares the bounded inventory transport. Custom rules, selectors,
+suppression or extra actions are reported as unsupported without mutation.
+This internal observation does not change CLI behavior or establish readiness.
+
+The initial journaled capture owner admits 1..4096 canonical static IPv4
+prefixes for one retained runtime, after packet-port creation. WTUN v4 extends
+the 160-byte header with at most 4096 eight-byte prefix records (32928 bytes
+maximum). Admission rejects local-route overlaps and equal/more specific
+foreign routes before mutation. Capture changes retain a bounded monitor;
+service supervision and aggregate native budget admission remain required.
+Quiescence and zero retained flows fence withdrawal, with packet/grace draining
+owned by the supervisor. Explicit TUN close refuses an attached capture batch.
+These internal operations do not expose new CLI behavior or connected readiness.
+
+Pure Phase 1 service preparation rejects more than 4096 actual static prefixes
+with ResourceLimit before entropy, sockets or TUN allocation, even when the
+configured `max_route_entries` is larger. Offline schema validation retains its
+configured ceiling; passing `check-config` does not establish runtime capability.
+
+Internal forced flow cancellation stops new acceptance and aborts driver flows
+while keeping packet/reset handling and the policy alive. Application/queued
+stream references stay charged until final drop. The supervisor must join
+relays and native I/O, release unread streams and drain/discard bounded packets
+before withdrawing capture. This adds no user option or authenticated command.
+
+Internal recorded-owner process inspection accepts no caller paths or signal
+operation. It revalidates native context, uses PIDFD/procfs observations in the
+recorded PID scope and distinguishes previous boots. PID reuse or process exit
+alone does not authorize deleting or adopting a TUN or route. These observations
+add no configuration option and must run in retained native workers.
+
+Internal abandoned-TUN reconciliation changes only the protected journal. It
+refuses live or uncertain owner evidence and surviving interface/route claims,
+then records ended ownership without deleting/adopting host objects. Prior boot
+identifiers are foreign to the current kernel. Pending storage requires explicit
+inspection/discard, not promotion. No CLI recovery command is exposed yet.
+
+### Initial managed snapshot format
+
+Native SOCKS5 import validates the source before reading selected password
+files, applies the same 255-byte password limit after newline removal, and
+materializes all defaults in a versioned snapshot. The client supports at most
+64 SOCKS5 entries at this boundary; SSH/WireGuard import remains unsupported.
+The protected `WMCF` version-one envelope is limited to 1 MiB, including its
+header, normalized configuration and separately encoded credential table.
+The configuration section contains no credentials or file references; decoder
+validation and typed reconstruction perform no file reads. Debug/errors never
+print either section. Encoded snapshots contain secrets and must never appear
+in logs, ordinary status replies or unprotected storage. This library format
+is not yet an implemented import command or authorized managed store. Its exact
+layout and canonical validation are in the implementation contract.
+
+The initial Linux managed storage primitive opens fixed `/etc/warper`, which
+installation must create root-owned mode 0700 beneath protected parents. It
+stores `configuration` and `configuration.pending` as root-owned mode-0600,
+single-link regular files. The separate `WCFG` version-one outer envelope
+records a generation and at most 1 MiB of approved data. Expected-generation
+replacement uses exclusive staging, file/directory sync and atomic rename;
+pending or uncertain state requires explicit inspection/resync/discard without
+promotion. This low-level store does not authorize installation, decode WMCF or
+decide whether a session is disconnected; the service must enforce those gates.
+
+The initial native installation owner now validates WMCF and pure service
+capabilities before storage, requires a fresh administrative Unix peer, and
+compares the expected generation. Its approved configuration lease pins both
+immutable material and runtime ownership. Preparation/network/cleanup work must
+retain that lease; installation returns Busy until all such leases are dropped.
+Status and new leases recheck protected state instead of adopting external edits.
+This boundary is not yet exposed by control sessions or an import command.

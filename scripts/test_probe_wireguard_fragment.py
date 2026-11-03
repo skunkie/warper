@@ -101,6 +101,72 @@ class EncryptedFragmentTests(unittest.TestCase):
                     probe.run_child(str(binary), capture)
                 self.assertGreaterEqual(peer.fileno(), 0)
 
+    def test_nonzero_exit_after_stdout_eof_preserves_child_failure(self):
+        child = MagicMock()
+        child.returncode = None
+        codes = iter([None, None, None, 7, 7])
+
+        def poll():
+            child.returncode = next(codes)
+            return child.returncode
+
+        child.poll.side_effect = poll
+        child.wait.return_value = 7
+        selector = MagicMock()
+        key = MagicMock()
+        key.data = "child"
+        selector.select.side_effect = [[(key, 1)], []]
+        selector_context = MagicMock()
+        selector_context.__enter__.return_value = selector
+        with (patch.object(probe.subprocess, "Popen", return_value=child),
+              patch.object(probe.os, "set_blocking"),
+              patch.object(probe.os, "read", return_value=b""),
+              patch.object(probe.selectors, "DefaultSelector", return_value=selector_context)):
+            with self.assertRaisesRegex(RuntimeError, "exit 7"):
+                probe.run_child("/synthetic-binary", MagicMock())
+        child.kill.assert_not_called()
+        child.wait.assert_called_once_with(timeout=2)
+        child.stdout.close.assert_called_once_with()
+        self.assertEqual(selector.select.call_count, 2)
+
+    def test_complete_observations_survive_successful_exit_after_stdout_eof(self):
+        child = MagicMock()
+        child.returncode = None
+        codes = iter([None, None, None, None, None, 0, 0, 0])
+
+        def poll():
+            child.returncode = next(codes)
+            return child.returncode
+
+        child.poll.side_effect = poll
+        child.wait.return_value = 0
+        capture = MagicMock()
+        capture.recv.return_value = b"synthetic frame"
+        captured, output = MagicMock(), MagicMock()
+        captured.data, output.data = "capture", "child"
+        selector = MagicMock()
+        selector.select.side_effect = [[(captured, 1), (output, 1)], [(output, 1)], []]
+        selector_context = MagicMock()
+        selector_context.__enter__.return_value = selector
+        lines = [f"PASS encrypted outer fragmentation: inner_ipv6={inner}, outer_ipv6={outer}"
+                 for inner in ("false", "true") for outer in ("false", "true")]
+        lines.extend(f"PASS outer no-fragment negative control: outer_ipv6={outer}"
+                     for outer in ("false", "true"))
+        sample = ("\n".join(lines) + "\n").encode()
+        with (patch.object(probe.subprocess, "Popen", return_value=child),
+              patch.object(probe.os, "set_blocking"),
+              patch.object(probe.os, "read", side_effect=[sample, b""]),
+              patch.object(probe.selectors, "DefaultSelector", return_value=selector_context),
+              patch.object(probe, "observe", side_effect=lambda _frame, _records, completed:
+                           completed.update({False, True})) as observe,
+              contextlib.redirect_stdout(io.StringIO()) as reported):
+            probe.run_child("/synthetic-binary", capture)
+        observe.assert_called_once()
+        child.kill.assert_not_called()
+        child.wait.assert_called_once_with(timeout=2)
+        child.stdout.close.assert_called_once_with()
+        self.assertIn("PASS captured bidirectional fragmented WireGuard data", reported.getvalue())
+
     def test_child_output_capacity_is_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "fixture"

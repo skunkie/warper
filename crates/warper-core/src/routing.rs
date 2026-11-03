@@ -104,6 +104,12 @@ impl Policy {
         })
     }
 
+    /// Canonical immutable entries in selection order, for installing the
+    /// corresponding capture mappings without rebuilding routing policy.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
     /// Return the winning backend once. Capability/transport errors belong to
     /// that backend; they cannot cause selection of a broader prefix or direct I/O.
     pub fn select(&self, destination: IpAddr) -> Option<BackendId> {

@@ -6,6 +6,7 @@
 
 pub mod configuration;
 pub mod routing;
+pub mod transport;
 
 /// Registry identity within one immutable configuration generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
