@@ -2395,6 +2395,34 @@ administrative installation, generation fencing and redacted views remain
 separate boundaries. Version-one defaults must remain stable; incompatible
 normalization/default changes require a new version or explicit migration.
 
+## Linux native import process
+
+The explicitly elevated CLI materializes configuration before starting its async
+executor. It validates the invoking sudo identity against the OS account
+database, then executes its own binary through the fixed `/usr/bin/setpriv`
+helper with that UID, primary GID, initialized account groups and
+`--no-new-privs`. The environment is cleared. No shell or user-selected executable
+is involved. The materializer verifies real/effective credentials and the exact
+account group set before path resolution or source reads. Root without a sudo
+identity imports as root. Required util-linux helper failure is an error.
+
+The private stdout pipe uses a 12-byte big-endian header: magic `WMIM`, version
+u16=1, status u16 and payload length u32. Status zero carries one canonical WMCF
+snapshot of at most 1 MiB. Error statuses 1 through 6 respectively mean source,
+schema, credential, size, identity and unsafe child; they carry no payload.
+Reject unknown statuses, versions, truncation, trailing bytes and excess length.
+The child rejects stdout that is not a pipe. The parent bounds reads, validates
+the snapshot without opening paths, and always reaps the child; failed reads
+trigger termination before reaping. Cleanup errors retain the primary failure.
+Source/account I/O is synchronous without a hard filesystem deadline.
+
+After native service authentication, administrative CLI commands obtain a fresh
+status and compare the corresponding configuration generation or owner revision.
+Installation sends normalized bytes, never source paths. Enrollment sends an
+optional UID; UID 0 remains the administrative principal after owner removal.
+Administrative mutations are submitted once. A lost or invalid acknowledgement
+requires inspection before retrying; it never triggers automatic resubmission.
+
 ## Protected managed configuration storage
 
 The Linux `warper_control::runtime::managed::ManagedStore` is synchronous fixed

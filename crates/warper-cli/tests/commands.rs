@@ -542,3 +542,34 @@ fn native_control_arguments_preserve_output_and_observation_policy() {
         );
     }
 }
+
+#[test]
+fn administrative_arguments_preserve_paths_and_reject_reserved_owner_ids() {
+    assert_eq!(
+        args::parse(&arguments(&[
+            "config",
+            "install",
+            "--config",
+            "sample.yaml"
+        ])),
+        Ok(Command::Service(ServiceCommand::InstallConfig {
+            path: Some("sample.yaml".into())
+        }))
+    );
+    assert_eq!(
+        args::parse(&arguments(&["owner", "enroll"])),
+        Ok(Command::Service(ServiceCommand::Enroll { uid: None }))
+    );
+    assert_eq!(
+        args::parse(&arguments(&["owner", "enroll", "--uid", "1000"])),
+        Ok(Command::Service(ServiceCommand::Enroll { uid: Some(1000) }))
+    );
+    assert_eq!(
+        args::parse(&arguments(&["owner", "clear"])),
+        Ok(Command::Service(ServiceCommand::ClearOwner))
+    );
+    for uid in ["", "-1", "+1", "4294967295", "4294967296", "sample-secret"] {
+        assert!(args::parse(&arguments(&["owner", "enroll", "--uid", uid])).is_err());
+    }
+    assert!(args::parse(&arguments(&["owner", "clear", "--uid", "1000"])).is_err());
+}

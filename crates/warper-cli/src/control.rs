@@ -28,6 +28,7 @@ pub enum Error {
     UnexpectedReply,
     InvalidWait,
     Unsupported,
+    Administrative(Box<Error>),
     Entropy(std::io::ErrorKind),
     EntropyIncomplete,
     WaitExpired {
@@ -48,6 +49,10 @@ impl fmt::Display for Error {
             Self::InvalidWait => {
                 f.write_str("InvalidArguments: wait duration is not representable")
             }
+            Self::Administrative(cause) => write!(
+                f,
+                "Administrative request: {cause}; inspect status before retrying"
+            ),
             Self::Unsupported => f.write_str("UnsupportedCapability: unavailable service command"),
             Self::Entropy(_) | Self::EntropyIncomplete => {
                 f.write_str("Entropy: operation identity randomness is unavailable")
@@ -79,8 +84,16 @@ impl From<wire::Error> for Error {
     }
 }
 
+pub(crate) enum Administrative {
+    Install(warper_config::schema::Secret<Vec<u8>>),
+    Enroll(Option<u32>),
+}
+
 #[cfg(target_os = "linux")]
-pub(crate) async fn native(command: ServiceCommand) -> Result<String, crate::Error> {
+pub(crate) async fn native(
+    command: ServiceCommand,
+    administrative: Option<Administrative>,
+) -> Result<String, crate::Error> {
     let (_cancel, mut cancellation) = watch::channel(false);
     // No configurable path or identity bypass: authenticate initial-namespace
     // root at the protected endpoint before Hello or any other payload.
@@ -90,6 +103,11 @@ pub(crate) async fn native(command: ServiceCommand) -> Result<String, crate::Err
     )
     .await
     .map_err(crate::Error::Admission)?;
+    if let Some(administrative) = administrative {
+        return administer(stream, administrative, &mut cancellation)
+            .await
+            .map_err(crate::Error::Control);
+    }
     let mut nonce = [0; 8];
     if matches!(
         command,
@@ -108,6 +126,60 @@ pub(crate) async fn native(command: ServiceCommand) -> Result<String, crate::Err
     execute(stream, command, nonce, &mut cancellation)
         .await
         .map_err(crate::Error::Control)
+}
+
+async fn administer<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    command: Administrative,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<String, Error> {
+    let mut client = Client {
+        stream,
+        request_id: 0,
+    };
+    client
+        .exchange(Kind::Hello, vec![], Kind::HelloReply, None, cancel)
+        .await?;
+    let frame = client
+        .exchange(Kind::Status, vec![], Kind::StatusReply, None, cancel)
+        .await?;
+    let status = Status::decode(&frame)?;
+    let (kind, expected, body, label, counter) = match command {
+        Administrative::Install(encoded) => {
+            let mut body = status.configuration_generation.to_be_bytes().to_vec();
+            body.extend_from_slice(encoded.expose());
+            (
+                Kind::InstallConfig,
+                Kind::ConfigReply,
+                body,
+                "Configuration installed",
+                "generation",
+            )
+        }
+        Administrative::Enroll(owner) => {
+            let mut body = status.owner_revision.to_be_bytes().to_vec();
+            body.extend_from_slice(&u32::from(owner.is_some()).to_be_bytes());
+            body.extend_from_slice(&owner.unwrap_or(0).to_be_bytes());
+            (
+                Kind::Enroll,
+                Kind::EnrollmentReply,
+                body,
+                "Owner policy updated",
+                "revision",
+            )
+        }
+    };
+    let reply = client
+        .exchange(kind, body, expected, None, cancel)
+        .await
+        .map_err(|cause| Error::Administrative(Box::new(cause)))?;
+    let revision = u64::from_be_bytes(
+        reply
+            .body()
+            .try_into()
+            .map_err(|_| Error::Administrative(Box::new(Error::UnexpectedReply)))?,
+    );
+    Ok(format!("{label} ({counter} {revision}).\n"))
 }
 
 // The stream must already be authenticated by the platform connector. Keeping

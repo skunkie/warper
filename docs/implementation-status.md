@@ -25,9 +25,8 @@ queues, native Linux seeds and retained-stream accounting (ADR 0012).
 Pure service preparation now validates the narrow static IPv4 capability and
 payload budget before composing the real adapters. Scoped physical protection
 and journaled capture now have native traffic and recovery evidence. The native
-controller and foreground service composition are implemented. Full executable
-lifecycle acceptance, administrative CLI/installation and remaining supervisor
-budgets remain open.
+controller and foreground service composition are implemented. The actual daemon/CLI native traffic and lifecycle gate passes. Administrative
+CLI/installation, recovery commands and the final requirement audit remain open.
 A fixed Linux runtime-directory lease now pins
 protected state and holds a persistent nonblocking lock; it is not yet
 integrated with a network-instance lifecycle. The endpoint adapter now performs
@@ -41,7 +40,7 @@ a bounded connection. A bounded service relay set now retains/joins TCP workers 
 clients, enforcing selected-backend setup, idle/absolute expiry and cancellation.
 A Linux durable connection store now records accepted intent with native boot
 and instance IDs, revision/operation fences, explicit resync and pending discard;
-actual daemon/CLI lifecycle acceptance remains unverified. A foreground
+actual daemon/CLI lifecycle acceptance now has privileged CI evidence. A foreground
 `warperd service` executable now composes the native controller and supervisor.
 
 ## Phase Ledger
@@ -51,7 +50,7 @@ actual daemon/CLI lifecycle acceptance remains unverified. A foreground
 | Development infrastructure | Available | `scripts/check.sh`: licensing, actionlint with ShellCheck, composite validation, Python harness tests, Rust formatting/Clippy/rustdoc/tests/release and dependency policy |
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
-| 1: Headless Linux service slice | In progress | Static policy/configuration/CLI and Linux kernel peer checks have executable tests. Mandatory initial-user-namespace admission rejects real nested-root, counterfeit-procfs and same-procfs overmount cases (ADR 0008). A fixed protected runtime-directory lease verifies metadata/identity and retains a persistent flock inode (ADR 0009), with controlled SIGKILL/reacquisition evidence. A real endpoint adapter publishes/retires controlled sockets with durable intent and authorizes peers; a protected owner store now atomically persists revisioned enrollment under native administrative authorization. The foreground service executable now exists; its executable lifecycle gate remains unverified. Evidence under `target/evidence/phase-1/`: `configuration-paths/`, `native-identity/`, `yaml-decoder/`, `schema-validation/`, `check-config-cli/`, `linux-peer-auth/`, `user-namespace-admission/`, `runtime-ownership/`, `control-endpoint/`, `owner-enrollment/`, `control-framing/`, `socks5-backend/`, `host-tcp-adapter/`, `service-relays/`, `service-preparation/`. SOCKS5 has real controlled TCP/FIN evidence in both destination/physical families and a loopback workload baseline; journaled physical/TUN service integration remains open. Production TCP host/runtime tests cover original tuples, FIN, bounded queues and owner loss; the scoped native TUN API probe now passes actual kernel TCP. Pending enrollment recovery now compares pinned intent and committed state under renewed administrative authorization; the owner-dispatched root recovery gate passes. Pure service preparation now admits static IPv4 SOCKS5/TCP with explicit effective flow capacity and aggregate buffer reservations, without file reads, name resolution, sockets or host changes. Durable connection intent now supplies revision/instance fencing and bounded inspection/discard; positive native persistence CI passes at `ed834b5`. Next: complete supervisor/native budgets, authenticated sessions, service CLI/installation and full daemon lifecycle |
+| 1: Headless Linux service slice | In progress | Static policy/configuration/CLI and Linux kernel peer checks have executable tests. Mandatory initial-user-namespace admission rejects real nested-root, counterfeit-procfs and same-procfs overmount cases (ADR 0008). A fixed protected runtime-directory lease verifies metadata/identity and retains a persistent flock inode (ADR 0009), with controlled SIGKILL/reacquisition evidence. A real endpoint adapter publishes/retires controlled sockets with durable intent and authorizes peers; a protected owner store now atomically persists revisioned enrollment under native administrative authorization. The foreground service executable passes its actual daemon/CLI native lifecycle gate at `fe5962c`. Evidence under `target/evidence/phase-1/`: `configuration-paths/`, `native-identity/`, `yaml-decoder/`, `schema-validation/`, `check-config-cli/`, `linux-peer-auth/`, `user-namespace-admission/`, `runtime-ownership/`, `control-endpoint/`, `owner-enrollment/`, `control-framing/`, `socks5-backend/`, `host-tcp-adapter/`, `service-relays/`, `service-preparation/`. SOCKS5 has real controlled TCP/FIN evidence in both destination/physical families and a loopback workload baseline; journaled physical/TUN service integration remains open. Production TCP host/runtime tests cover original tuples, FIN, bounded queues and owner loss; the scoped native TUN API probe now passes actual kernel TCP. Pending enrollment recovery now compares pinned intent and committed state under renewed administrative authorization; the owner-dispatched root recovery gate passes. Pure service preparation now admits static IPv4 SOCKS5/TCP with explicit effective flow capacity and aggregate buffer reservations, without file reads, name resolution, sockets or host changes. Durable connection intent now supplies revision/instance fencing and bounded inspection/discard; positive native persistence CI passes at `ed834b5`. Next: complete supervisor/native budgets, authenticated sessions, service CLI/installation and full daemon lifecycle |
 | 2: Linux DNS and routing | Not started | Production DNS parsing/transport, complete service-binding dependency gates, response handoff, route leases, retained-state admission and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
@@ -618,7 +617,24 @@ native work across cleanup deadlines, joined worker panics, lost network
 ownership and preservation of primary failures. The new disposable fixture
 launches the actual daemon and CLI, controlled kernel TCP/FIN, foreign denial,
 client detach, explicit Disconnect, failed-start rollback and endpoint retirement.
-Its exact-commit privileged gate remains unverified. Evidence belongs under
-`target/evidence/phase-1/daemon-composition/`. Administrative CLI import/enrollment,
+The [exact-commit privileged gate](https://github.com/skunkie/warper/actions/runs/41526234900)
+passes at `fe5962c`; all four isolated probe results report exit zero, no timeout
+and preserved host state. Evidence is under
+`target/evidence/phase-1/daemon-composition/ci-41526234900/`. Administrative CLI import/enrollment,
 offline recovery, runnable service-manager installation and the final full Phase
 1 acceptance audit remain open.
+
+
+The Linux administrative CLI now submits generation-fenced normalized
+configuration installation and revision-fenced owner enrollment/removal after
+native service authentication. Import runs under the validated invoking account
+in a separate process with normal account groups, bounded private pipe framing
+and redacted failures. No root parent reads user-selected YAML or credential
+paths, and uncertain administrative replies are never retried automatically.
+Controlled client tests cover exact revision selection, owner presence, snapshot
+payloads and lost acknowledgements. The actual daemon fixture now exercises
+these CLI commands, including root-only credential denial, ordinary supplementary
+group access and owner revocation. This expanded privileged gate remains
+unverified. Evidence belongs under `target/evidence/phase-1/admin-cli/`. Recovery
+commands, runnable service-manager installation and the full Phase 1 audit remain
+open.

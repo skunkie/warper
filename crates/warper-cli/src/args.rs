@@ -14,7 +14,7 @@ pub enum Command {
     Service(ServiceCommand),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceCommand {
     Status { json: bool },
     Up { wait: Wait },
@@ -23,7 +23,9 @@ pub enum ServiceCommand {
     Connections,
     Logs,
     Explain,
-    InstallConfig,
+    InstallConfig { path: Option<PathBuf> },
+    Enroll { uid: Option<u32> },
+    ClearOwner,
     Recover,
 }
 
@@ -107,12 +109,36 @@ pub fn parse(args: &[OsString]) -> Result<Command, Error> {
         {
             Ok(Command::Service(ServiceCommand::Explain))
         }
+        Some("owner") if single_flag(rest, "clear") => {
+            Ok(Command::Service(ServiceCommand::ClearOwner))
+        }
+        Some("owner") if rest.first().is_some_and(|arg| arg == "enroll") => {
+            let uid = match &rest[1..] {
+                [] => None,
+                [flag, uid] if flag == "--uid" => Some(parse_uid(uid)?),
+                _ => return Err(Error::Usage),
+            };
+            Ok(Command::Service(ServiceCommand::Enroll { uid }))
+        }
         Some("config") if rest.first().is_some_and(|arg| arg == "install") => {
-            config_path(&rest[1..])?;
-            Ok(Command::Service(ServiceCommand::InstallConfig))
+            Ok(Command::Service(ServiceCommand::InstallConfig {
+                path: config_path(&rest[1..])?,
+            }))
         }
         _ => Err(Error::Usage),
     }
+}
+
+fn parse_uid(value: &std::ffi::OsStr) -> Result<u32, Error> {
+    let value = value.to_str().ok_or(Error::Usage)?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::Usage);
+    }
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|uid| *uid != u32::MAX)
+        .ok_or(Error::Usage)
 }
 
 fn single_flag(args: &[OsString], flag: &str) -> bool {

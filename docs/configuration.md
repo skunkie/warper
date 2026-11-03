@@ -514,6 +514,8 @@ warper logs [--follow]
 warper explain NAME [--json]
 warper check-config [--config PATH]
 warper config install [--config PATH]
+warper owner enroll [--uid UID]
+warper owner clear
 warper recover [--inspect]
 warper --help
 warper --version
@@ -557,14 +559,15 @@ Successful inspection exits 0 and prints exactly
 trust, cryptographic, or connectivity claim. On Linux, bare `warper`, `status`,
 `up` and `down` connect to the fixed protected control endpoint and verify its
 initial-user-namespace root peer before sending Hello. They negotiate wire
-version two and correlate every reply. Other service commands, and native
-service commands on other platforms, still return `UnsupportedCapability`.
+version two and correlate every reply. Linux administrative import/enrollment
+commands are described below. Remaining service commands, and native service
+commands on other platforms, still return `UnsupportedCapability`.
 `warperd service` runs the foreground Linux daemon against already approved
 managed configuration and enrolled owner policy. It keeps networking independent
 of clients, handles SIGTERM/SIGINT through owned shutdown and shares the fixed
 instance lock. No service-manager installation is performed by building the
-binary. Initial administrative import/enrollment, offline recovery and diagnostic
-`warperd run` commands remain incomplete. A missing service fails with exit 1;
+binary. Offline recovery and diagnostic `warperd run` commands remain incomplete.
+A missing service fails with exit 1;
 offline checks never attempt IPC.
 
 A control connection and each request/reply exchange have a five-second
@@ -582,6 +585,29 @@ additional service commands remain unavailable.
 
 Malformed command forms exit 2. A failed stdout write becomes an output error;
 a failed diagnostic write retains the primary failure and its exit code.
+
+`config install` and owner enrollment require an administrative native peer;
+invoke the CLI through explicit OS elevation. The client does not elevate itself.
+Under sudo, configuration materialization runs in a separate child with the
+validated invoking UID, its primary GID, and ordinary account groups from the
+OS database. No inherited administrative groups survive. The Linux client uses
+`/usr/bin/setpriv` from util-linux with no-new-privileges before executing the
+materializer; the child verifies actual credentials and group membership before
+reading sources. The root parent receives
+at most 1 MiB of normalized managed bytes through a private pipe, validates them,
+and sends no user-selected paths to the service. Import errors and child failures
+are redacted, bounded and never print the secret-bearing envelope. Root without
+sudo imports as the root account. Source/account I/O remains synchronous and does
+not gain a hard kernel-filesystem deadline.
+
+`owner enroll` uses `--uid UID`, or the validated invoking sudo account when
+omitted. UID must be an unsigned decimal integer below the reserved u32 maximum.
+`owner clear` removes the enrolled account; UID 0 remains the administrative
+principal. Both commands compare the freshly observed owner revision before
+mutation and report the resulting revision. They do not change networking intent.
+Configuration installation likewise compares the observed configuration generation
+and requires disconnected, unretained approval. No administrative request is
+silently retried after an uncertain reply.
 
 Import/configuration installation is a separate authorized operation. The
 native client reads selected files with user access and submits normalized

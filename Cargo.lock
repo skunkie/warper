@@ -1754,6 +1754,7 @@ dependencies = [
 name = "warper-cli"
 version = "0.0.0"
 dependencies = [
+ "nix",
  "rustix",
  "tokio",
  "toml",

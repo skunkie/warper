@@ -13,13 +13,9 @@ mod linux {
     use super::fixture::{self, Failure};
     use std::{
         fs,
-        os::unix::{
-            fs::{OpenOptionsExt, PermissionsExt},
-            net::UnixStream,
-        },
+        os::unix::fs::{OpenOptionsExt, PermissionsExt},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
-        sync::Arc,
         time::Duration,
     };
     use tokio::{
@@ -28,11 +24,7 @@ mod linux {
         time::{Instant, timeout},
     };
     use warper_config::{managed::Snapshot, schema::Platform};
-    use warper_control::runtime::{
-        RuntimeLease, connection::ConnectionStore, enrollment::OwnerStore,
-    };
     use warper_core::configuration::paths::{Account, Paths};
-    use warper_service::linux::{configuration::Configurations, context::Context};
 
     const DAEMON: &str = "/run/warper/daemon-fixture";
     const CLI: &str = "/run/warper/client-fixture";
@@ -54,30 +46,53 @@ mod linux {
             fs::copy(source, destination)?;
             fs::set_permissions(destination, fs::Permissions::from_mode(0o755))?;
         }
-        let runtime = Arc::new(RuntimeLease::acquire()?);
-        let connection = ConnectionStore::open(&runtime)?;
-        let context = Arc::new(Context::capture(runtime.clone(), &connection)?);
-        let mut configurations = Configurations::open(context)?;
-        let paths = Paths::new(
-            &Account {
-                uid: 1000,
-                name: "owner".into(),
-                home: "/sample".into(),
-            },
-            Path::new("/sample"),
-            None,
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .append(true)
+            .open("/etc/group")?
+            .write_all(b"shared:x:2000:owner\n")?;
+        let sample = String::from_utf8(SAMPLE.to_vec())?;
+        let authenticated = sample.replace(
+            "host: '127.0.0.1:1080'",
+            "host: '127.0.0.1:1080', user: fixture-user, password_file: owner-secret",
+        );
+        for (name, bytes, uid) in [
+            ("source.yaml", sample.as_bytes(), 1000),
+            ("owner-auth.yaml", authenticated.as_bytes(), 1000),
+            (
+                "bad-auth.yaml",
+                authenticated
+                    .replace("owner-secret", "root-secret")
+                    .as_bytes(),
+                1000,
+            ),
+            ("owner-secret", b"fixture-user-password".as_slice(), 1000),
+            ("root-secret", b"fixture-root-password".as_slice(), 0),
+        ] {
+            let path = format!("/run/warper/{name}");
+            fs::write(&path, bytes)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            rustix::fs::chown(
+                &path,
+                Some(rustix::process::Uid::from_raw(uid)),
+                Some(rustix::process::Gid::from_raw(uid)),
+            )?;
+        }
+        let shared = "/run/warper/shared.yaml";
+        fs::write(shared, SAMPLE)?;
+        fs::set_permissions(shared, fs::Permissions::from_mode(0o640))?;
+        rustix::fs::chown(
+            shared,
+            Some(rustix::process::Uid::from_raw(1001)),
+            Some(rustix::process::Gid::from_raw(2000)),
         )?;
-        let encoded = Snapshot::import(SAMPLE, &paths, Platform::Linux)?.encode()?;
-        let (peer, _client) = UnixStream::pair()?;
-        configurations.install(&peer, 0, encoded.expose())?;
-        let mut owners = OwnerStore::open(&runtime)?;
-        owners.enroll(&runtime, &peer, 0, Some(1000))?;
         Ok(())
     }
     async fn cli(uid: u32, arguments: &[&str]) -> Result<(bool, String, String), Failure> {
         let arguments: Vec<String> = arguments.iter().map(|value| (*value).to_owned()).collect();
         tokio::task::spawn_blocking(move || {
-            let output = Command::new("/usr/bin/timeout")
+            let mut command = Command::new("/usr/bin/timeout");
+            command
                 .args([
                     "--kill-after=1s",
                     "4s",
@@ -92,8 +107,11 @@ mod linux {
                 .args(arguments)
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin")
-                .stdin(Stdio::null())
-                .output()?;
+                .stdin(Stdio::null());
+            if uid == 0 {
+                command.env("SUDO_UID", "1000").env("SUDO_USER", "owner");
+            }
+            let output = command.output()?;
             Ok((
                 output.status.success(),
                 String::from_utf8(output.stdout)?,
@@ -103,9 +121,12 @@ mod linux {
         .await?
     }
     async fn status(expected: &str) -> Result<(), Failure> {
+        status_for(1000, expected).await
+    }
+    async fn status_for(uid: u32, expected: &str) -> Result<(), Failure> {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let (success, stdout, _) = cli(1000, &["status", "--json"]).await?;
+            let (success, stdout, _) = cli(uid, &["status", "--json"]).await?;
             if success && stdout.contains(&format!("\"state\":\"{expected}\"")) {
                 return Ok(());
             }
@@ -337,6 +358,45 @@ mod linux {
             .stderr(stderr)
             .spawn()?;
         let outcome = async {
+            status_for(0, "disconnected").await?;
+            let denied = cli(
+                0,
+                &["config", "install", "--config", "/run/warper/bad-auth.yaml"],
+            )
+            .await?;
+            if denied.0
+                || denied.1.contains("fixture-root-password")
+                || denied.2.contains("fixture-root-password")
+            {
+                return Err("sudo import read a root-only credential or exposed it".into());
+            }
+            let initial = cli(0, &["status", "--json"]).await?;
+            if !initial.0 || !initial.1.contains("\"configuration_generation\":0") {
+                return Err("denied import changed approved configuration".into());
+            }
+            for path in [
+                "/run/warper/owner-auth.yaml",
+                "/run/warper/shared.yaml",
+                "/run/warper/source.yaml",
+            ] {
+                let installed = cli(0, &["config", "install", "--config", path]).await?;
+                if !installed.0 {
+                    return Err(format!("administrative CLI import failed: {}", installed.2).into());
+                }
+            }
+            if !cli(0, &["owner", "enroll"]).await?.0 {
+                return Err("default invoking-owner enrollment failed".into());
+            }
+            status("disconnected").await?;
+            if cli(1000, &["owner", "clear"]).await?.0 {
+                return Err("ordinary owner changed administrative policy".into());
+            }
+            if !cli(0, &["owner", "clear"]).await?.0 || cli(1000, &["status"]).await?.0 {
+                return Err("owner removal did not revoke control".into());
+            }
+            if !cli(0, &["owner", "enroll", "--uid", "1000"]).await?.0 {
+                return Err("explicit owner enrollment failed".into());
+            }
             status("disconnected").await?;
             let (success, stdout, stderr) = cli(1000, &["up", "--no-wait"]).await?;
             if !success || !stdout.contains(": accepted") {

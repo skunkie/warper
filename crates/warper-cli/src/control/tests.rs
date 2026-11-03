@@ -477,3 +477,66 @@ async fn cancellation_during_poll_pacing_closes_observer_without_another_request
     let id = peer.await.unwrap();
     assert!(matches!(error, Error::Observation { operation, .. } if operation == id));
 }
+
+#[tokio::test]
+async fn administrative_requests_preserve_observed_revisions_and_explicit_owner_presence() {
+    for owner in [Some(1000u32), None] {
+        let (client, mut server) = tokio::io::duplex(256);
+        let peer = tokio::spawn(async move {
+            introduction(&mut server).await;
+            let request = read(&mut server).await;
+            assert_eq!(request.kind(), Kind::Enroll);
+            assert_eq!(request.request_id(), 3);
+            let mut expected = 29u64.to_be_bytes().to_vec();
+            expected.extend_from_slice(&u32::from(owner.is_some()).to_be_bytes());
+            expected.extend_from_slice(&owner.unwrap_or(0).to_be_bytes());
+            assert_eq!(request.body(), expected);
+            write(
+                &mut server,
+                Frame::new(Kind::EnrollmentReply, 3, 30u64.to_be_bytes().to_vec()).unwrap(),
+            )
+            .await;
+        });
+        let (_keep, mut cancel) = watch::channel(false);
+        assert_eq!(
+            administer(client, Administrative::Enroll(owner), &mut cancel)
+                .await
+                .unwrap(),
+            "Owner policy updated (revision 30).\n"
+        );
+        peer.await.unwrap();
+    }
+}
+#[tokio::test]
+async fn install_submits_only_normalized_bytes_and_never_retries_lost_acknowledgment() {
+    use std::path::Path;
+    use warper_core::configuration::paths::{Account, Paths};
+    let paths = Paths::new(
+        &Account {
+            uid: 1000,
+            name: "sample".into(),
+            home: "/sample".into(),
+        },
+        Path::new("/sample"),
+        None,
+    )
+    .unwrap();
+    let encoded = warper_config::managed::Snapshot::import(b"tunnel: {ip: 198.18.0.1}\nprotocols: [{socks5: {host: '127.0.0.1:1080', ips: [198.18.0.2/32]}}]", &paths, warper_config::schema::Platform::Linux).unwrap().encode().unwrap();
+    let expected = encoded.expose().to_vec();
+    let (client, mut server) = tokio::io::duplex(4096);
+    let peer = tokio::spawn(async move {
+        introduction(&mut server).await;
+        let request = read(&mut server).await;
+        assert_eq!(request.kind(), Kind::InstallConfig);
+        assert_eq!(&request.body()[..8], 17u64.to_be_bytes());
+        assert_eq!(&request.body()[8..], expected);
+        // Dropping the peer after receipt simulates uncertain acceptance.
+    });
+    let (_keep, mut cancel) = watch::channel(false);
+    let error = administer(client, Administrative::Install(encoded), &mut cancel)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Administrative(_)));
+    assert!(error.to_string().contains("inspect status before retrying"));
+    peer.await.unwrap();
+}
