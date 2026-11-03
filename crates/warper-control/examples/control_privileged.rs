@@ -369,6 +369,7 @@ mod linux {
         {
             return Err("offline owner recovery changed committed policy".into());
         }
+        store.resync_offline(&mut lease)?;
         let endpoint = ControlEndpoint::bind(lease)?;
         let (admin, _other) = UnixStream::pair()?;
         let enrolled = store.enroll(endpoint.runtime(), &admin, 0, Some(1000))?;

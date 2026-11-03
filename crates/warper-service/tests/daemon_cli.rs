@@ -16,7 +16,7 @@ fn daemon_entry_points_keep_usage_errors_and_offline_output_separate() {
             concat!("warperd ", env!("CARGO_PKG_VERSION")),
             "",
         ),
-        (vec!["recover"], 1, "", "UnsupportedCapability:"),
+        (vec!["run"], 1, "", "UnsupportedCapability:"),
         (vec!["service", "sample-secret"], 2, "", "InvalidArguments:"),
     ] {
         let mut process = Command::new(env!("CARGO_BIN_EXE_warperd"));
@@ -42,7 +42,11 @@ fn daemon_entry_points_keep_usage_errors_and_offline_output_separate() {
 #[cfg(target_os = "linux")]
 #[test]
 fn unprivileged_native_commands_report_the_actual_authorization_cause() {
-    for arguments in [&["service"][..], &["recover", "--inspect"][..]] {
+    for arguments in [
+        &["service"][..],
+        &["recover", "--inspect"][..],
+        &["recover"][..],
+    ] {
         use std::os::unix::{fs::PermissionsExt, process::CommandExt};
         let binary = env!("CARGO_BIN_EXE_warperd");
         let directory =

@@ -11,13 +11,14 @@ use std::{
     process::ExitCode,
 };
 
-const HELP: &str = "warperd — selective tunnel service\n\nUsage:\n  warperd service\n  warperd recover --inspect\n  warperd --help\n  warperd --version\n\nservice runs in the foreground and requires initial-namespace root on Linux.\nrecover --inspect requires the stopped service's exclusive instance lock.\nDiagnostic run and offline repair remain unavailable.\n";
+const HELP: &str = "warperd — selective tunnel service\n\nUsage:\n  warperd service\n  warperd recover [--inspect]\n  warperd --help\n  warperd --version\n\nservice runs in the foreground and requires initial-namespace root on Linux.\nrecover requires the stopped service's exclusive instance lock.\nDiagnostic run remains unavailable.\n";
 const VERSION: &str = concat!("warperd ", env!("CARGO_PKG_VERSION"), "\n");
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
     Help,
     Version,
     Service,
+    Recover,
     InspectRecovery,
     Unsupported,
 }
@@ -67,7 +68,8 @@ fn parse(args: &[OsString]) -> Result<Command, Error> {
         [arg] if arg == "--help" || arg == "-h" => Ok(Command::Help),
         [arg] if arg == "--version" || arg == "-V" => Ok(Command::Version),
         [arg] if arg == "service" => Ok(Command::Service),
-        [arg] if arg == "recover" || arg == "run" => Ok(Command::Unsupported),
+        [arg] if arg == "recover" => Ok(Command::Recover),
+        [arg] if arg == "run" => Ok(Command::Unsupported),
         [arg, inspect] if arg == "recover" && inspect == "--inspect" => {
             Ok(Command::InspectRecovery)
         }
@@ -87,12 +89,25 @@ fn execute(command: Command) -> Result<(), Error> {
         Command::Unsupported => Err(Error::Unsupported),
         Command::Service => service(),
         Command::InspectRecovery => inspect_recovery(),
+        Command::Recover => recover(),
     }
 }
 #[cfg(target_os = "linux")]
 fn inspect_recovery() -> Result<(), Error> {
     let report = warper_service::linux::recovery::inspect().map_err(Error::Recovery)?;
     write!(io::stdout().lock(), "{report}").map_err(|error| Error::Io(error.kind()))
+}
+#[cfg(target_os = "linux")]
+fn recover() -> Result<(), Error> {
+    warper_service::linux::recovery::recover().map_err(Error::Recovery)?;
+    io::stdout()
+        .lock()
+        .write_all(b"Recovery completed.\n")
+        .map_err(|error| Error::Io(error.kind()))
+}
+#[cfg(not(target_os = "linux"))]
+fn recover() -> Result<(), Error> {
+    Err(Error::Platform)
 }
 #[cfg(not(target_os = "linux"))]
 fn inspect_recovery() -> Result<(), Error> {
@@ -154,6 +169,7 @@ mod tests {
             (vec!["service"], Command::Service),
             (vec!["--version"], Command::Version),
             (vec!["recover", "--inspect"], Command::InspectRecovery),
+            (vec!["recover"], Command::Recover),
         ] {
             assert_eq!(
                 parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).unwrap(),

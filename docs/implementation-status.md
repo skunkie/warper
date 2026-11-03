@@ -710,7 +710,23 @@ accepts no source path and does not rewrite, sync or discard records. Local
 process tests reject ordinary users through the native authorization gate, and
 output tests distinguish absent from dirty state. The actual daemon fixture now
 executes inspection after shutdown and checks committed bytes, inode identity
-and modification/change timestamps. This expanded native CLI gate remains
-unverified. Evidence belongs under `target/evidence/phase-1/offline-inspection/`.
+and modification/change timestamps. The [expanded native CLI gate](https://github.com/skunkie/warper/actions/runs/41571905425)
+passes at `6f995b5`; all four isolated probes report exit zero, no timeout and
+preserved host state, and the full native build matrix is green. Evidence is
+under `target/evidence/phase-1/offline-inspection/ci-41571905425/`.
 Offline repair, online recovery, foreground diagnostics and the final Phase 1
 requirement audit remain open.
+
+
+`warperd recover` now retains the complete stopped-service preflight and all
+four pending tokens through repair. It retires proven stale publication,
+discards only unchanged unpublished intent, resyncs unchanged committed records
+and repeats native ownership checks before journal retirement. Committed owner,
+configuration and connection intent are preserved, and no backend starts. Owner
+resync tests cover directory-sync uncertainty and refusal after publication.
+The actual daemon fixture now exercises crash retirement, unsafe later-store
+metadata refusal before any intent deletion, dirty inspection, repeated repair
+and committed-record preservation. Local checks pass; this expanded privileged
+CLI repair gate remains unverified. Evidence belongs under
+`target/evidence/phase-1/offline-repair/`. Online recovery, foreground diagnostics
+and the final Phase 1 requirement audit remain open.

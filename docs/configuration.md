@@ -566,8 +566,8 @@ commands on other platforms, still return `UnsupportedCapability`.
 managed configuration and enrolled owner policy. It keeps networking independent
 of clients, handles SIGTERM/SIGINT through owned shutdown and shares the fixed
 instance lock. No service-manager installation is performed by building the
-binary. Offline repair and diagnostic `warperd run` commands remain incomplete;
-stopped-service `warperd recover --inspect` is available on Linux.
+binary. Diagnostic `warperd run` remains incomplete; stopped-service
+`warperd recover [--inspect]` is available on Linux.
 A missing service fails with exit 1;
 offline checks never attempt IPC.
 
@@ -645,8 +645,19 @@ the current observation passed retirement checks, never that cleanup occurred.
 Changed/unknown objects, live recorded owners and surviving foreign route keys
 remain errors. There is no configuration path, sudo-home search or secret output.
 Native network queries share a five-second deadline; synchronous filesystem
-inspection has no hard kernel deadline. Online `warper recover` and offline
-repair without `--inspect` still return typed unsupported-capability errors.
+inspection has no hard kernel deadline. Online `warper recover` remains
+unavailable and returns a typed unsupported-capability error.
+
+Without `--inspect`, `warperd recover` performs that complete preflight before
+mutation. It retires verified stale endpoint publication, discards only unchanged
+unpublished intent in all four stores, resyncs unchanged committed records, and
+rechecks native ownership/absence before marking the network journal retired.
+Committed owner, configuration and connection intent are preserved. It neither
+starts networking nor deletes inferred kernel objects. Success prints exactly
+`Recovery completed.` and exits 0. Partial failure exits 1 with its primary error
+and inspection guidance; completed safe steps are not rolled back or retried
+automatically. A later service start still applies the preserved connection
+intent according to boot policy.
 
 Exit codes: 0 for completed success, valid inspection, or explicitly requested
 operation acceptance; 2 for CLI/configuration errors; 1 for runtime, preflight,

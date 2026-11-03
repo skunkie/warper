@@ -352,8 +352,44 @@ mod linux {
             .spawn()?;
         Ok(())
     }
-    async fn inspect_offline() -> Result<(), Failure> {
+    fn offline_command(arguments: &[&str]) -> Result<std::process::Output, Failure> {
+        Ok(Command::new("/usr/bin/timeout")
+            .args(["--kill-after=1s", "8s", DAEMON])
+            .args(arguments)
+            .env_clear()
+            .stdin(Stdio::null())
+            .output()?)
+    }
+    async fn repair_abandoned() -> Result<(), Failure> {
         tokio::task::spawn_blocking(|| -> Result<(), Failure> {
+            let dirty = offline_command(&["recover", "--inspect"])?;
+            if !dirty.status.success()
+                || dirty.stdout != b"Control endpoint: retirable\nOwner pending intent: no\nConfiguration pending intent: no\nConnection pending intent: no\nNetwork pending intent: no\nNetwork ownership: retirable\n"
+            {
+                return Err("offline inspection did not identify abandoned service ownership".into());
+            }
+            let repaired = offline_command(&["recover"])?;
+            if !repaired.status.success()
+                || repaired.stdout != b"Recovery completed.\n"
+                || !repaired.stderr.is_empty()
+            {
+                return Err(format!(
+                    "offline abandoned repair failed: {}",
+                    String::from_utf8_lossy(&repaired.stderr)
+                ).into());
+            }
+            let clean = offline_command(&["recover", "--inspect"])?;
+            if !clean.status.success()
+                || clean.stdout != b"Control endpoint: absent\nOwner pending intent: no\nConfiguration pending intent: no\nConnection pending intent: no\nNetwork pending intent: no\nNetwork ownership: retired\n"
+            {
+                return Err("offline abandoned repair did not retire protected ownership".into());
+            }
+            Ok(())
+        }).await?
+    }
+    async fn offline_recovery() -> Result<(), Failure> {
+        tokio::task::spawn_blocking(|| -> Result<(), Failure> {
+            use std::io::Write;
             use std::os::unix::fs::MetadataExt;
             let paths = [
                 "/var/lib/warper/owner",
@@ -364,16 +400,64 @@ mod linux {
             let before = paths.map(|path| {
                 Ok::<_, Failure>((fs::metadata(path)?, fs::read(path)?))
             });
-            let output = Command::new("/usr/bin/timeout")
-                .args(["--kill-after=1s", "8s", DAEMON, "recover", "--inspect"])
-                .env_clear()
-                .stdin(Stdio::null())
-                .output()?;
+            let output = offline_command(&["recover", "--inspect"])?;
             if !output.status.success()
                 || !output.stderr.is_empty()
                 || output.stdout != b"Control endpoint: absent\nOwner pending intent: no\nConfiguration pending intent: no\nConnection pending intent: no\nNetwork pending intent: no\nNetwork ownership: retired\n"
             {
                 return Err("offline native inspection did not report protected retired state".into());
+            }
+            let pending = [
+                "/var/lib/warper/owner.pending",
+                "/var/lib/warper/connection.pending",
+                "/var/lib/warper/network.pending",
+                "/etc/warper/configuration.pending",
+            ];
+            for path in pending {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(path)?
+                    .write_all(b"partial")?;
+            }
+            fs::set_permissions(pending[2], fs::Permissions::from_mode(0o644))?;
+            let rejected = offline_command(&["recover"])?;
+            if rejected.status.success() || !rejected.stdout.is_empty() {
+                return Err("offline repair accepted unsafe pending metadata".into());
+            }
+            for path in pending {
+                if fs::read(path)? != b"partial" {
+                    return Err("offline repair mutated intent before completing validation".into());
+                }
+            }
+            if fs::metadata(pending[2])?.permissions().mode() & 0o7777 != 0o644 {
+                return Err("offline repair changed unsafe pending metadata".into());
+            }
+            fs::set_permissions(pending[2], fs::Permissions::from_mode(0o600))?;
+            let dirty = offline_command(&["recover", "--inspect"])?;
+            if !dirty.status.success()
+                || !dirty.stderr.is_empty()
+                || dirty.stdout != b"Control endpoint: absent\nOwner pending intent: yes\nConfiguration pending intent: yes\nConnection pending intent: yes\nNetwork pending intent: yes\nNetwork ownership: retired\n"
+            {
+                return Err("offline inspection did not classify pending intent".into());
+            }
+            for path in pending {
+                if fs::read(path)? != b"partial" {
+                    return Err("offline inspection changed pending intent".into());
+                }
+            }
+            for _ in 0..2 {
+                let repaired = offline_command(&["recover"])?;
+                if !repaired.status.success()
+                    || !repaired.stderr.is_empty()
+                    || repaired.stdout != b"Recovery completed.\n"
+                {
+                    return Err("offline native repair did not complete idempotently".into());
+                }
+            }
+            if pending.iter().any(|path| Path::new(path).exists()) {
+                return Err("offline repair retained unpublished intent".into());
             }
             for (path, expected) in paths.iter().zip(before) {
                 let (metadata, bytes) = expected?;
@@ -386,7 +470,7 @@ mod linux {
                     || current.ctime() != metadata.ctime()
                     || current.ctime_nsec() != metadata.ctime_nsec()
                 {
-                    return Err("offline inspection changed committed state".into());
+                    return Err("offline inspection/repair changed committed state".into());
                 }
             }
             Ok(())
@@ -511,6 +595,7 @@ mod linux {
             if killed.signal() != Some(9) {
                 return Err("active daemon was not reaped after SIGKILL".into());
             }
+            repair_abandoned().await?;
             restart(&mut child)?;
             status("connected").await?;
             traffic().await?;
@@ -552,9 +637,12 @@ mod linux {
         {
             return Err("daemon restart/stop left owned networking".into());
         }
-        inspect_offline().await?;
+        offline_recovery().await?;
+        if before != fixture::ip(&["-j", "route", "show", "table", "all"])? {
+            return Err("offline recovery changed namespace routes".into());
+        }
         println!(
-            "PASS actual warperd/warper owner authentication, accepted-client detach, kernel TCP/FIN, foreign denial, explicit Disconnect, failed-start rollback, active SIGTERM cleanup, SIGKILL recovery, same-boot desired restoration, persisted Disconnect and endpoint retirement"
+            "PASS actual warperd/warper owner authentication, accepted-client detach, kernel TCP/FIN, foreign denial, explicit Disconnect, failed-start rollback, active SIGTERM cleanup, SIGKILL recovery, same-boot desired restoration, persisted Disconnect, endpoint retirement and stopped-service inspection/repair"
         );
         Ok(())
     }

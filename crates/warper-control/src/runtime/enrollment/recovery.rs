@@ -52,6 +52,53 @@ impl OwnerStore {
         self.discard(lease, inspection, Self::sync)
     }
 
+    /// Make unchanged committed policy durable without accepting new policy.
+    pub fn resync_offline(&self, lease: &mut RuntimeLease) -> Result<(), Error> {
+        self.resync_offline_with(lease, Self::sync)
+    }
+
+    fn resync_offline_with(
+        &self,
+        lease: &mut RuntimeLease,
+        commit_sync: impl FnOnce(&Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        authorize_offline(lease)?;
+        self.verify()?;
+        self.require_no_pending()?;
+        let (_committed, pin) = self.load()?;
+        if let Some(pin) = pin {
+            let metadata = fstat(&pin).map_err(os_error)?;
+            let file = File::from(
+                openat2(
+                    &self.state.directory,
+                    OWNER,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                    resolution(),
+                )
+                .map_err(os_error)?,
+            );
+            if !unchanged(&metadata, &fstat(&file).map_err(os_error)?) {
+                return Err(Error::UnsafeState);
+            }
+            file.sync_all().map_err(|error| Error::Io(error.kind()))?;
+            self.verify()?;
+            if !unchanged(&metadata, &fstat(&file).map_err(os_error)?)
+                || !unchanged(
+                    &metadata,
+                    &named(&self.state.directory, OWNER).map_err(Error::Runtime)?,
+                )
+            {
+                return Err(Error::UnsafeState);
+            }
+        }
+        self.require_no_pending()?;
+        commit_sync(self).map_err(|error| match error {
+            Error::Io(kind) => Error::CommitUncertain(kind),
+            other => other,
+        })
+    }
+
     /// Require a fresh live administrative peer before inspecting any record.
     pub fn inspect_pending(
         &self,

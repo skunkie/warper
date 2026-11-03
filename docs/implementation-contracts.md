@@ -2429,6 +2429,19 @@ Native queries share five seconds; synchronous filesystem reads retain their
 documented kernel-wait limitation. The synchronous command starts no executor
 or service tasks, has no user-selected path and releases all pins on return.
 
+Stopped-service repair performs that complete preflight before external changes.
+It retains the four pending tokens and exclusive runtime lease, retires only
+verified stale endpoint publication, discards unchanged unpublished intent,
+resyncs unchanged committed records, and reruns native ownership/absence checks
+before revision-fenced journal retirement. It never promotes pending bytes,
+changes committed owner/configuration/connection intent, starts a backend or
+deletes an inferred kernel object. Owner resync requires the same exclusive
+never-published lease and checks the pinned committed file before and after
+fsync, followed by directory sync. Partial failure is reported with its typed
+primary error and inspection guidance; completed safe steps are not rolled back
+or replayed automatically. All pins and the runtime lease survive until the
+repair operation returns.
+
 ## Linux native import process
 
 The explicitly elevated CLI materializes configuration before starting its async

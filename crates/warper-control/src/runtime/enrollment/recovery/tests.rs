@@ -34,6 +34,12 @@ fn offline_recovery_preserves_policy_and_rejects_a_published_runtime() {
         Ok(committed)
     );
     assert!(!path.exists());
+    store.resync_offline(&mut lease).unwrap();
+    assert_eq!(
+        store.resync_offline_with(&mut lease, |_| Err(Error::Io(std::io::ErrorKind::Other))),
+        Err(Error::CommitUncertain(std::io::ErrorKind::Other))
+    );
+    assert_eq!(store.read(&lease), Ok(committed));
     let path = pending(&fixture, b"retained");
     let inspection = store.inspect_pending_offline(&mut lease).unwrap().unwrap();
     let lease = std::sync::Arc::new(lease);
@@ -50,6 +56,7 @@ fn offline_recovery_preserves_policy_and_rejects_a_published_runtime() {
         Err(Error::UnsafeState)
     );
     assert_eq!(fs::read(&path).unwrap(), b"retained");
+    assert_eq!(store.resync_offline(&mut used), Err(Error::UnsafeState));
     assert_eq!(store.inspect().unwrap().unwrap().committed(), committed);
 }
 #[test]

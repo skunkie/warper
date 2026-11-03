@@ -79,7 +79,10 @@ verify successful cleanup before removing the three installed files and running
 `systemctl daemon-reload`. Retain `/run/warper`, `/var/lib/warper` and
 `/etc/warper` for recovery and administrator review. Do not remove the persistent
 lock inode or erase a cleanup failure by deleting its journal. Offline recovery
-commands are still incomplete.
+is available with `sudo /usr/local/bin/warperd recover --inspect`; after reviewing
+the report, `sudo /usr/local/bin/warperd recover` repairs only verified unchanged
+state. Both require the stopped service's exclusive instance lock. Repair
+preserves connection intent and starts no backend.
 
 Unit syntax validation does not establish a successful systemd lifecycle.
 The [installed idle-unit gate](https://github.com/skunkie/warper/actions/runs/41568333593)

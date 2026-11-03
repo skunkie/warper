@@ -22,6 +22,8 @@ pub enum Error {
     Configuration(configuration::Error),
     Context(super::context::Error),
     Network(tun::Error),
+    Invariant,
+    Incomplete(Box<Error>),
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -34,10 +36,69 @@ impl fmt::Display for Error {
             Self::Configuration(error) => error.fmt(f),
             Self::Context(error) => error.fmt(f),
             Self::Network(error) => error.fmt(f),
+            Self::Invariant => {
+                f.write_str("RecoveryRequired: exclusive recovery ownership was lost")
+            }
+            Self::Incomplete(primary) => {
+                write!(f, "Recovery incomplete: {primary}; inspect before retrying")
+            }
         }
     }
 }
 impl std::error::Error for Error {}
+
+struct Prepared {
+    owner_pending: Option<warper_control::runtime::enrollment::PendingInspection>,
+    owners: OwnerStore,
+    configuration_pending: Option<warper_control::runtime::managed::PendingInspection>,
+    managed: ManagedStore,
+    connection_pending: Option<warper_control::runtime::connection::PendingInspection>,
+    connection: ConnectionStore,
+    network_pending: Option<warper_control::runtime::journal::PendingInspection>,
+    journal: NetworkJournal,
+    report: Report,
+    request: Request,
+    _cancellation_owner: tokio::sync::watch::Sender<bool>,
+    // Release every store/token before the persistent instance lock.
+    runtime: Arc<RuntimeLease>,
+}
+impl Prepared {
+    fn repair(mut self) -> Result<(), Error> {
+        let result = (|| {
+            let runtime = Arc::get_mut(&mut self.runtime).ok_or(Error::Invariant)?;
+            endpoint::recover(runtime).map_err(Error::Endpoint)?;
+            if let Some(token) = self.owner_pending.take() {
+                self.owners
+                    .discard_pending_offline(runtime, token)
+                    .map_err(Error::Owner)?;
+            }
+            self.owners.resync_offline(runtime).map_err(Error::Owner)?;
+            if let Some(token) = self.configuration_pending.take() {
+                self.managed
+                    .discard_pending(runtime, token)
+                    .map_err(Error::Storage)?;
+            }
+            self.managed.resync(runtime).map_err(Error::Storage)?;
+            if let Some(token) = self.connection_pending.take() {
+                self.connection
+                    .discard_pending(runtime, token)
+                    .map_err(Error::Connection)?;
+            }
+            self.connection.resync(runtime).map_err(Error::Connection)?;
+            if let Some(token) = self.network_pending.take() {
+                self.journal
+                    .discard_pending(runtime, token)
+                    .map_err(Error::Storage)?;
+            }
+            self.journal.resync(runtime).map_err(Error::Storage)?;
+            let context =
+                Context::capture(self.runtime.clone(), &self.connection).map_err(Error::Context)?;
+            tun::recover_abandoned(&context, self.request.clone()).map_err(Error::Network)?;
+            Ok(())
+        })();
+        result.map_err(|primary| Error::Incomplete(Box::new(primary)))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Report {
@@ -91,6 +152,16 @@ impl fmt::Display for Report {
 /// is started, and no asynchronous task survives the call. Filesystem/account
 /// inspection has no hard kernel deadline; native queries share five seconds.
 pub fn inspect() -> Result<Report, Error> {
+    Ok(prepare()?.report)
+}
+
+/// Repair only unchanged unpublished state after complete stopped-service
+/// preflight. This never starts a backend or changes accepted connection intent.
+pub fn recover() -> Result<(), Error> {
+    prepare()?.repair()
+}
+
+fn prepare() -> Result<Prepared, Error> {
     let mut runtime = RuntimeLease::acquire().map_err(Error::Runtime)?;
     let endpoint = endpoint::inspect(&runtime).map_err(Error::Endpoint)?;
     let owners = OwnerStore::open(&runtime).map_err(Error::Owner)?;
@@ -133,20 +204,36 @@ pub fn inspect() -> Result<Report, Error> {
         .and_then(|token| token.committed())
         .or(network.as_ref());
     let runtime = Arc::new(runtime);
-    let context = Context::capture(runtime, &connection).map_err(Error::Context)?;
-    let (_owner, cancellation) = tokio::sync::watch::channel(false);
+    let context = Context::capture(runtime.clone(), &connection).map_err(Error::Context)?;
+    let (owner, cancellation) = tokio::sync::watch::channel(false);
     let request = Request {
         deadline: tokio::time::Instant::now() + Duration::from_secs(5),
         cancellation,
     };
-    let network = tun::inspect_snapshot(&context, committed, request).map_err(Error::Network)?;
-    Ok(Report {
+    let network =
+        tun::inspect_snapshot(&context, committed, request.clone()).map_err(Error::Network)?;
+    drop(context);
+    let report = Report {
         endpoint,
         owner_pending: owner_pending.is_some(),
         configuration_pending: configuration_pending.is_some(),
         connection_pending: connection_pending.is_some(),
         network_pending: network_pending.is_some(),
         network,
+    };
+    Ok(Prepared {
+        owner_pending,
+        owners,
+        configuration_pending,
+        managed,
+        connection_pending,
+        connection,
+        network_pending,
+        journal,
+        report,
+        request,
+        _cancellation_owner: owner,
+        runtime,
     })
 }
 
