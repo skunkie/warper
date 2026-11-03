@@ -681,6 +681,9 @@ The actual daemon traffic fixture now repeats kernel TCP/FIN after active
 SIGTERM and after SIGKILL/reap with fresh service processes. It checks restored
 same-boot Up intent, explicit Disconnect surviving another restart, and original
 namespace route/interface state after active shutdown and final retirement.
-This expanded real-process gate remains unverified. Evidence belongs under
-`target/evidence/phase-1/daemon-restart/`. Offline administrative recovery,
+The [expanded real-process gate](https://github.com/skunkie/warper/actions/runs/41569040009)
+passes at `873b053`; the actual daemon result reports exit zero, no timeout
+and preserved host state. Its log verifies active SIGTERM cleanup, SIGKILL
+recovery, restored same-boot forwarding and persisted Disconnect. Evidence is
+under `target/evidence/phase-1/daemon-restart/ci-41569040009/`. Offline administrative recovery,
 foreground diagnostics and the final Phase 1 requirement audit remain open.
