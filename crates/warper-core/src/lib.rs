@@ -5,6 +5,7 @@
 //! Backend-independent policy and offline configuration preparation.
 
 pub mod configuration;
+pub mod dns;
 pub mod routing;
 pub mod transport;
 

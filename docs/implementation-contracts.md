@@ -2836,3 +2836,32 @@ fails; a writer failure after operational success produces a failure exit.
 Presentation may wait after shutdown, never during forwarding. This is shutdown
 tracing, not a live log stream. Bounded nonblocking desktop delivery remains
 Phase 5 and must preserve these data exclusions and loss semantics.
+
+## Phase 2 DNS names and domain selection
+
+`warper_core::dns::{Name, Rule, Policy}` implements the normalized selection
+boundary. `Name::from_labels` consumes decoded DNS labels and stores at most
+255 wire bytes inline, including length octets and the root terminator. Labels
+are nonempty and at most 63 octets; an empty iterator represents root. ASCII
+case folds without transforming other octets. Embedded dots and underscores
+remain label content. `Name::from_ascii` accepts unescaped ASCII presentation
+names with one optional terminal dot; Unicode configuration names must first
+pass the existing IDNA validation. Debug and error output exclude names.
+
+`Rule::new` accepts canonical lowercase ASCII configuration domains, rejecting
+root, terminal dots, IP literals and non-hostname labels. It does not repeat
+IDNA conversion. `Policy::new(&[Rule], limit)` validates a positive count limit,
+rejects excess entries before allocation, and rejects duplicate or conflicting
+domain assignments. The immutable boxed rule slice has fixed-size inline names
+and no secondary indexes. Storage is proportional to the admitted rule count,
+plus allocator overhead; lookup allocates nothing. The caller retains this
+snapshot for the request's configuration generation. The longest whole-label
+suffix selects one backend; misses return `None`. Backend errors cannot cause
+selection to be retried with a broader rule.
+
+Core tests exercise maximum wire lengths, binary labels, case, terminal dots,
+service record names, IDNA ASCII output, label boundaries, longest selection,
+input-order independence, duplicates and admission failure. This boundary has
+no I/O, tasks, deadlines or cancellation work. It does not decode compressed
+wire packets, execute DNS transports, resolve endpoints or mutate routes.
+Those production interfaces and native Phase 2 acceptance remain open.
