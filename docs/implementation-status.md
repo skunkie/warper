@@ -790,3 +790,14 @@ slots to the supported stack capacity. This payload budget is not a total RSS
 limit. Control byte admission, bounded daemon channels/client tasks/notices,
 native worker admission, managed snapshot limits and operation history are
 separate resource owners that must remain part of the final audit.
+
+
+Lifecycle tracing now uses the already-locked `tracing` version with a scoped,
+64-event subscriber. Only fixed event names survive; arbitrary fields, spans,
+unknown targets/names are discarded. Recording never waits for a lock or performs
+I/O; contention and overwritten entries are counted. Service and diagnostic modes
+flush after networking owners return, preserving the original failure category
+if output also fails. Local tests cover overflow, redaction, contention and writer
+failure; expanded daemon acceptance checks both modes' real transition output.
+Native evidence for this change is pending. Phase 1 remains open for that evidence
+and completion of the closure audit.

@@ -2815,3 +2815,22 @@ drain. Kernel filesystem stalls are not claimed interruptible. A deadline leaves
 pending ownership retained and returns a typed cleanup failure; it never reports
 successful cleanup or removes foreign state. Runtime/process termination is a
 separate final boundary and leaves durable recovery obligations explicit.
+
+### Linux lifecycle tracing
+
+The service's `telemetry::LifecycleLog` is a scoped `tracing` subscriber for
+fixed lifecycle event names only. It retains at most 64 static names in a ring;
+all event fields, unknown names, other targets and spans are discarded. Event
+recording uses `try_lock`, performs no I/O and counts contention/overflow with
+a saturating atomic loss counter. Its memory bound is independent of traffic
+volume and control admission. It does not retain payloads or configuration.
+
+`warperd service` and `warperd run` share network-supervisor transition events.
+The current-thread runtime installs the scoped dispatcher; native blocking
+workers do not emit lifecycle events. The executable writes the ordered tail
+and loss count only after the command returns and networking owners are released.
+It preserves the primary error/exit classification if the diagnostic writer also
+fails; a writer failure after operational success produces a failure exit.
+Presentation may wait after shutdown, never during forwarding. This is shutdown
+tracing, not a live log stream. Bounded nonblocking desktop delivery remains
+Phase 5 and must preserve these data exclusions and loss semantics.

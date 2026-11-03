@@ -93,8 +93,13 @@ sudo /usr/local/bin/warperd run --config ./sample.yaml --headless --verbose
 This imports with the invoking account's access, uses an in-memory configuration
 and holds the same instance lock. The CLI cannot control this foreground engine;
 SIGTERM, SIGINT or SIGHUP stop and drain it. Managed settings and saved connection
-intent remain unchanged. Verbose/debug output contains aggregate shutdown counts
-only. Diagnostics reject pending state until explicit stopped-service recovery
+intent remain unchanged. Verbose/debug output contains aggregate shutdown counts.
+Both service and diagnostic modes retain a bounded tail of 64 lifecycle tracing
+events and flush it to stderr after networking stops. Event fields, configuration,
+addresses and credentials are never retained. Contention/overflow increments a
+saturating loss count. A slow stderr reader cannot block active forwarding;
+shutdown presentation can still wait for the reader. Live UI log delivery remains
+later-phase work. Diagnostics reject pending state until explicit stopped-service recovery
 completes. Building the daemon also builds its shared native client import
 helper; no separate helper executable is required.
 

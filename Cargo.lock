@@ -1801,6 +1801,7 @@ dependencies = [
  "nix",
  "rustix",
  "tokio",
+ "tracing",
  "tun-rs",
  "warper-backends",
  "warper-cli",

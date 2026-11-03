@@ -578,6 +578,12 @@ mod linux {
         {
             return Err("diagnostic did not report and restore owned networking".into());
         }
+        let trace = fs::read_to_string("/run/warper/diagnostic.stderr")?;
+        for event in ["network_connected", "network_retired", "command_stopped"] {
+            if !trace.contains(&format!("lifecycle {event}\n")) {
+                return Err(format!("diagnostic lifecycle trace missing {event}").into());
+            }
+        }
         for (path, snapshot) in protected.iter().zip(snapshots) {
             if fs::read(path)? != snapshot? {
                 return Err("diagnostic changed protected managed state".into());
@@ -785,11 +791,22 @@ mod linux {
                 cleanup.push(Box::new(error) as Failure);
             }
         }
+        fixture::preserve(outcome, cleanup)?;
         let stderr = fs::read_to_string("/run/warper/daemon.stderr")?;
+        for event in [
+            "network_starting",
+            "network_connected",
+            "network_stopping",
+            "network_retired",
+            "command_stopped",
+        ] {
+            if !stderr.contains(&format!("lifecycle {event}\n")) {
+                return Err(format!("daemon lifecycle trace missing {event}").into());
+            }
+        }
         if !stderr.is_empty() {
             println!("daemon_diagnostic {stderr}");
         }
-        fixture::preserve(outcome, cleanup)?;
         if Path::new("/run/warper/control.sock").exists()
             || Path::new("/run/warper/control.intent").exists()
         {

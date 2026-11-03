@@ -110,11 +110,21 @@ fn execute(command: Command) -> Result<(), Error> {
             .lock()
             .write_all(VERSION.as_bytes())
             .map_err(|error| Error::Io(error.kind())),
-        Command::Run(arguments) => diagnostic::run(arguments),
-        Command::Service => service(),
+        Command::Run(arguments) => logged(|| diagnostic::run(arguments)),
+        Command::Service => logged(service),
         Command::InspectRecovery => inspect_recovery(),
         Command::Recover => recover(),
     }
+}
+fn logged(run: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
+    tracing::event!(name: "command_started", target: "warper.lifecycle", tracing::Level::INFO, {});
+    let result = run();
+    if result.is_ok() {
+        tracing::event!(name: "command_stopped", target: "warper.lifecycle", tracing::Level::INFO, {});
+    } else {
+        tracing::event!(name: "command_failed", target: "warper.lifecycle", tracing::Level::WARN, {});
+    }
+    result
 }
 #[cfg(target_os = "linux")]
 fn inspect_recovery() -> Result<(), Error> {
@@ -191,7 +201,12 @@ fn main() -> ExitCode {
             ),
         };
     }
-    match parse(&args).and_then(execute) {
+    let command = parse(&args);
+    let logging = matches!(&command, Ok(Command::Service | Command::Run(_)));
+    let log = warper_service::telemetry::LifecycleLog::default();
+    let dispatch = tracing::Dispatch::new(log.clone());
+    let result = tracing::dispatcher::with_default(&dispatch, || command.and_then(execute));
+    let code = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let code = match &error {
@@ -204,7 +219,13 @@ fn main() -> ExitCode {
             let _diagnostic = writeln!(io::stderr().lock(), "{error}");
             ExitCode::from(code)
         }
+    };
+    // All networking owners have returned before presentation I/O. Keep the
+    // primary error and exit classification when diagnostics also fail.
+    if logging && log.write(&mut io::stderr().lock()).is_err() && code == ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
     }
+    code
 }
 
 #[cfg(test)]

@@ -252,6 +252,7 @@ impl Network {
         }
         self.used = true;
         state.send_replace(State::Starting);
+        tracing::event!(name: "network_starting", target: "warper.lifecycle", tracing::Level::INFO, {});
         let request = Request {
             deadline: Instant::now() + self.startup_timeout,
             cancellation: cancellation.clone(),
@@ -260,17 +261,27 @@ impl Network {
         let primary = match startup {
             Ok(()) => {
                 state.send_replace(State::Connected);
+                tracing::event!(name: "network_connected", target: "warper.lifecycle", tracing::Level::INFO, {});
                 self.serve(&mut cancellation).await.err()
             }
             Err(error) => Some(error),
         };
         state.send_replace(State::Stopping);
+        tracing::event!(name: "network_stopping", target: "warper.lifecycle", tracing::Level::INFO, {});
         let cleanup = self.stop(primary.is_none()).await;
         state.send_replace(if self.report.retired {
             State::Disconnected
         } else {
             State::RecoveryRequired
         });
+        if self.report.retired {
+            tracing::event!(name: "network_retired", target: "warper.lifecycle", tracing::Level::INFO, {});
+        } else {
+            tracing::event!(name: "network_recovery_required", target: "warper.lifecycle", tracing::Level::WARN, {});
+        }
+        if primary.is_some() || cleanup.failed() {
+            tracing::event!(name: "network_failed", target: "warper.lifecycle", tracing::Level::WARN, {});
+        }
         self.result(primary, cleanup)
     }
 

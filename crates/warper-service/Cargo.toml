@@ -16,6 +16,7 @@ path = "src/bin/warperd.rs"
 
 [dependencies]
 tokio.workspace = true
+tracing.workspace = true
 warper-core = { path = "../warper-core" }
 warper-config = { path = "../warper-config" }
 warper-cli = { path = "../warper-cli" }
