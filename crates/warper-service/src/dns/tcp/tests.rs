@@ -115,6 +115,7 @@ async fn read_query(peer: &mut DuplexStream) {
 
 #[tokio::test]
 async fn partial_frames_preserve_valid_negatives_without_retry() {
+    let budget = QueryBudget::new(32).unwrap();
     for code in [0, 2, 3, 5] {
         let (backend, admission, transport, mut peer) = fixture(1);
         let task = tokio::spawn(async move {
@@ -130,7 +131,10 @@ async fn partial_frames_preserve_valid_negatives_without_retry() {
             assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
         });
         let (_owner, request) = context();
-        let response = transport.exchange(&query(), request).await.unwrap();
+        let response = transport
+            .exchange(&query(), request, &budget)
+            .await
+            .unwrap();
         assert_eq!(response.response_code(), u16::from(code));
         assert_eq!(transport.backend(), BackendId(7));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
@@ -141,6 +145,7 @@ async fn partial_frames_preserve_valid_negatives_without_retry() {
 
 #[tokio::test(start_paused = true)]
 async fn cancellation_timeout_and_future_drop_release_stream_and_shared_admission() {
+    let budget = QueryBudget::new(32).unwrap();
     for mode in ["cancel", "timeout", "drop"] {
         let (backend, admission, transport, mut peer) = fixture(64);
         let (ready, notified) = oneshot::channel();
@@ -152,7 +157,7 @@ async fn cancellation_timeout_and_future_drop_release_stream_and_shared_admissio
         });
         let (owner, request) = context();
         let query = query();
-        let mut exchange = Box::pin(transport.exchange(&query, request.clone()));
+        let mut exchange = Box::pin(transport.exchange(&query, request.clone(), &budget));
         tokio::select! { biased;
             result = &mut exchange => panic!("completed before the response prefix: {result:?}"),
             () = async { notified.await.unwrap() } => (),
@@ -169,7 +174,7 @@ async fn cancellation_timeout_and_future_drop_release_stream_and_shared_admissio
         )
         .unwrap();
         assert!(matches!(
-            direct.exchange(&query, request.clone()).await,
+            direct.exchange(&query, request.clone(), &budget).await,
             Err(ExchangeError::ResourceLimit)
         ));
         assert_eq!(direct_connector.calls.load(Ordering::SeqCst), 0);
@@ -181,7 +186,7 @@ async fn cancellation_timeout_and_future_drop_release_stream_and_shared_admissio
         )
         .unwrap();
         assert!(matches!(
-            other.exchange(&query, request.clone()).await,
+            other.exchange(&query, request.clone(), &budget).await,
             Err(ExchangeError::ResourceLimit)
         ));
         match mode {
@@ -210,6 +215,7 @@ async fn cancellation_timeout_and_future_drop_release_stream_and_shared_admissio
 
 #[tokio::test(start_paused = true)]
 async fn expired_cancelled_and_ownerless_requests_never_start_backend_work() {
+    let budget = QueryBudget::new(32).unwrap();
     for mode in ["expired", "cancelled", "ownerless"] {
         let (backend, admission, transport, peer) = fixture(1);
         let (owner, mut request) = context();
@@ -219,7 +225,7 @@ async fn expired_cancelled_and_ownerless_requests_never_start_backend_work() {
             "ownerless" => drop(owner),
             _ => unreachable!(),
         }
-        let result = transport.exchange(&query(), request).await;
+        let result = transport.exchange(&query(), request, &budget).await;
         assert!(matches!(
             result,
             Err(ExchangeError::Backend(
@@ -234,6 +240,7 @@ async fn expired_cancelled_and_ownerless_requests_never_start_backend_work() {
 
 #[tokio::test]
 async fn malformed_frames_and_tcp_truncation_do_not_retry_or_leak_admission() {
+    let budget = QueryBudget::new(32).unwrap();
     for mode in [
         "oversize",
         "short",
@@ -268,7 +275,7 @@ async fn malformed_frames_and_tcp_truncation_do_not_retry_or_leak_admission() {
             assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
         });
         let (_owner, request) = context();
-        let result = transport.exchange(&query(), request).await;
+        let result = transport.exchange(&query(), request, &budget).await;
         let expected = match mode {
             "oversize" => ExchangeError::ResourceLimit,
             "short" => ExchangeError::Packet(PacketError::Malformed),
@@ -326,6 +333,7 @@ fn invalid_admission_upstream_or_capability_fails_before_opening() {
 
 #[tokio::test(start_paused = true)]
 async fn direct_failures_remain_typed_without_retry_or_backend_selection() {
+    let budget = QueryBudget::new(32).unwrap();
     let connector = Arc::new(RejectingDirect {
         calls: AtomicUsize::new(0),
     });
@@ -348,13 +356,13 @@ async fn direct_failures_remain_typed_without_retry_or_backend_selection() {
     .unwrap();
     let (_owner, mut request) = context();
     assert!(matches!(
-        direct.exchange(&query(), request.clone()).await,
+        direct.exchange(&query(), request.clone(), &budget).await,
         Err(ExchangeError::Direct(BackendError::UnsupportedIntegration))
     ));
     assert_eq!(connector.calls.load(Ordering::SeqCst), 1);
     request.deadline = Instant::now();
     assert!(matches!(
-        direct.exchange(&query(), request).await,
+        direct.exchange(&query(), request, &budget).await,
         Err(ExchangeError::Direct(BackendError::Timeout))
     ));
     assert_eq!(connector.calls.load(Ordering::SeqCst), 1);
@@ -363,6 +371,7 @@ async fn direct_failures_remain_typed_without_retry_or_backend_selection() {
 
 #[tokio::test]
 async fn invalid_requests_and_backend_or_write_failures_release_admission() {
+    let budget = QueryBudget::new(32).unwrap();
     let (backend, admission, transport, peer) = fixture(1);
     let query = query();
     let mut response_wire = wire();
@@ -370,7 +379,9 @@ async fn invalid_requests_and_backend_or_write_failures_release_admission() {
     let response = Packet::response(&response_wire, &query, limits()).unwrap();
     let (_owner, request) = context();
     assert!(matches!(
-        transport.exchange(&response, request.clone()).await,
+        transport
+            .exchange(&response, request.clone(), &budget)
+            .await,
         Err(ExchangeError::InvalidRequest)
     ));
     let small = TcpTransport::new(
@@ -381,18 +392,18 @@ async fn invalid_requests_and_backend_or_write_failures_release_admission() {
     )
     .unwrap();
     assert!(matches!(
-        small.exchange(&query, request.clone()).await,
+        small.exchange(&query, request.clone(), &budget).await,
         Err(ExchangeError::ResourceLimit)
     ));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
     drop(peer);
     assert!(matches!(
-        transport.exchange(&query, request.clone()).await,
+        transport.exchange(&query, request.clone(), &budget).await,
         Err(ExchangeError::Io(io::ErrorKind::BrokenPipe))
     ));
     assert_eq!(admission.active(), 0);
     assert!(matches!(
-        transport.exchange(&query, request).await,
+        transport.exchange(&query, request, &budget).await,
         Err(ExchangeError::Backend(BackendError::ResourceLimit))
     ));
     assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
@@ -401,6 +412,7 @@ async fn invalid_requests_and_backend_or_write_failures_release_admission() {
 
 #[tokio::test]
 async fn peer_close_after_length_prefix_reports_query_write_failure() {
+    let budget = QueryBudget::new(32).unwrap();
     let (backend, admission, transport, mut peer) = fixture(1);
     let task = tokio::spawn(async move {
         assert_eq!(usize::from(peer.read_u16().await.unwrap()), wire().len());
@@ -408,7 +420,7 @@ async fn peer_close_after_length_prefix_reports_query_write_failure() {
     });
     let (_owner, request) = context();
     assert!(matches!(
-        transport.exchange(&query(), request).await,
+        transport.exchange(&query(), request, &budget).await,
         Err(ExchangeError::Io(io::ErrorKind::BrokenPipe))
     ));
     task.await.unwrap();

@@ -8,14 +8,14 @@ use std::{fmt, io, net::SocketAddr, sync::Arc};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::Semaphore,
+    sync::{OwnedSemaphorePermit, Semaphore},
 };
 use warper_core::{
     BackendId,
     transport::{Backend, EndpointConnector, Error as BackendError, OpenTcp, Request},
 };
 
-use super::{Error as PacketError, Limits, Packet};
+use super::{Error as PacketError, Limits, Packet, QueryBudget};
 
 const MAX_REQUESTS: usize = 4096;
 
@@ -35,11 +35,11 @@ pub enum ExchangeError {
 impl fmt::Display for ExchangeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidAdmission => "invalid DNS request admission limit",
+            Self::InvalidAdmission => "invalid DNS admission scope or limit",
             Self::InvalidUpstream => "invalid DNS upstream address",
             Self::InvalidRequest => "DNS transport requires a query packet",
             Self::UnsupportedCapability => "selected backend cannot carry DNS TCP",
-            Self::ResourceLimit => "DNS request or frame admission exhausted",
+            Self::ResourceLimit => "DNS request, query or frame admission exhausted",
             Self::Backend(_) => "selected DNS backend failed",
             Self::Direct(_) => "direct DNS physical path failed",
             Self::Packet(_) => "DNS packet validation failed",
@@ -71,6 +71,13 @@ impl Admission {
 
     pub fn active(&self) -> usize {
         self.limit - self.permits.available_permits()
+    }
+
+    pub(super) fn reserve(&self) -> Result<OwnedSemaphorePermit, ExchangeError> {
+        self.permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ExchangeError::ResourceLimit)
     }
 }
 
@@ -113,6 +120,7 @@ impl TcpTransport {
         &self,
         query: &Packet,
         request: Request,
+        budget: &QueryBudget,
     ) -> Result<Packet, ExchangeError> {
         exchange(
             Dial::Backend(self.backend.as_ref()),
@@ -121,6 +129,7 @@ impl TcpTransport {
             &self.admission,
             query,
             request,
+            budget,
         )
         .await
     }
@@ -159,6 +168,7 @@ impl DirectTcpTransport {
         &self,
         query: &Packet,
         request: Request,
+        budget: &QueryBudget,
     ) -> Result<Packet, ExchangeError> {
         exchange(
             Dial::Direct(self.connector.as_ref()),
@@ -167,8 +177,42 @@ impl DirectTcpTransport {
             &self.admission,
             query,
             request,
+            budget,
         )
         .await
+    }
+
+    pub(super) async fn exchange_admitted(
+        &self,
+        query: &Packet,
+        request: Request,
+        budget: &QueryBudget,
+        permit: &OwnedSemaphorePermit,
+    ) -> Result<Packet, ExchangeError> {
+        request
+            .clone()
+            .run(async {
+                Ok(
+                    if !Arc::ptr_eq(&self.admission.permits, permit.semaphore()) {
+                        Err(ExchangeError::InvalidAdmission)
+                    } else if query.is_response() {
+                        Err(ExchangeError::InvalidRequest)
+                    } else {
+                        exchange_packet(
+                            Dial::Direct(self.connector.as_ref()),
+                            self.upstream,
+                            self.limits,
+                            query,
+                            request,
+                            budget,
+                            permit,
+                        )
+                        .await
+                    },
+                )
+            })
+            .await
+            .map_err(ExchangeError::Direct)?
     }
 }
 
@@ -201,10 +245,13 @@ async fn exchange(
     admission: &Admission,
     query: &Packet,
     request: Request,
+    budget: &QueryBudget,
 ) -> Result<Packet, ExchangeError> {
     request
         .clone()
-        .run(async { Ok(exchange_owned(dial, upstream, limits, admission, query, request).await) })
+        .run(async {
+            Ok(exchange_owned(dial, upstream, limits, admission, query, request, budget).await)
+        })
         .await
         .map_err(|error| dial.error(error))?
 }
@@ -216,15 +263,24 @@ async fn exchange_owned(
     admission: &Admission,
     query: &Packet,
     request: Request,
+    budget: &QueryBudget,
 ) -> Result<Packet, ExchangeError> {
     if query.is_response() {
         return Err(ExchangeError::InvalidRequest);
     }
-    let _permit = admission
-        .permits
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ExchangeError::ResourceLimit)?;
+    let permit = admission.reserve()?;
+    exchange_packet(dial, upstream, limits, query, request, budget, &permit).await
+}
+
+async fn exchange_packet(
+    dial: Dial<'_>,
+    upstream: SocketAddr,
+    limits: Limits,
+    query: &Packet,
+    request: Request,
+    budget: &QueryBudget,
+    _permit: &OwnedSemaphorePermit,
+) -> Result<Packet, ExchangeError> {
     let mut frame = query.encode().map_err(ExchangeError::Packet)?;
     let length = frame.len();
     if length > limits.wire_bytes() {
@@ -236,6 +292,7 @@ async fn exchange_owned(
     frame.resize(length + 2, 0);
     frame.copy_within(..length, 2);
     frame[..2].copy_from_slice(&(length as u16).to_be_bytes());
+    budget.charge()?;
     let mut stream = dial
         .open(upstream, request)
         .await

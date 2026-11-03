@@ -457,6 +457,11 @@ DNS answers retain their original or normally aged TTLs. Zero-TTL answers are ne
 
 Count each actual upstream attempt against `max_dns_dependency_queries`, including same-server retries. Coalesce duplicate dependencies; reject loops, exhausted budgets, or an incomplete endpoint set with SERVFAIL. Never drop unprocessed records merely to fit the budget and then forward their addresses. Positive-cache entries remain subject to DNS TTL even while routing ownership is retained. Charge transient buffers to the data-plane budget and retained DNS buffers to the DNS-state budget as defined below.
 
+Charge an attempt when opening its upstream transport, including failed setup.
+A correlated UDP TC response's TCP retry consumes another attempt from the same
+parent budget and original deadline. Failed/cancelled attempts are not refunded.
+Queries too large for UDP may use TCP first, consuming one attempt.
+
 Do not make an admitted request wait for a fresh client-admission slot to run its own dependencies. Specify bounded upstream concurrency and cancellation under the parent's deadline in the implementation contracts; include dependency buffers in the existing global accounting.
 
 ### Retained DNS State Admission

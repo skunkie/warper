@@ -31,6 +31,8 @@ const CAPTURE: &str = "warper-capture";
 const SOURCE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 const DESTINATION: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
 const PORT: u16 = 40123;
+const DNS_PORT: u16 = PORT + 10;
+const DNS_REQUESTS: usize = 100;
 const SAMPLE: &[u8] = b"controlled-tcp";
 const UDP_SAMPLES: [&[u8]; 2] = [b"first-udp", b"second-udp-with-other-length"];
 
@@ -142,14 +144,13 @@ async fn exchange(
     let capture = DeviceBuilder::new().mtu(1280).enable(true).build_sync()?;
     capture.set_name(CAPTURE)?;
     capture.set_nonblocking(true)?;
-    let connector = protected_connector(
-        context.clone(),
-        vec![endpoint.into()],
-        capture.if_index()?,
-        1,
-    )
-    .await?;
-    let udp_connector = protected_udp_connector(context, endpoint, capture.if_index()?).await?;
+    let dns_endpoint = SocketAddrV4::new(DESTINATION, DNS_PORT);
+    let endpoints = vec![endpoint.into(), dns_endpoint.into()];
+    let connector = Arc::new(
+        protected_connector(context.clone(), endpoints.clone(), capture.if_index()?, 1).await?,
+    );
+    let udp_connector =
+        Arc::new(protected_udp_connector(context, endpoints, capture.if_index()?).await?);
     ip(&[
         "route",
         "add",
@@ -254,6 +255,40 @@ async fn exchange(
         })
         .await??;
         drop(udp);
+        {
+            use warper_service::dns::{Admission, DirectUdpTransport, Limits, Packet, QueryBudget};
+            let admission = Admission::new(1)?;
+            let limits = Limits::new(512, 16)?;
+            let transport = DirectUdpTransport::new(udp_connector.clone(), connector.clone(), dns_endpoint.into(), limits, admission.clone())?;
+            let query = Packet::request(&dns_wire(), limits)?;
+            let drops_before = egress_drops()?;
+            let cpu_before = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+            let started = tokio::time::Instant::now();
+            let mut latencies = Vec::with_capacity(DNS_REQUESTS);
+            for _ in 0..DNS_REQUESTS {
+                let budget = QueryBudget::new(2)?;
+                let before = tokio::time::Instant::now();
+                let response = transport.exchange(&query, request(), &budget).await?;
+                if response.response_code() != 3 || response.question() != query.question()
+                    || budget.used() != 2 || admission.active() != 0 {
+                    return Err("native DNS UDP/TCP retry lost its scoped ownership".into());
+                }
+                latencies.push(before.elapsed().as_nanos());
+            }
+            let elapsed = started.elapsed();
+            let cpu_after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+            let cpu_ns = (i128::from(cpu_after.tv_sec) - i128::from(cpu_before.tv_sec)) * 1_000_000_000
+                + i128::from(cpu_after.tv_nsec) - i128::from(cpu_before.tv_nsec);
+            let drops_after = egress_drops()?;
+            let rx_drops = drops_after.0.checked_sub(drops_before.0).ok_or("DNS receive drop counter reset")?;
+            let tx_drops = drops_after.1.checked_sub(drops_before.1).ok_or("DNS transmit drop counter reset")?;
+            latencies.sort_unstable();
+            let status = std::fs::read_to_string("/proc/self/status")?;
+            let peak = status.lines().find(|line| line.starts_with("VmHWM:")).ok_or("DNS workload peak RSS missing")?;
+            let bytes = DNS_REQUESTS * (dns_wire().len() * 4 + 4);
+            println!("DNS UDP/TCP workload requests={DNS_REQUESTS} attempts={} bytes={bytes} elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} rx_drops={rx_drops} tx_drops={tx_drops} {peak}; probe process CPU/cumulative peak RSS, peer excluded, private egress counters", DNS_REQUESTS * 2, elapsed.as_nanos(), latencies[49], latencies[94], latencies[98]);
+            println!("PASS protected direct UDP DNS retries correlated TC through the same upstream TCP path with one request permit and two charged attempts");
+        }
         tokio::time::timeout(Duration::from_secs(2), async {
             let mut stream = socket.connect(endpoint.into()).await?;
             if stream.local_addr()? != SocketAddr::V4(source)
@@ -335,19 +370,14 @@ async fn exchange(
 
 async fn protected_udp_connector(
     context: Arc<warper_service::linux::context::Context>,
-    endpoint: SocketAddrV4,
+    endpoints: Vec<SocketAddr>,
     excluded: u32,
 ) -> Result<warper_service::linux::egress::udp::Connector, Failure> {
     let jobs = warper_service::native::Workers::new(1)?;
     let excluded = std::num::NonZeroU32::new(excluded).ok_or("capture index missing")?;
     let (owner, _) = tokio::sync::watch::channel(false);
     let mut task = jobs.try_reserve()?.start(move || {
-        warper_service::linux::egress::udp::Preparation::new(
-            context,
-            &[endpoint.into()],
-            excluded,
-            1,
-        )
+        warper_service::linux::egress::udp::Preparation::new(context, &endpoints, excluded, 1)
     });
     let preparation = join_native(&mut task, &owner).await??;
     Ok(preparation
@@ -628,6 +658,8 @@ pub(super) async fn peer(mount: &str, net: &str) -> Result<(), Failure> {
     tokio::time::timeout(Duration::from_secs(5), async {
         let server = TcpListener::bind((DESTINATION, PORT)).await?;
         let udp = UdpSocket::bind((DESTINATION, PORT)).await?;
+        let dns_udp = UdpSocket::bind((DESTINATION, DNS_PORT)).await?;
+        let dns_tcp = TcpListener::bind((DESTINATION, DNS_PORT)).await?;
         io::stdout().write_all(b"READY\n")?;
         io::stdout().flush()?;
         // The client interleaves TCP checks with UDP workload phases. Poll
@@ -678,8 +710,54 @@ pub(super) async fn peer(mount: &str, net: &str) -> Result<(), Failure> {
             }
             Ok::<_, Failure>(())
         };
-        tokio::try_join!(udp_flow, tcp_flow)?;
+        let dns_udp_flow = async {
+            for _ in 0..DNS_REQUESTS {
+                let mut bytes = [0; 513];
+                let (length, source) = dns_udp.recv_from(&mut bytes).await?;
+                if source.ip() != SOURCE || bytes[..length] != dns_wire() {
+                    return Err("controlled DNS UDP query/source differs".into());
+                }
+                let mut response = dns_wire();
+                response[2] = 0x83;
+                response[3] = 0x80;
+                if dns_udp.send_to(&response, source).await? != response.len() {
+                    return Err("controlled DNS UDP response boundary differs".into());
+                }
+            }
+            Ok::<_, Failure>(())
+        };
+        let dns_tcp_flow = async {
+            for _ in 0..DNS_REQUESTS {
+                let (mut stream, source) = dns_tcp.accept().await?;
+                let length = usize::from(stream.read_u16().await?);
+                if source.ip() != SOURCE || length != dns_wire().len() {
+                    return Err("controlled DNS TCP source/length differs".into());
+                }
+                let mut bytes = vec![0; length];
+                stream.read_exact(&mut bytes).await?;
+                if bytes != dns_wire() {
+                    return Err("controlled DNS TCP query differs".into());
+                }
+                let mut response = dns_wire();
+                response[2] = 0x81;
+                response[3] = 0x83;
+                let mut frame = (response.len() as u16).to_be_bytes().to_vec();
+                frame.extend_from_slice(&response);
+                stream.write_all(&frame).await?;
+                if stream.read(&mut [0]).await? != 0 {
+                    return Err("controlled DNS TCP retained client bytes".into());
+                }
+            }
+            Ok::<_, Failure>(())
+        };
+        tokio::try_join!(udp_flow, tcp_flow, dns_udp_flow, dns_tcp_flow)?;
         Ok::<_, Failure>(())
     })
     .await?
+}
+
+fn dns_wire() -> Vec<u8> {
+    let mut bytes = vec![0x43, 0x21, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    bytes.extend_from_slice(b"\x07example\x04test\0\0\x01\0\x01");
+    bytes
 }

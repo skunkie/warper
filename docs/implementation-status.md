@@ -27,7 +27,7 @@ Linux x86-64 only. Phase 2's production DNS/route transaction gate is next.
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
 | 1: Headless Linux service slice | Complete for the verified Linux slice | [Closure audit](phase-1-acceptance.md): actual application TCP/FIN through selected SOCKS5/TUN, failed-start restoration, detached clients, explicit Down, authorization, bounded ownership, recovery, equivalent diagnostics and installed systemd lifecycle. Full native matrix and all privileged gates pass at `687b293` in [CI 41597810149](https://github.com/skunkie/warper/actions/runs/41597810149). Inspected evidence is under `target/evidence/phase-1/lifecycle-tracing/`. Linux ARM64 privileged acceptance and native macOS networking are not claimed. |
-| 2: Linux DNS and routing | In progress | Core bounded DNS names, longest-domain selection and a bounded Hickory packet adapter are implemented. Selected-backend TCP DNS adds shared count admission, framing and total-deadline/cancellation ownership; controlled SOCKS5 peer evidence is separate from native routing. UDP/direct DNS and listener integration, complete service-binding dependency gates, response handoff, route leases, retained-state admission, resolved integration and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
+| 2: Linux DNS and routing | In progress | Core bounded DNS names, longest-domain selection and bounded packet adapters are implemented. Selected/direct TCP and direct UDP DNS include shared request admission, query budgets and original deadlines; protected UDP lifecycle has native evidence. The new UDP/TCP composition gate, listener integration, complete service-binding dependency gates, response handoff, route leases, retained-state admission, resolved integration and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
 | 5: Tauri desktop and release | Not started | GUI/control lifecycle, native packaging, UX-01–UX-05, production-mode exclusion tests and public signing/notarization remain required |
@@ -58,8 +58,10 @@ on changes. Its expanded production gate passes in
 at `edadf71`, including inspected lifecycle assertions and a controlled workload.
 All four probe manifests exit zero without timeout and preserve host state;
 raw copies are under `target/evidence/phase-2/protected-udp/ci-41618257779/`.
-UDP DNS exchange/fallback,
-resolver discovery, byte admission and full service integration remain open.
+Direct UDP DNS and same-upstream TCP retry are now implemented with one request
+permit and a shared query budget; their native composition gate remains pending.
+Raw checks belong under `target/evidence/phase-2/udp-dns/`. Resolver discovery,
+listener ownership, byte admission and full service integration remain open.
 
 ## Phase 0 Exit Evidence
 

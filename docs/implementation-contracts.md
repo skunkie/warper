@@ -2910,7 +2910,8 @@ adapter starts no task and retains no worker after it returns.
 
 `TcpTransport::new(Arc<dyn Backend>, SocketAddr, Limits, Admission)` validates a
 literal upstream and its selected backend's TCP/family capabilities. It owns
-no direct connector, resolver or alternate backend. `exchange(&Packet, Request)`
+no direct connector, resolver or alternate backend.
+`exchange(&Packet, Request, &QueryBudget)`
 uses the original total deadline and cancellation context through the entire
 operation, including backend setup. It writes one two-byte big-endian length
 and complete query, bounds the response length before allocation, reads exactly
@@ -3001,3 +3002,41 @@ at `edadf71`, with inspected production UDP assertions, a measured controlled
 workload and all four zero-exit, no-timeout, host-preserving probe manifests.
 The installed-unit gate also passes. This establishes the Linux x86-64
 connector boundary; DNS integration and service-wide byte admission remain open.
+
+### Request-scoped query budgets and direct UDP DNS
+
+`dns::QueryBudget::new(limit)` requires a positive attempt count and owns fixed
+atomic metadata. A parent request supplies the same budget to every selected
+TCP, direct TCP and direct UDP exchange and all dependency lookups. Each actual
+upstream transport opening charges one attempt before dialing. Failed setup
+does not refund it; admission/validation refusal before a dial does not consume
+an attempt. Concurrent children charge atomically and cannot underflow or reset
+the parent count. The resolver must still bound upstream concurrency/buffers
+independently; an attempt count alone is not byte admission.
+
+`DirectUdpTransport::new(Arc<dyn DatagramConnector>, Arc<dyn EndpointConnector>,
+SocketAddr, Limits, Admission)` accepts two prepared physical connectors for one
+literal upstream. It owns no selected backend or alternate resolver. One global
+request permit spans the entire UDP/TCP exchange. It bounds the encoded query,
+charges/opens one connected UDP socket, sends one complete query and receives
+one bounded datagram with an extra size-detection byte. Socket truncation,
+oversized or malformed data, mismatched ID/question/class/type, I/O failure and
+timeout fail without TCP retry. Valid negatives are final packets.
+
+Only correlated DNS TC triggers TCP retry to the same upstream. UDP resources
+drop before TCP opens; the TCP helper borrows the existing permit, verifies its
+admission-pool identity and never reserves another client slot. The original
+deadline/cancellation and query budget cover both attempts. Queries above the
+conservative 65507-byte UDP ceiling use TCP first with one charged attempt.
+The helper rejects a permit from another pool. No transport failure selects
+another role or DNS server; ordered same-role server retry belongs to the parent
+resolver and must use the same budget/deadline.
+
+Controlled tests cover single-slot TC retry, exhausted budgets, concurrent
+charges, valid negatives, malformed/truncated datagrams, foreign permits,
+oversized-query TCP selection and a delayed UDP reply followed by stalled TCP
+without deadline renewal. The native physical fixture adds 100 actual protected
+UDP/TCP DNS exchanges under competing capture, with source/query validation,
+one-slot admission, two charged attempts and a controlled workload. Its native
+gate must pass before that composition is claimed verified. This is transport
+evidence; endpoint/lease publication and daemon DNS readiness remain open.

@@ -24,7 +24,9 @@ use warper_core::{
     BackendId,
     transport::{EndpointConnector, Error, OpenTcp, Request, TcpStream as BoxedTcp},
 };
-use warper_service::dns::{Admission, DirectTcpTransport, Limits, Packet, TcpTransport};
+use warper_service::dns::{
+    Admission, DirectTcpTransport, Limits, Packet, QueryBudget, TcpTransport,
+};
 
 struct MockConnector {
     endpoint: SocketAddr,
@@ -69,6 +71,7 @@ async fn controlled_exchange(direct: bool) -> (Duration, usize) {
         let mut query_wire = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
         query_wire.extend_from_slice(b"\x07example\x04test\0\0\x01\0\x01");
         let query = Packet::request(&query_wire, limits).unwrap();
+        let budget = QueryBudget::new(32).unwrap();
         let expected = query_wire.clone();
         let peer = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -107,9 +110,9 @@ async fn controlled_exchange(direct: bool) -> (Duration, usize) {
         let started = Instant::now();
         let exchange = async {
             if direct {
-                direct_transport.exchange(&query, request).await
+                direct_transport.exchange(&query, request, &budget).await
             } else {
-                transport.exchange(&query, request).await
+                transport.exchange(&query, request, &budget).await
             }
         };
         let (response, peer_result) = tokio::join!(exchange, peer);
@@ -119,6 +122,7 @@ async fn controlled_exchange(direct: bool) -> (Duration, usize) {
         assert_eq!(response.question(), query.question());
         assert_eq!(connector.calls.load(Ordering::SeqCst), 1);
         assert_eq!(admission.active(), 0);
+        assert_eq!(budget.used(), 1);
         (started.elapsed(), query_wire.len() * 2 + 4)
     })
     .await
