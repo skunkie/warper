@@ -25,6 +25,16 @@ remaining phase gates and capability limits.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 
+The owner-dispatched CI workflow has a separate installed-unit gate on a
+disposable GitHub-hosted Linux VM. `scripts/systemd_acceptance.py` refuses
+ordinary developer and self-hosted environments, requires explicit VM
+acknowledgement, and refuses existing installation/state paths. It installs the
+actual binaries/unit, checks owner control across restart and SIGKILL recovery,
+verifies stop/lock preservation and independently removes its installed files.
+The gate approves no network configuration and verifies that resolver identity
+and bytes remain unchanged. Retained protected directories belong to the
+discarded VM. Actual TUN traffic has the separate private-namespace gate.
+
 ## Local checks
 
 From the repository root:

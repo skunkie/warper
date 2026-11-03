@@ -235,3 +235,44 @@ jobs:
           path: target/evidence/phase-1/privileged-control/
           if-no-files-found: error
           retention-days: 14
+
+  privileged-systemd:
+    name: Installed Linux systemd acceptance
+    needs: [stage, quality]
+    # The source unit is installed only into an owner-dispatched disposable VM.
+    if: >-
+      needs.stage.outputs.rust == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'skunkie/warper' &&
+      github.actor == github.repository_owner
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          build-warnings: warn
+      - name: Build the actual installed applications
+        run: cargo build --locked -p warper-service --bin warperd -p warper-cli --bin warper
+      - name: Exercise the source unit in this disposable hosted VM
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p target/evidence/phase-1/systemd
+          sudo -n -- env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            python3 scripts/systemd_acceptance.py --disposable-github-vm \
+            --warper "$PWD/target/debug/warper" \
+            --warperd "$PWD/target/debug/warperd" \
+            --unit "$PWD/packaging/linux/warper.service" \
+            --owner-uid "$(id -u)" --owner-gid "$(id -g)" \
+            --revision "$REVISION" --evidence "$PWD/target/evidence/phase-1/systemd"
+      - name: Retain installed-unit evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-systemd-${{ github.sha }}
+          path: target/evidence/phase-1/systemd/
+          if-no-files-found: error
+          retention-days: 14

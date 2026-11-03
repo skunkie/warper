@@ -660,3 +660,14 @@ the privileged SIGKILL fixture now verifies inspection before retirement.
 This expanded privileged gate remains unverified. Evidence belongs under
 `target/evidence/phase-1/endpoint-inspection/`. The offline recovery CLI still
 requires composition with the protected stores and network journal.
+
+An owner-dispatched installed-unit CI gate now exercises the actual source unit
+and binaries on a separate disposable GitHub-hosted VM. It checks initial owner
+access, explicit restart, SIGKILL/automatic recovery, stop, a subsequent start,
+and persistent lock identity. The fixture refuses developer/self-hosted hosts
+and existing installations, independently stops the unit/removes owned installed
+files and verifies unchanged resolver identity/bytes. It approves no network
+configuration; real TUN traffic remains covered by the separate isolated gate.
+The 140-test infrastructure suite passes; installed-unit execution remains
+unverified until its first exact-commit CI result. Evidence belongs under
+`target/evidence/phase-1/systemd/`.
