@@ -3070,3 +3070,20 @@ RFC 2181. Duplicate addresses do not consume extra address capacity. Packet
 bytes and response codes remain unchanged. The result authorizes neither
 positive output nor route publication: endpoint/family/conflict validation,
 acknowledged route commits, grace and response handoff remain separate gates.
+
+`TcpTransport::discover_addresses` drives that traversal through its one fixed
+selected backend and literal upstream. `AddressDiscoveryLimits` supplies the
+alias/address bounds. One root permit remains held through every dependency;
+each new TCP query charges the same supplied `QueryBudget` and uses the
+original `Request`. Exhaustion, failure, timeout and cancellation discard the
+entire discovery. No direct connector, fallback selection or child task exists.
+The result retains the original upstream response, complete address analysis
+and backend identity for the later route gate. It grants no output permission.
+
+Dependency queries retain the original ID, RD/CD settings and EDNS parameters;
+fresh TCP streams correlate each reply independently. Their canonical question
+changes to the dependency name/type/class. Refuse synthesis from a response or
+a request carrying transaction signatures or non-EDNS Additional records rather
+than invalidating authentication or copying unrelated data into a new query.
+Responses remain unchanged; synthesis never asserts AA or AD. Address freshness
+is stamped immediately after each complete validated exchange.

@@ -324,3 +324,100 @@ fn edns_and_service_binding_parameters_survive_the_adapter() {
         Err(Error::Malformed)
     ));
 }
+
+#[test]
+fn dependency_queries_preserve_rd_cd_and_edns_without_asserting_answer_flags() {
+    let mut bytes = request_wire();
+    bytes[2] |= 4;
+    bytes[3] = 0xb0;
+    bytes[11] = 1;
+    // OPT: 1232-byte advertised UDP payload, DO, empty option set.
+    bytes.extend_from_slice(&[0, 0, 41, 4, 208, 0, 0, 128, 0, 0, 0]);
+    let request = Packet::request(&bytes, limits()).unwrap();
+    let question = Question {
+        name: Name::from_ascii("target.example.test").unwrap(),
+        record_type: 28,
+        class: 1,
+    };
+    let dependency = request.dependency(question).unwrap();
+    let encoded = dependency.encode().unwrap();
+    assert_eq!(dependency.id(), request.id());
+    assert_eq!(dependency.question(), question);
+    assert_eq!(encoded[2], 1, "only RD remains in the first flags octet");
+    assert_eq!(
+        encoded[3], 0x10,
+        "CD is preserved without AA, AD or RA assertions"
+    );
+    assert_eq!(dependency.message.edns, request.message.edns);
+    assert_eq!(request.encode().unwrap(), bytes);
+    assert_eq!(
+        Packet::request(&encoded, limits()).unwrap().question(),
+        question
+    );
+}
+
+#[test]
+fn dependency_synthesis_refuses_response_additional_records_and_oversize_names() {
+    let request = Packet::request(&request_wire(), limits()).unwrap();
+    let response = Packet::response(&response_wire(), &request, limits()).unwrap();
+    assert!(matches!(
+        response.dependency(request.question()),
+        Err(Error::UnsupportedOperation)
+    ));
+    let mut bytes = request_wire();
+    bytes[11] = 1;
+    bytes.extend_from_slice(&[0xc0, 12, 0, 16, 0, 1, 0, 0, 0, 0, 0, 2, 1, b'x']);
+    let request = Packet::request(&bytes, limits()).unwrap();
+    assert!(matches!(
+        request.dependency(request.question()),
+        Err(Error::UnsupportedOperation)
+    ));
+    let bytes = request_wire();
+    let request = Packet::request(&bytes, Limits::new(bytes.len(), 1).unwrap()).unwrap();
+    let question = Question {
+        name: Name::from_ascii("longer-dependency-name.example.test").unwrap(),
+        ..request.question()
+    };
+    assert!(matches!(
+        request.dependency(question),
+        Err(Error::ResourceLimit)
+    ));
+}
+
+#[test]
+fn dependency_synthesis_refuses_a_transaction_signature() {
+    use hickory_proto::rr::{
+        DNSClass, Record,
+        rdata::{TSIG, tsig::TsigAlgorithm},
+    };
+    let mut request = Packet::request(&request_wire(), limits()).unwrap();
+    let signature = TSIG::new(
+        TsigAlgorithm::HmacSha256,
+        0,
+        300,
+        vec![7; 32],
+        request.id(),
+        None,
+        Vec::new(),
+    );
+    let mut record = Record::from_rdata(
+        hickory_proto::rr::Name::from_ascii("sample-key.test.").unwrap(),
+        0,
+        signature,
+    );
+    record.dns_class = DNSClass::ANY;
+    request.message.signature = Some(Box::new(record));
+    assert!(matches!(
+        request.dependency(request.question()),
+        Err(Error::UnsupportedOperation)
+    ));
+    let encoded = request.encode().unwrap();
+    let parsed = Packet::request(&encoded, limits()).unwrap();
+    // With std-only Hickory, TSIG remains an Additional record. Either
+    // representation must prevent copying a MAC onto a changed question.
+    assert!(parsed.message.signature.is_some() || !parsed.message.additionals.is_empty());
+    assert!(matches!(
+        parsed.dependency(parsed.question()),
+        Err(Error::UnsupportedOperation)
+    ));
+}

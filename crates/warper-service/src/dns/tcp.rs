@@ -17,6 +17,10 @@ use warper_core::{
 
 use super::{Error as PacketError, Limits, Packet, QueryBudget};
 
+mod address;
+
+pub use address::{AddressDiscoveryLimits, AddressResolution, DiscoveryError};
+
 const MAX_REQUESTS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

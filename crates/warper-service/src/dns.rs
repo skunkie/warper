@@ -14,5 +14,8 @@ pub use packet::{
     Question,
 };
 pub use query::QueryBudget;
-pub use tcp::{Admission, DirectTcpTransport, ExchangeError, TcpTransport};
+pub use tcp::{
+    AddressDiscoveryLimits, AddressResolution, Admission, DirectTcpTransport, DiscoveryError,
+    ExchangeError, TcpTransport,
+};
 pub use udp::DirectUdpTransport;

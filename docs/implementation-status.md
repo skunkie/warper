@@ -77,8 +77,13 @@ contribute; unrelated sections do not create routing metadata. Deterministic
 fixtures cover order independence, conflicts, negatives, IPv6 addresses and
 zero/high-bit TTLs. Checks and changed-source coverage belong under
 `target/evidence/phase-2/address-discovery/`. This is answer analysis, not an
-integrated resolver: parent-owned dependency I/O, full HTTPS/SVCB endpoint
-discovery, acknowledged routing and gated output remain required.
+integrated daemon resolver. Selected-backend TCP now drives ordinary CNAME
+follow-ups with one parent permit, query budget and original deadline. A real
+controlled SOCKS5 peer verifies both upstream queries and socket cleanup;
+failure tests cover exhausted attempts, retained admission, cancellation,
+timeout, invalid aliases and setup failure. Dependency queries preserve RD/CD
+and EDNS, refusing unsafe transaction-signature synthesis. Full HTTPS/SVCB
+endpoint discovery, acknowledged routing and gated output remain required.
 
 ## Phase 0 Exit Evidence
 

@@ -137,6 +137,34 @@ impl Packet {
         Self::decode(bytes, question, limits)
     }
 
+    /// Construct a dependency query without copying authentication over a
+    /// changed question. Each dependency uses its own owned TCP stream.
+    pub(super) fn dependency(&self, question: Question) -> Result<Self, Error> {
+        if self.is_response()
+            || self.message.signature.is_some()
+            || !self.message.additionals.is_empty()
+        {
+            return Err(Error::UnsupportedOperation);
+        }
+        let mut decoder = BinDecoder::new(question.name.wire());
+        let name = hickory_proto::rr::Name::read(&mut decoder).map_err(|_| Error::Malformed)?;
+        let mut message = Message::new(self.id(), MessageType::Query, OpCode::Query);
+        message.metadata.recursion_desired = self.message.recursion_desired;
+        message.metadata.checking_disabled = self.message.checking_disabled;
+        message.edns = self.message.edns.clone();
+        let mut query = Query::query(name, question.record_type.into());
+        query.query_class = question.class.into();
+        message.queries.push(query);
+        let packet = Self {
+            message,
+            question,
+            limits: self.limits,
+        };
+        // Account for a longer dependency name before upstream work starts.
+        packet.encode()?;
+        Ok(packet)
+    }
+
     pub fn id(&self) -> u16 {
         self.message.id
     }

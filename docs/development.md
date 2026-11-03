@@ -137,6 +137,7 @@ The selected-backend DNS TCP adapter has a controlled loopback SOCKS5 fixture:
 cargo test --locked -p warper-service --test dns_tcp
 cargo test --locked --release -p warper-service --test dns_tcp dns_tcp_workload -- --ignored --exact --nocapture
 cargo test --locked --release -p warper-service --test dns_tcp direct_dns_tcp_workload -- --ignored --exact --nocapture
+cargo test --locked --release -p warper-service --test dns_tcp selected_address_discovery_workload -- --ignored --exact --nocapture
 ```
 
 The explicit workloads repeat 100 sequential fresh direct or SOCKS5 connections
@@ -147,6 +148,15 @@ loopback drop-counter deltas alongside output under
 peer and applicable backend setup. Loopback counters are host-wide observations,
 not per-flow attribution; this is not a DNS-discovered TUN workload. No developer
 resolver, public DNS server or credentials are used.
+
+The address-discovery workload performs 100 CNAME-to-A lookups through the
+production SOCKS5 backend, using two TCP streams under one parent permit per
+lookup. It reports 200 attempts, DNS framing bytes and discovery latency
+percentiles. Responses are coalesced; no delay or loss is injected. Capture
+CPU/RSS and loopback drop deltas under
+`target/evidence/phase-2/address-discovery/`. Fixture setup is included in total
+wall/CPU time but excluded from each discovery latency. Process measurements
+include both client and controlled peer; they are not physical TUN results.
 
 Configuration parser tests run as part of workspace tests, or separately with:
 
