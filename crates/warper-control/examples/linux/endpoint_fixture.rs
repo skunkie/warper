@@ -11,6 +11,7 @@ use std::{
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         net::UnixStream,
     },
+    path::Path,
     process::Command,
     time::{Duration, Instant},
 };
@@ -108,14 +109,22 @@ pub(super) fn crash_recovery(mount_fd: &str, net_fd: &str) -> Result<(), Failure
             return Err("endpoint child was not reaped after SIGKILL".into());
         }
         let mut fresh = RuntimeLease::acquire()?;
+        let intent = fs::read("/run/warper/control.intent")?;
+        if endpoint::inspect(&fresh)? != endpoint::Inspection::Retirable
+            || !Path::new("/run/warper/control.sock").exists()
+            || fs::read("/run/warper/control.intent")? != intent
+        {
+            return Err("endpoint inspection changed stale publication".into());
+        }
         if endpoint::recover(&mut fresh)? != Recovery::Retired
             || endpoint::recover(&mut fresh)? != Recovery::Absent
+            || endpoint::inspect(&fresh)? != endpoint::Inspection::Absent
         {
             return Err("proven endpoint recovery did not retire idempotently".into());
         }
         ControlEndpoint::bind(fresh)?.close()?;
         println!(
-            "PASS native control endpoint SIGKILL/reap, fresh-lock recovery, repeated retirement and fresh publication"
+            "PASS native control endpoint SIGKILL/reap, read-only inspection, fresh-lock recovery, repeated retirement and fresh publication"
         );
         Ok(())
     })();

@@ -650,3 +650,13 @@ instructions are documented without deleting recovery state. Unit syntax is
 validated against the built daemon path; actual installed-unit lifecycle
 acceptance remains unverified. Evidence belongs under
 `target/evidence/phase-1/systemd/`. No release package or desktop is produced.
+
+Endpoint recovery now exposes a read-only inspection boundary that repeats the
+same fresh-lease, protected intent and recorded-socket checks as retirement.
+It reports only Absent or Retirable and never removes or syncs files. Later
+retirement performs fresh checks rather than trusting the observation. Controlled
+tests cover preservation of stale publication and rejection of foreign changes;
+the privileged SIGKILL fixture now verifies inspection before retirement.
+This expanded privileged gate remains unverified. Evidence belongs under
+`target/evidence/phase-1/endpoint-inspection/`. The offline recovery CLI still
+requires composition with the protected stores and network journal.

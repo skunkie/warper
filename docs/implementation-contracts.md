@@ -2675,6 +2675,13 @@ finish interrupted retirement; repeated recovery without either object is a
 no-op. Prepared plus an existing unidentified socket, a socket without intent,
 legacy intent and any foreign metadata remain explicit recovery conflicts.
 
+`endpoint::inspect(&RuntimeLease)` applies the same protected-path, fresh-lease,
+intent and socket verification without unlinking or syncing objects. Its only
+successful observations are Absent and Retirable. Neither is a capability for
+later mutation: `recover` repeats all checks. Inspection rejects a lease that
+attempted publication and preserves unknown or changed state. The caller retains
+the instance lock throughout inspection; only its owner may attempt recovery.
+
 ## Linux daemon composition contract
 
 The daemon composes the verified native controller, shared admission owner and

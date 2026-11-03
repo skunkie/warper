@@ -15,9 +15,29 @@ pub enum Recovery {
     Retired,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Inspection {
+    Absent,
+    Retirable,
+}
+
+/// Verify a stale publication without unlinking or syncing any object.
+/// This observation is not authorization for a later retirement; recover
+/// repeats every check under its exclusive, freshly acquired lease.
+pub fn inspect(lease: &RuntimeLease) -> Result<Inspection, Error> {
+    reconcile(lease, false)
+}
+
 /// Unique access and the never-published marker prevent live ownership recovery.
 /// Unknown or changed objects are preserved; legacy intent requires inspection.
 pub fn recover(lease: &mut RuntimeLease) -> Result<Recovery, Error> {
+    reconcile(lease, true).map(|inspection| match inspection {
+        Inspection::Absent => Recovery::Absent,
+        Inspection::Retirable => Recovery::Retired,
+    })
+}
+
+fn reconcile(lease: &RuntimeLease, retire: bool) -> Result<Inspection, Error> {
     lease.revalidate().map_err(Error::Runtime)?;
     if lease.endpoint_bound.load(Ordering::Acquire) {
         return Err(Error::ReacquisitionRequired);
@@ -26,7 +46,7 @@ pub fn recover(lease: &mut RuntimeLease) -> Result<Recovery, Error> {
         Ok(metadata) => metadata,
         Err(crate::runtime::Error::Io(io::ErrorKind::NotFound)) => {
             return match named(&lease.directory, SOCKET) {
-                Err(crate::runtime::Error::Io(io::ErrorKind::NotFound)) => Ok(Recovery::Absent),
+                Err(crate::runtime::Error::Io(io::ErrorKind::NotFound)) => Ok(Inspection::Absent),
                 Ok(_) => Err(Error::RecoveryRequired),
                 Err(error) => Err(Error::Runtime(error)),
             };
@@ -88,6 +108,9 @@ pub fn recover(lease: &mut RuntimeLease) -> Result<Recovery, Error> {
     if read()? != bytes {
         return Err(Error::ChangedState);
     }
+    if !retire {
+        return Ok(Inspection::Retirable);
+    }
     if let Some(socket) = socket {
         if Identity::of(&named(&lease.directory, SOCKET).map_err(Error::Runtime)?) != socket {
             return Err(Error::ChangedState);
@@ -119,7 +142,7 @@ pub fn recover(lease: &mut RuntimeLease) -> Result<Recovery, Error> {
     directory
         .sync_all()
         .map_err(|error| Error::Io(error.kind()))?;
-    Ok(Recovery::Retired)
+    Ok(Inspection::Retirable)
 }
 
 #[cfg(test)]
@@ -144,7 +167,14 @@ mod tests {
         assert_eq!(recover(&mut used), Err(Error::ReacquisitionRequired));
         drop(used);
         let mut fresh = fixture.acquire().unwrap();
+        let intent = fixture.path.join("run/warper/control.intent");
+        let socket = fixture.path.join("run/warper/control.sock");
+        let before = fs::read(&intent).unwrap();
+        assert_eq!(inspect(&fresh), Ok(Inspection::Retirable));
+        assert!(socket.exists());
+        assert_eq!(fs::read(&intent).unwrap(), before);
         assert_eq!(recover(&mut fresh), Ok(Recovery::Retired));
+        assert_eq!(inspect(&fresh), Ok(Inspection::Absent));
         assert_eq!(recover(&mut fresh), Ok(Recovery::Absent));
         use std::os::unix::fs::MetadataExt;
         assert_eq!(lock.ino(), fs::metadata(fixture.lock_path()).unwrap().ino());
@@ -176,6 +206,7 @@ mod tests {
                 assert_eq!(recover(&mut fresh), Ok(Recovery::Retired));
             } else {
                 let expected = fs::read(&intent).unwrap();
+                assert!(inspect(&fresh).is_err(), "{change}");
                 assert!(recover(&mut fresh).is_err(), "{change}");
                 assert!(socket.exists(), "{change}");
                 assert_eq!(fs::read(&intent).unwrap(), expected, "{change}");

@@ -30,7 +30,7 @@ use crate::{Access, OwnerPolicy, Role};
 mod record;
 mod recovery;
 use record::{Identity, LENGTH, Record};
-pub use recovery::{Recovery, recover};
+pub use recovery::{Inspection, Recovery, inspect, recover};
 
 const SOCKET: &str = "control.sock";
 const INTENT: &str = "control.intent";
