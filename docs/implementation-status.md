@@ -70,6 +70,16 @@ Inspected manifests and workload logs are under
 Raw checks belong under `target/evidence/phase-2/udp-dns/`. Resolver discovery,
 listener ownership, byte admission and full service integration remain open.
 
+The packet adapter now provides bounded IN A/AAAA dependency traversal with
+CNAME continuations, cross-packet loop/hop accounting, unique-address limits
+and original observation-based TTL expiry. Only reachable Answer records
+contribute; unrelated sections do not create routing metadata. Deterministic
+fixtures cover order independence, conflicts, negatives, IPv6 addresses and
+zero/high-bit TTLs. Checks and changed-source coverage belong under
+`target/evidence/phase-2/address-discovery/`. This is answer analysis, not an
+integrated resolver: parent-owned dependency I/O, full HTTPS/SVCB endpoint
+discovery, acknowledged routing and gated output remain required.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

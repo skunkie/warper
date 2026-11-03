@@ -3041,3 +3041,32 @@ one-slot admission, two charged attempts and a controlled workload. The native
 composition passes in [CI 41671110746](https://github.com/skunkie/warper/actions/runs/41671110746)
 at `b8e8c52`, including inspected workload and isolated cleanup evidence.
 This is transport evidence; endpoint/lease publication and daemon DNS readiness remain open.
+
+### Address-answer dependency traversal
+
+`warper_service::dns::AddressLookup` consumes correlated IN A/AAAA responses
+through the packet adapter. Each step either finishes with `AddressAnswer` or
+returns the same owned lookup with a new `question()` for a CNAME dependency.
+The parent resolver retains its selected backend, request permit, query budget
+and original deadline; a continuation grants no new admission or retry budget.
+Ordinary CNAME traversal does not introduce a new domain-policy selection.
+Service-binding discovery must additionally validate every dependency against
+ADR 0003 before issuing queries or accepting endpoints.
+
+Only Answer records of the requested class at the current canonical owner
+contribute. Unrelated Answer, Authority and Additional records create no
+routes. Traverse aliases independently of wire record order; reject loops,
+conflicting CNAME targets and CNAME/address coexistence. Count aliases across
+responses, not per packet. Bound retained path names and unique addresses by
+explicit limits with fallible allocation; there are no tasks, timers or I/O.
+A continuation is needed only for a successful CNAME-only response. A valid
+NODATA or negative response finishes without retrying another backend.
+
+Every address retains its canonical owner, original question, full CNAME path
+and monotonic expiry. Expiry is the minimum observed alias/address expiry;
+follow-up time never renews an earlier TTL. Unequal RRset TTLs use their minimum,
+TTL zero remains zero, and a TTL with the high bit set has zero freshness per
+RFC 2181. Duplicate addresses do not consume extra address capacity. Packet
+bytes and response codes remain unchanged. The result authorizes neither
+positive output nor route publication: endpoint/family/conflict validation,
+acknowledged route commits, grace and response handoff remain separate gates.

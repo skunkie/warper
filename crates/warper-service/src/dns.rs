@@ -9,7 +9,10 @@ mod query;
 mod tcp;
 mod udp;
 
-pub use packet::{Error, Limits, Packet, Question};
+pub use packet::{
+    Address, AddressAnswer, AddressError, AddressLookup, AddressProgress, Error, Limits, Packet,
+    Question,
+};
 pub use query::QueryBudget;
 pub use tcp::{Admission, DirectTcpTransport, ExchangeError, TcpTransport};
 pub use udp::DirectUdpTransport;

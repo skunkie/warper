@@ -13,6 +13,10 @@ use hickory_proto::{
 };
 use warper_core::dns::Name;
 
+mod address;
+
+pub use address::{Address, AddressAnswer, AddressError, AddressLookup, AddressProgress};
+
 const HEADER_BYTES: usize = 12;
 const MAX_WIRE_BYTES: usize = u16::MAX as usize;
 const MAX_RECORDS: usize = 4096;
