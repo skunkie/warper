@@ -54,7 +54,7 @@ pub fn inspect_abandoned(context: &Context, request: Request) -> Result<Recovery
     Wait::new(request.clone()).map_err(Error::RecoveryWait)?;
     context.revalidate().map_err(Error::Context)?;
     let journal = NetworkJournal::open(context.runtime()).map_err(Error::Storage)?;
-    let snapshot = journal.inspect(context.runtime()).map_err(Error::Storage)?;
+    let snapshot = journal.read(context.runtime()).map_err(Error::Storage)?;
     inspect_snapshot(context, snapshot.as_ref(), request)
 }
 
