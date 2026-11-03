@@ -46,10 +46,13 @@ DNS/route acceptance. Service preflight still rejects DNS configurations.
 The next transport gate is UDP/direct DNS and bounded listener ownership;
 endpoint validation, leases, route publication and resolved integration remain
 required before domain discovery can be enabled.
-The route query now distinguishes TCP/UDP tuples. ADR 0025's source/device-bound
-UDP experiment adds real datagram boundaries and a competing TUN /32 to the
-private physical-peer fixture. Its native mechanism gate remains unverified
-until the corresponding owner-dispatched run and raw manifests are inspected.
+The route query distinguishes TCP/UDP tuples. ADR 0025's source/device-bound UDP
+mechanism passes in [CI 41611452768](https://github.com/skunkie/warper/actions/runs/41611452768)
+at `4cdce8e`, with real datagram boundaries and a competing TUN /32 in the private
+physical-peer fixture. Inspected raw manifests/logs are under
+`target/evidence/phase-2/bound-udp-egress/ci-41611452768/`. This establishes the
+Linux x86-64 virtual routed socket mechanism; the production datagram connector,
+queue budgets, retained ownership and change invalidation still need integration.
 
 ## Phase 0 Exit Evidence
 

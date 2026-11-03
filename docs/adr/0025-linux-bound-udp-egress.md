@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0025. Linux bound UDP egress mechanism
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-03
 - Related contracts and acceptance criteria: ADR 0016, ADR 0021, NET-02, NET-08.
 
@@ -36,8 +36,8 @@ depends on it. Bind the source, set/read back the device, obtain the actual
 ephemeral tuple and constrain that UDP tuple's kernel lookup before connecting
 or sending. Binding itself emits no application datagram.
 
-Accept the scoped mechanism only after the owner-dispatched isolated gate
-passes real UDP roundtrips under a competing TUN /32. The unconstrained UDP
+The scoped mechanism passes real UDP roundtrips under a competing TUN /32 in
+the owner-dispatched isolated gate. The unconstrained UDP
 lookup must select capture, the device-constrained lookup must preserve the
 original egress, two different payload lengths must retain datagram boundaries,
 the peer must report the original source port, and capture must observe no
@@ -66,3 +66,13 @@ limited to inherited private namespace anchors and a fixed synthetic peer.
 Reject the mechanism if tuple proof differs, capture sees the traffic or cleanup
 cannot be established. Revisit on routing-policy, binding-API or supported
 underlay changes. DNS transport and resolver integration are separate gates.
+
+The [owner-dispatched run](https://github.com/skunkie/warper/actions/runs/41611452768)
+at `4cdce8e` passes the native matrix and both privileged Linux jobs. The actual
+TUN probe log confirms TCP and UDP bypass, source-port/datagram boundaries and
+joined peer cleanup. All four probe manifests identify that revision, exit
+zero, no timeout and independently preserved host state; installed-unit results
+contain no errors. Raw copies are under
+`target/evidence/phase-2/bound-udp-egress/ci-41611452768/`. This is native Linux
+x86-64 virtual routed mechanism evidence. ARM64 builds do not establish native
+UDP routing on ARM64, and no production DNS integration is claimed.
