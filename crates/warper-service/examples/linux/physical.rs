@@ -630,46 +630,55 @@ pub(super) async fn peer(mount: &str, net: &str) -> Result<(), Failure> {
         let udp = UdpSocket::bind((DESTINATION, PORT)).await?;
         io::stdout().write_all(b"READY\n")?;
         io::stdout().flush()?;
-        for sample in UDP_SAMPLES.into_iter().cycle().take(204) {
-            let mut data = [0; 64];
-            let (length, source) = udp.recv_from(&mut data).await?;
-            if source.ip() != SOURCE || data[..length] != *sample {
-                return Err("controlled UDP peer source/boundary differs".into());
+        // The client interleaves TCP checks with UDP workload phases. Poll
+        // both listeners so neither protocol waits for the other to finish.
+        let udp_flow = async {
+            for sample in UDP_SAMPLES.into_iter().cycle().take(204) {
+                let mut data = [0; 64];
+                let (length, source) = udp.recv_from(&mut data).await?;
+                if source.ip() != SOURCE || data[..length] != *sample {
+                    return Err("controlled UDP peer source/boundary differs".into());
+                }
+                let mut response = source.port().to_be_bytes().to_vec();
+                response.extend_from_slice(sample);
+                if udp.send_to(&response, source).await? != response.len() {
+                    return Err("controlled UDP peer response boundary differs".into());
+                }
             }
-            let mut response = source.port().to_be_bytes().to_vec();
-            response.extend_from_slice(sample);
-            if udp.send_to(&response, source).await? != response.len() {
-                return Err("controlled UDP peer response boundary differs".into());
+            let mut empty = [0; 1];
+            let (length, source) = udp.recv_from(&mut empty).await?;
+            if length != 0 || source.ip() != SOURCE || udp.send_to(&[], source).await? != 0 {
+                return Err("controlled zero-length UDP datagram differs".into());
             }
-        }
-        let mut empty = [0; 1];
-        let (length, source) = udp.recv_from(&mut empty).await?;
-        if length != 0 || source.ip() != SOURCE || udp.send_to(&[], source).await? != 0 {
-            return Err("controlled zero-length UDP datagram differs".into());
-        }
-        for _ in 0..2 {
-            let (mut stream, source) = server.accept().await?;
-            if source.ip() != SOURCE {
-                return Err("controlled TCP peer source differs".into());
+            Ok::<_, Failure>(())
+        };
+        let tcp_flow = async {
+            for _ in 0..2 {
+                let (mut stream, source) = server.accept().await?;
+                if source.ip() != SOURCE {
+                    return Err("controlled TCP peer source differs".into());
+                }
+                let mut request = Vec::with_capacity(SAMPLE.len() + 1);
+                (&mut stream)
+                    .take(SAMPLE.len() as u64 + 1)
+                    .read_to_end(&mut request)
+                    .await?;
+                if request != SAMPLE {
+                    return Err("controlled TCP peer request differs".into());
+                }
+                stream.write_all(&source.port().to_be_bytes()).await?;
+                stream.write_all(b"after-fin").await?;
+                stream.shutdown().await?;
             }
-            let mut request = Vec::with_capacity(SAMPLE.len() + 1);
-            (&mut stream)
-                .take(SAMPLE.len() as u64 + 1)
-                .read_to_end(&mut request)
-                .await?;
-            if request != SAMPLE {
-                return Err("controlled TCP peer request differs".into());
+            let (mut stream, _) = server.accept().await?;
+            let mut request = Vec::with_capacity(1);
+            (&mut stream).take(1).read_to_end(&mut request).await?;
+            if !request.is_empty() {
+                return Err("invalidated idle stream emitted application payload".into());
             }
-            stream.write_all(&source.port().to_be_bytes()).await?;
-            stream.write_all(b"after-fin").await?;
-            stream.shutdown().await?;
-        }
-        let (mut stream, _) = server.accept().await?;
-        let mut request = Vec::with_capacity(1);
-        (&mut stream).take(1).read_to_end(&mut request).await?;
-        if !request.is_empty() {
-            return Err("invalidated idle stream emitted application payload".into());
-        }
+            Ok::<_, Failure>(())
+        };
+        tokio::try_join!(udp_flow, tcp_flow)?;
         Ok::<_, Failure>(())
     })
     .await?
