@@ -57,12 +57,25 @@ impl OwnerStore {
         self.resync_offline_with(lease, Self::sync)
     }
 
+    /// Online resync renews actual administrative peer authorization.
+    pub fn resync(&self, lease: &RuntimeLease, peer: &UnixStream) -> Result<(), Error> {
+        authorize(lease, peer)?;
+        self.resync_committed(Self::sync)
+    }
+
     fn resync_offline_with(
         &self,
         lease: &mut RuntimeLease,
         commit_sync: impl FnOnce(&Self) -> Result<(), Error>,
     ) -> Result<(), Error> {
         authorize_offline(lease)?;
+        self.resync_committed(commit_sync)
+    }
+
+    fn resync_committed(
+        &self,
+        commit_sync: impl FnOnce(&Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         self.verify()?;
         self.require_no_pending()?;
         let (_committed, pin) = self.load()?;

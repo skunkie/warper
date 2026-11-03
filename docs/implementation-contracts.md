@@ -2442,6 +2442,27 @@ primary error and inspection guidance; completed safe steps are not rolled back
 or replayed automatically. All pins and the runtime lease survive until the
 repair operation returns.
 
+Online administrative recovery uses the authenticated serialized controller.
+WCTL v2 InspectRecovery (6, empty body) returns RecoveryReply (0x8006, u16):
+bit 0 means pending intent, bit 1 means recovery required, and bit 2 means live
+or retained service work prevents repair. No other bits are valid. Recover (9,
+empty body) returns Recovered (0x8009, empty body) only after completed repair.
+Older peers reject unknown operations; clients never retry automatically or
+fall back to an offline privileged path. Hello precedes recovery, but Status
+is not required because uncertain stores can prevent ordinary status reads.
+
+Repair refuses active/pending/retained network ownership. Before mutation it
+pins pending records, validates committed configuration and native ownership,
+and prepares operation-history/control admission changes. It then discards
+unchanged unpublished intent, resyncs committed records, refreshes approved
+in-memory configuration and retires proven-ended network ownership. It preserves
+accepted connection intent and never starts a backend. Admission changes are
+applied before acknowledgement. Root peer authorization is renewed at handlers
+and persistence boundaries. Policy corruption/unavailability can stop the daemon;
+unavailable service or retained ownership requires explicit stopped-service
+recovery, never a client-side bypass. Partial errors preserve typed causes and
+require fresh inspection, without replaying accepted payload or operations.
+
 ## Linux native import process
 
 The explicitly elevated CLI materializes configuration before starting its async
@@ -2555,7 +2576,7 @@ Unsolicited replies, missing/repeated Hello or duplicate/decreasing IDs poison
 the session. Only one frame/request is pending per session.
 
 Hello, Status and OperationStatus require Observe; Connect/Disconnect require
-Operate; Enroll, InstallConfig and InspectRecovery require Administer. An
+Operate; Enroll, InstallConfig, InspectRecovery and Recover require Administer. An
 `AuthorizedRequest` records the verified role and owns the redacted frame; it is
 not durable authority. A handler that queues/waits before mutation must reload
 protected policy and authorize again at its commit boundary. Global client,

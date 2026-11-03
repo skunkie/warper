@@ -26,7 +26,7 @@ pub enum ServiceCommand {
     InstallConfig { path: Option<PathBuf> },
     Enroll { uid: Option<u32> },
     ClearOwner,
-    Recover,
+    Recover { inspect: bool },
 }
 
 /// Client observation policy; dropping observation never cancels accepted work.
@@ -100,7 +100,9 @@ pub fn parse(args: &[OsString]) -> Result<Command, Error> {
             Ok(Command::Service(ServiceCommand::Logs))
         }
         Some("recover") if rest.is_empty() || single_flag(rest, "--inspect") => {
-            Ok(Command::Service(ServiceCommand::Recover))
+            Ok(Command::Service(ServiceCommand::Recover {
+                inspect: !rest.is_empty(),
+            }))
         }
         Some("explain")
             if (rest.len() == 1 || (rest.len() == 2 && rest[1] == "--json"))

@@ -146,6 +146,12 @@ fn authorization(controller: &mut Controller) -> Result<(), Failure> {
             controller.dispatch(peer, &Frame::new(Kind::InstallConfig, 2, body)?)?,
             Code::PermissionDenied,
         )?;
+        for kind in [Kind::InspectRecovery, Kind::Recover] {
+            rejection(
+                controller.dispatch(peer, &Frame::new(kind, 2, vec![])?)?,
+                Code::PermissionDenied,
+            )?;
+        }
         enroll(controller, None)?;
         rejection(
             controller.dispatch(peer, &Frame::new(Kind::Status, 3, vec![])?)?,

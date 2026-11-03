@@ -29,6 +29,7 @@ pub enum Error {
     InvalidWait,
     Unsupported,
     Administrative(Box<Error>),
+    Recovery(Box<Error>),
     Entropy(std::io::ErrorKind),
     EntropyIncomplete,
     WaitExpired {
@@ -52,6 +53,10 @@ impl fmt::Display for Error {
             Self::Administrative(cause) => write!(
                 f,
                 "Administrative request: {cause}; inspect status before retrying"
+            ),
+            Self::Recovery(cause) => write!(
+                f,
+                "Recovery request: {cause}; run recover --inspect before retrying"
             ),
             Self::Unsupported => f.write_str("UnsupportedCapability: unavailable service command"),
             Self::Entropy(_) | Self::EntropyIncomplete => {
@@ -87,6 +92,7 @@ impl From<wire::Error> for Error {
 pub(crate) enum Administrative {
     Install(warper_config::schema::Secret<Vec<u8>>),
     Enroll(Option<u32>),
+    Recover { inspect: bool },
 }
 
 #[cfg(target_os = "linux")]
@@ -140,6 +146,31 @@ async fn administer<S: AsyncRead + AsyncWrite + Unpin>(
     client
         .exchange(Kind::Hello, vec![], Kind::HelloReply, None, cancel)
         .await?;
+    if let Administrative::Recover { inspect } = command {
+        let (kind, expected) = if inspect {
+            (Kind::InspectRecovery, Kind::RecoveryReply)
+        } else {
+            (Kind::Recover, Kind::Recovered)
+        };
+        let result = client.exchange(kind, vec![], expected, None, cancel).await;
+        let reply = if inspect {
+            result?
+        } else {
+            result.map_err(|cause| Error::Recovery(Box::new(cause)))?
+        };
+        return if inspect {
+            let report = warper_control::message::Recovery::decode(&reply)?;
+            let yes_no = |value| if value { "yes" } else { "no" };
+            Ok(format!(
+                "Pending intent: {}\nRecovery required: {}\nBusy: {}\n",
+                yes_no(report.pending),
+                yes_no(report.required),
+                yes_no(report.busy)
+            ))
+        } else {
+            Ok("Recovery completed.\n".into())
+        };
+    }
     let frame = client
         .exchange(Kind::Status, vec![], Kind::StatusReply, None, cancel)
         .await?;
@@ -168,6 +199,7 @@ async fn administer<S: AsyncRead + AsyncWrite + Unpin>(
                 "revision",
             )
         }
+        Administrative::Recover { .. } => return Err(Error::Unsupported),
     };
     let reply = client
         .exchange(kind, body, expected, None, cancel)

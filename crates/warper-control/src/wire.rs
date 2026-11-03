@@ -33,6 +33,7 @@ pub enum Kind {
     InspectRecovery = 6,
     InstallConfig = 7,
     OperationStatus = 8,
+    Recover = 9,
     HelloReply = 0x8001,
     StatusReply = 0x8002,
     Accepted = 0x8003,
@@ -40,6 +41,7 @@ pub enum Kind {
     RecoveryReply = 0x8006,
     ConfigReply = 0x8007,
     OperationReply = 0x8008,
+    Recovered = 0x8009,
     ErrorReply = 0xffff,
 }
 impl Kind {
@@ -57,6 +59,7 @@ impl Kind {
             6 => Self::InspectRecovery,
             7 => Self::InstallConfig,
             8 => Self::OperationStatus,
+            9 => Self::Recover,
             0x8001 => Self::HelloReply,
             0x8002 => Self::StatusReply,
             0x8003 => Self::Accepted,
@@ -64,6 +67,7 @@ impl Kind {
             0x8006 => Self::RecoveryReply,
             0x8007 => Self::ConfigReply,
             0x8008 => Self::OperationReply,
+            0x8009 => Self::Recovered,
             0xffff => Self::ErrorReply,
             _ => return Err(Error::UnknownKind),
         })
@@ -71,7 +75,11 @@ impl Kind {
 
     fn check_length(self, length: usize) -> Result<(), Error> {
         let valid = match self {
-            Self::Hello | Self::Status | Self::InspectRecovery => length == 0,
+            Self::Hello
+            | Self::Status
+            | Self::InspectRecovery
+            | Self::Recover
+            | Self::Recovered => length == 0,
             Self::Connect | Self::Disconnect => length == 48,
             Self::Enroll | Self::HelloReply | Self::Accepted | Self::OperationStatus => {
                 length == 16
@@ -484,6 +492,7 @@ mod tests {
             (Kind::InspectRecovery, vec![]),
             (Kind::InstallConfig, vec![b'x'; MAX_BODY]),
             (Kind::OperationStatus, vec![1; 16]),
+            (Kind::Recover, vec![]),
             (Kind::HelloReply, vec![1; 16]),
             (Kind::StatusReply, vec![0; 26]),
             (Kind::Accepted, vec![1; 16]),
@@ -491,6 +500,7 @@ mod tests {
             (Kind::RecoveryReply, vec![0, 7]),
             (Kind::ConfigReply, vec![1; 8]),
             (Kind::OperationReply, operation_reply),
+            (Kind::Recovered, vec![]),
             (Kind::ErrorReply, vec![0, 1]),
         ];
         for (kind, body) in samples {

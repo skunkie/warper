@@ -541,11 +541,26 @@ mod linux {
                 return Err("explicit owner enrollment failed".into());
             }
             status("disconnected").await?;
+            let inspected = cli(0, &["recover", "--inspect"]).await?;
+            if !inspected.0
+                || inspected.1 != "Pending intent: no\nRecovery required: no\nBusy: no\n"
+                || !cli(0, &["recover"]).await?.0
+                || cli(1000, &["recover", "--inspect"]).await?.0
+            {
+                return Err("idle online recovery or administrative authorization differs".into());
+            }
             let (success, stdout, stderr) = cli(1000, &["up", "--no-wait"]).await?;
             if !success || !stdout.contains(": accepted") {
                 return Err(format!("native CLI Connect was not accepted: {stderr}").into());
             }
             status("connected").await?;
+            let inspected = cli(0, &["recover", "--inspect"]).await?;
+            if !inspected.0
+                || inspected.1 != "Pending intent: no\nRecovery required: no\nBusy: yes\n"
+                || cli(0, &["recover"]).await?.0
+            {
+                return Err("online recovery did not preserve active ownership".into());
+            }
             traffic().await?;
             // The CLI process and application have exited; networking stays up.
             status("connected").await?;
@@ -557,6 +572,45 @@ mod linux {
             let (success, stdout, stderr) = cli(1000, &["down", "--wait-ms", "3000"]).await?;
             if !success || !stdout.contains(": succeeded") {
                 return Err(format!("native CLI Disconnect did not complete: {stderr}").into());
+            }
+            status("disconnected").await?;
+            let accepted_intent = fs::read("/var/lib/warper/connection")?;
+            let approved_configuration = fs::read("/etc/warper/configuration")?;
+            fs::write("/var/lib/warper/connection.pending", b"partial")?;
+            fs::set_permissions(
+                "/var/lib/warper/connection.pending",
+                fs::Permissions::from_mode(0o600),
+            )?;
+            fs::write("/etc/warper/configuration.pending", b"partial")?;
+            fs::set_permissions(
+                "/etc/warper/configuration.pending",
+                fs::Permissions::from_mode(0o600),
+            )?;
+            fs::write("/var/lib/warper/network.pending", b"partial")?;
+            fs::set_permissions(
+                "/var/lib/warper/network.pending",
+                fs::Permissions::from_mode(0o644),
+            )?;
+            if cli(0, &["recover"]).await?.0
+                || fs::read("/var/lib/warper/connection.pending")? != b"partial"
+                || fs::read("/etc/warper/configuration.pending")? != b"partial"
+            {
+                return Err("online recovery mutated state before complete validation".into());
+            }
+            fs::remove_file("/var/lib/warper/network.pending")?;
+            if cli(0, &["status"]).await?.0 {
+                return Err("pending connection intent was usable as ordinary status".into());
+            }
+            let inspected = cli(0, &["recover", "--inspect"]).await?;
+            if !inspected.0
+                || inspected.1 != "Pending intent: yes\nRecovery required: yes\nBusy: no\n"
+                || !cli(0, &["recover"]).await?.0
+                || fs::read("/var/lib/warper/connection")? != accepted_intent
+                || fs::read("/etc/warper/configuration")? != approved_configuration
+                || Path::new("/var/lib/warper/connection.pending").exists()
+                || Path::new("/etc/warper/configuration.pending").exists()
+            {
+                return Err("online recovery did not preserve accepted intent".into());
             }
             status("disconnected").await?;
             failed_startup().await?;

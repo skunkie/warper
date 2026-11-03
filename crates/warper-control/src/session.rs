@@ -258,7 +258,9 @@ impl fmt::Debug for Session {
 fn access(kind: Kind) -> Access {
     match kind {
         Kind::Connect | Kind::Disconnect => Access::Operate,
-        Kind::Enroll | Kind::InstallConfig | Kind::InspectRecovery => Access::Administer,
+        Kind::Enroll | Kind::InstallConfig | Kind::InspectRecovery | Kind::Recover => {
+            Access::Administer
+        }
         _ => Access::Observe,
     }
 }
@@ -274,6 +276,7 @@ fn reply_matches(request: Kind, reply: Kind) -> bool {
             | (Kind::Enroll, Kind::EnrollmentReply)
             | (Kind::InstallConfig, Kind::ConfigReply)
             | (Kind::InspectRecovery, Kind::RecoveryReply)
+            | (Kind::Recover, Kind::Recovered)
             | (Kind::OperationStatus, Kind::OperationReply)
     )
 }

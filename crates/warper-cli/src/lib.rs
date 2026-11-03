@@ -25,7 +25,7 @@ pub mod materialize;
 
 use args::{Command, ServiceCommand};
 
-pub const HELP: &str = "warper — selective tunnel client\n\nUsage:\n  warper check-config [--config PATH]\n  warper --help\n  warper --version\n\ncheck-config validates offline without opening credential/trust files.\nLinux service control: status [--json], up/down [--wait-ms N | --no-wait].\nAdministrative: config install [--config PATH], owner enroll [--uid UID], owner clear.\nOther service commands remain unavailable in this build.\n";
+pub const HELP: &str = "warper — selective tunnel client\n\nUsage:\n  warper check-config [--config PATH]\n  warper --help\n  warper --version\n\ncheck-config validates offline without opening credential/trust files.\nLinux service control: status [--json], up/down [--wait-ms N | --no-wait].\nAdministrative: config install [--config PATH], owner enroll [--uid UID], owner clear, recover [--inspect].\nOther service commands remain unavailable in this build.\n";
 pub const VERSION: &str = concat!("warper ", env!("CARGO_PKG_VERSION"), "\n");
 
 pub struct SudoIdentity {
@@ -251,7 +251,8 @@ pub fn run_native(command: Command) -> Result<Output, Error> {
         | ServiceCommand::Down { .. }
         | ServiceCommand::InstallConfig { .. }
         | ServiceCommand::Enroll { .. }
-        | ServiceCommand::ClearOwner),
+        | ServiceCommand::ClearOwner
+        | ServiceCommand::Recover { .. }),
     ) = command
     {
         let administrative = match &command {
@@ -264,6 +265,10 @@ pub fn run_native(command: Command) -> Result<Output, Error> {
             ServiceCommand::ClearOwner => {
                 materialize::require_admin()?;
                 Some(control::Administrative::Enroll(None))
+            }
+            ServiceCommand::Recover { inspect } => {
+                materialize::require_admin()?;
+                Some(control::Administrative::Recover { inspect: *inspect })
             }
             _ => None,
         };

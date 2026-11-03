@@ -546,6 +546,14 @@ fn native_control_arguments_preserve_output_and_observation_policy() {
 #[test]
 fn administrative_arguments_preserve_paths_and_reject_reserved_owner_ids() {
     assert_eq!(
+        args::parse(&arguments(&["recover"])),
+        Ok(Command::Service(ServiceCommand::Recover { inspect: false }))
+    );
+    assert_eq!(
+        args::parse(&arguments(&["recover", "--inspect"])),
+        Ok(Command::Service(ServiceCommand::Recover { inspect: true }))
+    );
+    assert_eq!(
         args::parse(&arguments(&[
             "config",
             "install",

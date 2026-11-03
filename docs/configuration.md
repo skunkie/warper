@@ -645,8 +645,26 @@ the current observation passed retirement checks, never that cleanup occurred.
 Changed/unknown objects, live recorded owners and surviving foreign route keys
 remain errors. There is no configuration path, sudo-home search or secret output.
 Native network queries share a five-second deadline; synchronous filesystem
-inspection has no hard kernel deadline. Online `warper recover` remains
-unavailable and returns a typed unsupported-capability error.
+inspection has no hard kernel deadline.
+
+Linux `warper recover --inspect` uses the authenticated service and requires an
+administrative peer. It prints `Pending intent: no|yes`,
+`Recovery required: no|yes`, and `Busy: no|yes`, each on a separate line. The
+values shown here are alternatives. Busy includes active or retained network
+work. Inspection does not require successful ordinary Status reads and performs
+no persistence mutation. Detected ownership/persistence faults retain the
+controller's protective failure behavior. Unknown/unsafe state remains an error.
+
+`warper recover` requires no active or pending network owner and no retained
+configuration approval. It prevalidates all stores and new control budgets,
+discards only unchanged unpublished intent, resyncs committed state, refreshes
+in-memory approval and retires proven-ended journal ownership. It preserves
+accepted connection intent and starts no backend. Admission changes apply before
+acknowledgement; success prints exactly `Recovery completed.`. Partial failures
+remain explicit recovery state and instruct `recover --inspect` before retrying.
+The client never automatically resubmits recovery. A missing/stopped service,
+unavailable owner policy or retained network work requires the separate explicit
+stopped-service path; the client never bypasses authentication or instance locks.
 
 Without `--inspect`, `warperd recover` performs that complete preflight before
 mutation. It retires verified stale endpoint publication, discards only unchanged

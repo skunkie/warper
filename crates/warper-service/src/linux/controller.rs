@@ -26,6 +26,7 @@ use super::{
     network, tun,
 };
 mod history;
+mod recovery;
 use history::History;
 pub(crate) use history::MAX_OPERATIONS;
 
@@ -359,7 +360,9 @@ impl Controller {
         let access = match frame.kind() {
             Kind::Hello | Kind::Status | Kind::OperationStatus => Access::Observe,
             Kind::Connect | Kind::Disconnect => Access::Operate,
-            Kind::Enroll | Kind::InstallConfig | Kind::InspectRecovery => Access::Administer,
+            Kind::Enroll | Kind::InstallConfig | Kind::InspectRecovery | Kind::Recover => {
+                Access::Administer
+            }
             _ => return Err(Error::Rejected(Code::Malformed)),
         };
         let policy = if access == Access::Administer {
@@ -412,6 +415,7 @@ impl Controller {
                 )?
             }
             Kind::InstallConfig => return self.install(peer, frame),
+            Kind::InspectRecovery | Kind::Recover => return self.handle_recovery(peer, frame),
             _ => return Err(Error::Rejected(Code::Unsupported)),
         };
         Ok((reply, Effect::None))

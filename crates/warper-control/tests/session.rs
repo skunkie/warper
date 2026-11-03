@@ -188,6 +188,7 @@ async fn actual_owner_can_observe_and_operate_but_cannot_administer() {
         Kind::Enroll,
         Kind::InstallConfig,
         Kind::InspectRecovery,
+        Kind::Recover,
     ] {
         let (mut session, mut client, policy) = pair();
         hello(&mut session, &mut client, &policy, 1).await;
@@ -195,7 +196,7 @@ async fn actual_owner_can_observe_and_operate_but_cannot_administer() {
         if !nix::unistd::geteuid().is_root()
             && matches!(
                 kind,
-                Kind::Enroll | Kind::InstallConfig | Kind::InspectRecovery
+                Kind::Enroll | Kind::InstallConfig | Kind::InspectRecovery | Kind::Recover
             )
         {
             assert!(

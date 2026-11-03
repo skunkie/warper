@@ -78,6 +78,35 @@ impl Status {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Recovery {
+    pub pending: bool,
+    pub required: bool,
+    pub busy: bool,
+}
+impl Recovery {
+    pub fn frame(self, request_id: u64) -> Result<Frame, Error> {
+        let flags =
+            u16::from(self.pending) | (u16::from(self.required) << 1) | (u16::from(self.busy) << 2);
+        Frame::new(
+            Kind::RecoveryReply,
+            request_id,
+            flags.to_be_bytes().to_vec(),
+        )
+    }
+    pub fn decode(frame: &Frame) -> Result<Self, Error> {
+        if frame.kind() != Kind::RecoveryReply {
+            return Err(Error::Malformed);
+        }
+        let flags = u16::from_be_bytes(frame.body().try_into().map_err(|_| Error::Malformed)?);
+        Ok(Self {
+            pending: flags & 1 != 0,
+            required: flags & 2 != 0,
+            busy: flags & 4 != 0,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum OperationState {
     Accepted = 0,
@@ -234,5 +263,31 @@ mod tests {
             Operation::decode(&Frame::new(Kind::Status, 1, vec![]).unwrap()),
             Err(Error::Malformed)
         );
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn recovery_flags_preserve_independent_pending_required_and_busy_states() {
+        for flags in 0u16..8 {
+            let report = Recovery {
+                pending: flags & 1 != 0,
+                required: flags & 2 != 0,
+                busy: flags & 4 != 0,
+            };
+            let frame = report.frame(3).unwrap();
+            assert_eq!(frame.body(), flags.to_be_bytes());
+            assert_eq!(Recovery::decode(&frame), Ok(report));
+        }
+        assert!(Frame::new(Kind::RecoveryReply, 1, vec![0, 8]).is_err());
+        assert_eq!(
+            Recovery::decode(&Frame::new(Kind::Recovered, 1, vec![]).unwrap()),
+            Err(Error::Malformed)
+        );
+        for kind in [Kind::Recover, Kind::Recovered] {
+            assert!(Frame::new(kind, 1, vec![0]).is_err());
+        }
     }
 }

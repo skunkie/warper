@@ -540,3 +540,59 @@ async fn install_submits_only_normalized_bytes_and_never_retries_lost_acknowledg
     assert!(error.to_string().contains("inspect status before retrying"));
     peer.await.unwrap();
 }
+
+#[tokio::test]
+async fn recovery_does_not_require_readable_status_or_retry_uncertain_mutation() {
+    for inspect in [true, false] {
+        let (client, mut server) = tokio::io::duplex(256);
+        let peer = tokio::spawn(async move {
+            let hello = read(&mut server).await;
+            assert_eq!(hello.kind(), Kind::Hello);
+            write(
+                &mut server,
+                Frame::new(Kind::HelloReply, 1, INSTANCE.to_vec()).unwrap(),
+            )
+            .await;
+            let request = read(&mut server).await;
+            assert_eq!(
+                request.kind(),
+                if inspect {
+                    Kind::InspectRecovery
+                } else {
+                    Kind::Recover
+                }
+            );
+            assert_eq!(request.request_id(), 2);
+            assert!(request.body().is_empty());
+            if inspect {
+                write(
+                    &mut server,
+                    Frame::new(Kind::RecoveryReply, 2, vec![0, 3]).unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    server.read_u8().await.unwrap_err().kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                );
+            }
+            // Mutation loses its acknowledgement after receipt.
+        });
+        let (_keep, mut cancel) = watch::channel(false);
+        let result = administer(client, Administrative::Recover { inspect }, &mut cancel).await;
+        if inspect {
+            assert_eq!(
+                result.unwrap(),
+                "Pending intent: yes\nRecovery required: yes\nBusy: no\n"
+            );
+        } else {
+            let error = result.unwrap_err();
+            assert!(matches!(error, Error::Recovery(_)));
+            assert!(
+                error
+                    .to_string()
+                    .contains("recover --inspect before retrying")
+            );
+        }
+        peer.await.unwrap();
+    }
+}

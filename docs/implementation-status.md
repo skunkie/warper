@@ -733,3 +733,18 @@ passes at `c3b5721` with exit zero, no timeout and preserved host state; the ful
 CI matrix is green. Evidence is under
 `target/evidence/phase-1/offline-repair/ci-41574350951/`. Online recovery, foreground diagnostics
 and the final Phase 1 requirement audit remain open.
+
+
+Authenticated `warper recover [--inspect]` now uses the serialized native
+controller. Inspection reports pending, required and busy flags without needing
+ordinary Status reads. Repair refuses actual active/pending/retained network
+ownership, validates all stores and replacement budgets before mutation, then
+resyncs committed state and refreshes approval/admission only after other repair
+steps complete. It preserves accepted intent and starts no backend. CLI tests
+cover skipped Status, unknown flags and lost acknowledgement without retry;
+actual owner-session/controller tests reject administrative recovery. The daemon
+fixture adds idle repair, connected Busy refusal, unsafe later-store validation,
+dirty configuration/connection inspection and preserved committed state. Local
+checks pass; this expanded native gate remains unverified. Evidence belongs
+under `target/evidence/phase-1/online-recovery/`. Foreground diagnostics and the
+final Phase 1 requirement/budget audit remain open.

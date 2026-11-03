@@ -20,6 +20,9 @@ use warper_control::{
 use super::context::Context;
 use crate::preflight::Plan;
 
+mod recovery;
+pub(crate) use recovery::RecoveryPlan;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Context(super::context::Error),
@@ -40,7 +43,7 @@ impl fmt::Display for Error {
             Self::Preflight(error) => error.fmt(formatter),
             Self::Control(error) => error.fmt(formatter),
             Self::Authentication(_) => formatter.write_str(
-                "PermissionDenied: configuration installation requires an administrator",
+                "PermissionDenied: configuration administration requires an administrator",
             ),
             Self::Busy => {
                 formatter.write_str("Busy: approved configuration is retained by service work")
