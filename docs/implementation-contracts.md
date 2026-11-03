@@ -2865,3 +2865,30 @@ input-order independence, duplicates and admission failure. This boundary has
 no I/O, tasks, deadlines or cancellation work. It does not decode compressed
 wire packets, execute DNS transports, resolve endpoints or mutate routes.
 Those production interfaces and native Phase 2 acceptance remain open.
+
+### DNS packet adapter
+
+`warper_service::dns::{Limits, Packet, Question, Error}` wraps pinned
+`hickory-proto` 0.26.3 (`std` only). Third-party values/errors remain private.
+`Limits::new(wire_bytes, records)` accepts 12–65535 bytes and 1–4096 records.
+`Packet::request` and `Packet::response` check byte size, one question and the
+sum of all record-section counts before library allocation. Packet vectors,
+expanded names and variable record data are bounded by these independent
+count/wire limits; allocator metadata and packet/request concurrency are
+additional service obligations. No global cache or lease admission is implied.
+
+`Packet::response(bytes, request, limits)` requires the original request's ID,
+case-folded whole-label name, record type and class, and response direction.
+Both methods require standard-query opcode. `Truncated` is returned only after
+complete envelope correlation, even if a trailing record is incomplete. A
+transport may then retry TCP through the same selected path and deadline.
+Full decoding rejects malformed records and trailing bytes. Valid negatives
+remain successful packets with their original response codes. Encoding preserves
+DNS fields/TTLs through the library. `encode_limited` enforces a smaller output
+limit during serialization and rejects implicit record truncation; arranging a
+safe UDP TC response belongs to the output owner. Neither encoding method grants
+no positive-answer publication permission. No library Debug/error text escapes.
+
+This synchronous adapter owns no tasks, sockets or asynchronous cleanup.
+DNS transport framing, endpoint validation, cache/lease admission, route commit,
+response handoff and native resolver integration remain required Phase 2 work.

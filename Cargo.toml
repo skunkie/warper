@@ -19,6 +19,7 @@ base64 = "=0.22.1"
 boringtun = { version = "=0.7.1", default-features = false }
 futures = { version = "=0.3.32", default-features = false, features = ["std", "async-await"] }
 idna = "=1.1.0"
+hickory-proto = { version = "=0.26.3", default-features = false, features = ["std"] }
 netstack-smoltcp = "=0.2.4"
 netlink-packet-core = "=0.9.0"
 netlink-packet-route = "=0.33.0"

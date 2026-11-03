@@ -15,6 +15,7 @@ name = "warperd"
 path = "src/bin/warperd.rs"
 
 [dependencies]
+hickory-proto.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 warper-core = { path = "../warper-core" }

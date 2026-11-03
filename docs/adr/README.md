@@ -35,6 +35,7 @@ need their own record.
 | [0021](0021-linux-bound-tcp-egress.md) | Accepted scoped protected TCP connector | Source/device-bound TCP under competing capture routing |
 | [0022](0022-journaled-static-ipv4-capture.md) | Accepted scoped static IPv4 capture | Journaled exclusive static IPv4 capture batches |
 | [0023](0023-managed-configuration-ownership.md) | Accepted scoped managed boundary | Approved managed generations and retained installation ownership |
+| [0024](0024-dns-packet-adapter.md) | Accepted scoped protocol boundary | Bounded DNS packet admission, parsing and response correlation |
 
 Copy [the template](template.md) to the next unused four-digit number with a
 short descriptive filename. Use `proposed`, `accepted`, `rejected`, or

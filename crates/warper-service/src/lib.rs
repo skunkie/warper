@@ -4,6 +4,7 @@
 
 //! Owned networking tasks and Linux daemon/control/platform composition.
 
+pub mod dns;
 #[cfg(target_os = "linux")]
 pub mod linux;
 pub mod native;
