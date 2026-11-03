@@ -1107,6 +1107,7 @@ mod linux {
         let mut changes = warper_service::linux::change_monitor::Monitor::subscribe()?;
         let observed = warper_service::linux::route_lookup::lookup(
             warper_service::linux::route_lookup::Query {
+                protocol: warper_service::linux::route_lookup::Protocol::Tcp,
                 destination: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1080),
                 source: None,
                 interface: None,

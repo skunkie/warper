@@ -122,6 +122,7 @@ impl Preparation {
             for endpoint in self.endpoints {
                 let route = route_lookup::lookup(
                     route_lookup::Query {
+                        protocol: route_lookup::Protocol::Tcp,
                         destination: endpoint,
                         source: None,
                         interface: None,
@@ -412,6 +413,7 @@ async fn verify_link(path: &Path, request: Request) -> Result<(), Error> {
 async fn verify_route(path: &Path, source: SocketAddrV4, request: Request) -> Result<(), Error> {
     let current = route_lookup::lookup(
         route_lookup::Query {
+            protocol: route_lookup::Protocol::Tcp,
             destination: path.endpoint,
             source: Some(source),
             interface: Some(path.link.index),

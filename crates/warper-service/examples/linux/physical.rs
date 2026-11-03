@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Controlled bound-TCP API experiment, not a production physical-path lease.
+//! Controlled bound TCP/UDP API experiments and production TCP regressions.
 
 use super::{Failure, ip, isolated, join_native, preserve, protected_connector};
 use std::{
@@ -17,7 +17,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf},
-    net::{TcpListener, TcpSocket},
+    net::{TcpListener, TcpSocket, UdpSocket},
 };
 use tun_rs::DeviceBuilder;
 use warper_core::transport::Request;
@@ -31,6 +31,7 @@ const SOURCE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 const DESTINATION: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
 const PORT: u16 = 40123;
 const SAMPLE: &[u8] = b"controlled-tcp";
+const UDP_SAMPLES: [&[u8]; 2] = [b"first-udp", b"second-udp-with-other-length"];
 
 pub(super) async fn exercise(
     context: Arc<warper_service::linux::context::Context>,
@@ -84,6 +85,7 @@ async fn exchange(
     };
     let initial = route_lookup::lookup(
         route_lookup::Query {
+            protocol: route_lookup::Protocol::Tcp,
             destination: endpoint,
             source: None,
             interface: None,
@@ -110,6 +112,32 @@ async fn exchange(
     if source.ip() != &SOURCE || source.port() == 0 {
         return Err("controlled TCP source binding differs".into());
     }
+    let udp_initial = route_lookup::lookup(
+        route_lookup::Query {
+            protocol: route_lookup::Protocol::Udp,
+            destination: endpoint,
+            source: None,
+            interface: None,
+        },
+        request(),
+    )
+    .await?;
+    if udp_initial != initial {
+        return Err("controlled UDP initial path differs".into());
+    }
+    // Binding allocates a local port but emits no datagram. Constrain the device
+    // and verify the UDP tuple before connecting or sending anything.
+    let udp = UdpSocket::bind(SocketAddrV4::new(SOURCE, 0)).await?;
+    udp.bind_device(Some(EGRESS.as_bytes()))?;
+    let SocketAddr::V4(udp_source) = udp.local_addr()? else {
+        return Err("controlled UDP bound family differs".into());
+    };
+    if udp_source.ip() != &SOURCE
+        || udp_source.port() == 0
+        || udp.device()?.as_deref() != Some(EGRESS.as_bytes())
+    {
+        return Err("controlled UDP source/device readback differs".into());
+    }
     let capture = DeviceBuilder::new().mtu(1280).enable(true).build_sync()?;
     capture.set_name(CAPTURE)?;
     capture.set_nonblocking(true)?;
@@ -126,6 +154,7 @@ async fn exchange(
     ])?;
     let intercepted = route_lookup::lookup(
         route_lookup::Query {
+            protocol: route_lookup::Protocol::Tcp,
             destination: endpoint,
             source: Some(source),
             interface: None,
@@ -138,6 +167,7 @@ async fn exchange(
     }
     let protected = route_lookup::lookup(
         route_lookup::Query {
+            protocol: route_lookup::Protocol::Tcp,
             destination: endpoint,
             source: Some(source),
             interface: Some(egress.index),
@@ -147,6 +177,32 @@ async fn exchange(
     .await?;
     if protected != initial {
         return Err("bound TCP tuple route no longer uses its original egress".into());
+    }
+    let udp_query = route_lookup::Query {
+        protocol: route_lookup::Protocol::Udp,
+        destination: endpoint,
+        source: Some(udp_source),
+        interface: None,
+    };
+    if route_lookup::lookup(udp_query, request())
+        .await?
+        .interface
+        .get()
+        != capture.if_index()?
+    {
+        return Err("controlled competing UDP route did not select the TUN".into());
+    }
+    if route_lookup::lookup(
+        route_lookup::Query {
+            interface: Some(egress.index),
+            ..udp_query
+        },
+        request(),
+    )
+    .await?
+        != udp_initial
+    {
+        return Err("bound UDP tuple route no longer uses its original egress".into());
     }
 
     let mut child = Command::new("ip")
@@ -168,6 +224,29 @@ async fn exchange(
         if &marker != b"READY\n" {
             return Err("controlled TCP readiness marker differs".into());
         }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            udp.connect(SocketAddr::V4(endpoint)).await?;
+            if udp.local_addr()? != SocketAddr::V4(udp_source)
+                || udp.peer_addr()? != SocketAddr::V4(endpoint)
+            {
+                return Err("controlled UDP actual tuple differs".into());
+            }
+            for sample in UDP_SAMPLES {
+                if udp.send(sample).await? != sample.len() {
+                    return Err("controlled UDP send lost its datagram boundary".into());
+                }
+                let mut response = [0; 64];
+                let length = udp.recv(&mut response).await?;
+                let mut expected = udp_source.port().to_be_bytes().to_vec();
+                expected.extend_from_slice(sample);
+                if response[..length] != expected {
+                    return Err("controlled UDP source/boundary response differs".into());
+                }
+            }
+            Ok::<_, Failure>(())
+        })
+        .await??;
+        drop(udp);
         tokio::time::timeout(Duration::from_secs(2), async {
             let mut stream = socket.connect(endpoint.into()).await?;
             if stream.local_addr()? != SocketAddr::V4(source)
@@ -192,7 +271,9 @@ async fn exchange(
         for _ in 0..32 {
             match capture.recv(&mut buffer) {
                 Ok(length) if length > 0 && buffer[0] >> 4 != 4 => {}
-                Ok(_) => return Err("bound TCP traffic entered the competing capture TUN".into()),
+                Ok(_) => {
+                    return Err("bound transport traffic entered the competing capture TUN".into());
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(error.into()),
             }
@@ -217,7 +298,7 @@ async fn exchange(
     let cleanup = joined.err().into_iter().collect();
     preserve(result, cleanup)?;
     println!(
-        "PASS source/device-bound TCP tuple bypasses a competing TUN /32, preserves FIN and joins its isolated peer"
+        "PASS source/device-bound TCP and UDP tuples bypass a competing TUN /32, preserve FIN/datagram boundaries and join their isolated peer"
     );
     Ok(())
 }
@@ -339,8 +420,21 @@ pub(super) async fn peer(mount: &str, net: &str) -> Result<(), Failure> {
     isolated(mount, net)?;
     tokio::time::timeout(Duration::from_secs(5), async {
         let server = TcpListener::bind((DESTINATION, PORT)).await?;
+        let udp = UdpSocket::bind((DESTINATION, PORT)).await?;
         io::stdout().write_all(b"READY\n")?;
         io::stdout().flush()?;
+        for sample in UDP_SAMPLES {
+            let mut data = [0; 64];
+            let (length, source) = udp.recv_from(&mut data).await?;
+            if source.ip() != SOURCE || data[..length] != *sample {
+                return Err("controlled UDP peer source/boundary differs".into());
+            }
+            let mut response = source.port().to_be_bytes().to_vec();
+            response.extend_from_slice(sample);
+            if udp.send_to(&response, source).await? != response.len() {
+                return Err("controlled UDP peer response boundary differs".into());
+            }
+        }
         for _ in 0..2 {
             let (mut stream, source) = server.accept().await?;
             if source.ip() != SOURCE {

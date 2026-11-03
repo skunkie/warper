@@ -45,6 +45,10 @@ DNS/route acceptance. Service preflight still rejects DNS configurations.
 The next transport gate is UDP/direct DNS and bounded listener ownership;
 endpoint validation, leases, route publication and resolved integration remain
 required before domain discovery can be enabled.
+The route query now distinguishes TCP/UDP tuples. ADR 0025's source/device-bound
+UDP experiment adds real datagram boundaries and a competing TUN /32 to the
+private physical-peer fixture. Its native mechanism gate remains unverified
+until the corresponding owner-dispatched run and raw manifests are inspected.
 
 ## Phase 0 Exit Evidence
 

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! One bounded IPv4 TCP route lookup, without host mutation or cached authority.
+//! One bounded IPv4 tuple route lookup, without host mutation or cached authority.
 //! Every call owns its socket; cancellation/drop closes it without a detached task.
 
 pub use super::QueryError as Error;
@@ -32,10 +32,27 @@ use std::io;
 // IPv4's rtmsg also reports RTCF_LOCAL from linux/in_route.h. This is not an
 // unknown link-health flag; accept it only together with the Local route kind.
 const RTCF_LOCAL: u32 = 0x80000000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Protocol {
+    Tcp,
+    Udp,
+}
+
+impl Protocol {
+    const fn number(self) -> u8 {
+        match self {
+            Self::Tcp => 6,
+            Self::Udp => 17,
+        }
+    }
+}
+
 /// The tuple must describe the prospective service socket, including its actual
 /// source port when available. UID is taken from this process, never the caller.
 #[derive(Clone, Copy)]
 pub struct Query {
+    pub protocol: Protocol,
     pub destination: SocketAddrV4,
     pub source: Option<SocketAddrV4>,
     pub interface: Option<NonZeroU32>,
@@ -99,7 +116,7 @@ fn request_route(query: Query) -> RouteMessage {
     route.attributes = vec![
         RouteAttribute::Destination(RouteAddress::Inet(*query.destination.ip())),
         RouteAttribute::Uid(rustix::process::geteuid().as_raw()),
-        RouteAttribute::IpProto(6),
+        RouteAttribute::IpProto(query.protocol.number()),
         RouteAttribute::Dport(query.destination.port()),
     ];
     if let Some(source) = query.source {
@@ -186,7 +203,7 @@ fn observation(route: RouteMessage, query: Query) -> Result<Observation, Error> 
         }
     }
     if uid.is_some_and(|value| value != rustix::process::geteuid().as_raw())
-        || protocol.is_some_and(|value| value != 6)
+        || protocol.is_some_and(|value| value != query.protocol.number())
         || source_port.is_some_and(|value| query.source.is_none_or(|source| value != source.port()))
         || destination_port.is_some_and(|value| value != query.destination.port())
         || destination != Some(*query.destination.ip())
@@ -248,6 +265,7 @@ mod tests {
 
     fn query() -> Query {
         Query {
+            protocol: Protocol::Tcp,
             destination: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1080),
             source: None,
             interface: None,
@@ -328,6 +346,31 @@ mod tests {
                 route.attributes.contains(&attribute),
                 "missing tuple or UID attribute"
             );
+        }
+    }
+
+    #[test]
+    fn udp_tuple_is_requested_and_tcp_echo_cannot_authorize_it() {
+        let query = Query {
+            protocol: Protocol::Udp,
+            ..query()
+        };
+        let bytes = request_packet(query, 7, 42).unwrap();
+        let message = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&bytes).unwrap();
+        let NetlinkPayload::InnerMessage(RouteNetlinkMessage::GetRoute(request)) = message.payload
+        else {
+            panic!("UDP tuple must use a read-only route query");
+        };
+        assert!(request.attributes.contains(&RouteAttribute::IpProto(17)));
+        for protocol in [6, 17, 255] {
+            let mut sample = route();
+            sample.attributes.push(RouteAttribute::IpProto(protocol));
+            let result = observation(sample, query);
+            if protocol == 17 {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result, Err(Error::InvalidReply));
+            }
         }
     }
 
@@ -507,6 +550,7 @@ mod tests {
     #[test]
     fn unicast_gateway_and_returned_tuple_require_consistent_metadata() {
         let query = Query {
+            protocol: Protocol::Tcp,
             destination: SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 10), 1080),
             source: Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 2), 12345)),
             interface: NonZeroU32::new(2),

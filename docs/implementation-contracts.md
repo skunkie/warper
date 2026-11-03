@@ -1760,12 +1760,14 @@ A real flock/thread test closes the listener, observes acquisition contention,
 then joins/releases the worker and reacquires the unchanged persistent lock.
 All lease mutation checks and native namespace/credential admission still apply.
 
-### Native read-only IPv4 TCP route lookup
+### Native read-only IPv4 transport route lookup
 
 `warper_service::linux::route_lookup::lookup(Query, Request)` observes one route
 in the current network namespace. Query contains the numeric IPv4 destination
-and TCP port, optional actual source/port and nonzero interface constraint. The
-adapter supplies the process effective UID, protocol TCP and lookup-table flag;
+and port, explicit `Protocol::{Tcp, Udp}`, optional actual source/port and
+nonzero interface constraint. The adapter supplies the process effective UID,
+encodes the selected IP protocol and lookup-table flag, and rejects an
+inconsistent protocol echo;
 it never accepts caller-provided privilege or starts a network connection.
 It returns an opaque-Debug `Observation` with the reported interface index,
 source, optional gateway, table and local/unicast kind. These values confer no
@@ -1787,6 +1789,9 @@ closed. IPv6, multipath, encapsulation and nexthop indirection are unsupported.
 See ADR 0016 for dependency ownership and executable limits. A monitored path
 generation, interface identity, socket binding, native mutation ACKs and journal
 recovery remain separate obligations before capture or physical sends.
+Existing protected TCP callers explicitly select TCP. ADR 0025's isolated
+UDP-binding experiment gates the future direct-DNS datagram connector; adding
+UDP observations alone does not authorize production UDP traffic.
 
 ### Native change subscription
 

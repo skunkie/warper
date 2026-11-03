@@ -35,6 +35,12 @@ optional actual source/port and output interface. Carry the whole deadline and
 cancellation through send/receive; owner loss cancels. Drop closes the socket.
 Never resend after successful send, and never infer success from an ACK.
 
+Phase 2 extends `Query` with explicit `Protocol::{Tcp, Udp}` for IP protocols
+6 and 17. Request construction and reply-echo checks use that protocol; existing
+callers explicitly select TCP. Unit fixtures reject a TCP echo for a UDP query.
+The separate source/device-bound UDP mechanism gate is specified in ADR 0025;
+a protocol-aware read-only query does not establish protected send authority.
+
 Enable strict kernel input checking and cap the kernel receive queue at 64 KiB
 (including Linux doubling). Bound the serialized request to 128 bytes and the
 received datagram to 32 KiB.
