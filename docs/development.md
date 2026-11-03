@@ -14,11 +14,14 @@ The current repository contains contracts, development infrastructure,
 experimental Rust stack probes, and the first production core static-routing
 policy, offline configuration paths, and native Unix account lookup/bounded
 YAML decoding/schema validation in `warper-config`. The thin `warper-cli`
-package implements offline check-config and help/version. Runtime preflight
-and service control remain unimplemented. There is no production networking
-service yet.
-`warper-control` contains the first Linux kernel peer/authorization boundary;
-it neither starts a control listener nor enrolls owners or changes service state.
+package implements offline check-config, authenticated Linux status/lifecycle
+control and elevated managed import/owner enrollment. `warperd service` runs the
+foreground Linux daemon with static IPv4 SOCKS5 TCP forwarding. The
+[Linux source installation](linux-service.md) includes a systemd unit; installed
+unit lifecycle acceptance remains separate from the native daemon traffic gate.
+`warper-control` supplies kernel peer authentication, protected persistence,
+framing and bounded local sessions. See the implementation status for the
+remaining phase gates and capability limits.
 Add Rust packages when a runnable experiment or implementation phase needs
 them; do not create placeholder packages for CI.
 

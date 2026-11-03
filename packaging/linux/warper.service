@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 skunkie
+#
+# SPDX-License-Identifier: MIT
+
+[Unit]
+Description=Warper selective tunnel service
+Documentation=https://github.com/skunkie/warper/blob/main/docs/linux-service.md
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/warperd service
+Restart=on-failure
+RestartSec=2
+# Keep the persistent flock inode across stops and failed service restarts.
+RuntimeDirectory=warper
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+StateDirectory=warper
+StateDirectoryMode=0700
+ConfigurationDirectory=warper
+ConfigurationDirectoryMode=0700
+# Native cleanup has 35 seconds, followed by at most 5 seconds of runtime stop.
+TimeoutStopSec=45
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

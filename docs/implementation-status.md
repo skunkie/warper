@@ -634,7 +634,19 @@ paths, and uncertain administrative replies are never retried automatically.
 Controlled client tests cover exact revision selection, owner presence, snapshot
 payloads and lost acknowledgements. The actual daemon fixture now exercises
 these CLI commands, including root-only credential denial, ordinary supplementary
-group access and owner revocation. This expanded privileged gate remains
-unverified. Evidence belongs under `target/evidence/phase-1/admin-cli/`. Recovery
-commands, runnable service-manager installation and the full Phase 1 audit remain
-open.
+group access and owner revocation. The [expanded privileged gate](https://github.com/skunkie/warper/actions/runs/41566836124)
+passes at `5d8d37f`; all four isolated probes report exit zero, no timeout and
+preserved host state. Downloaded evidence is under
+`target/evidence/phase-1/admin-cli/ci-41566836124/`. Recovery commands and the full
+Phase 1 audit remain open.
+
+
+The headless Linux source installation now includes
+`packaging/linux/warper.service` and `docs/linux-service.md`. systemd owns the
+foreground root process and protected directory creation, preserves the runtime
+lock inode across stops and allows the full native shutdown budget before forced
+control-group termination. Installation, approval, readiness, update and removal
+instructions are documented without deleting recovery state. Unit syntax is
+validated against the built daemon path; actual installed-unit lifecycle
+acceptance remains unverified. Evidence belongs under
+`target/evidence/phase-1/systemd/`. No release package or desktop is produced.

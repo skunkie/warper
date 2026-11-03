@@ -370,6 +370,10 @@ an application-controlled cleanup transaction.
 Linux packages install the same core service through systemd and ship the
 desktop separately as part of the installation. Native dependencies, policy,
 owner enrollment, and uninstall behavior require their own packaging tests.
+The current headless [source installation](linux-service.md) uses
+`packaging/linux/warper.service`; binary release packages and the desktop remain
+future work. Its persistent runtime directory preserves the lock inode across
+service stops, and its stop timeout accommodates the daemon cleanup budget.
 
 ## 6. Implementation Gates
 
