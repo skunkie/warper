@@ -108,10 +108,21 @@ impl Request {
         mut self,
         operation: impl Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
+        let deadline = self.deadline;
+        let mut operation = std::pin::pin!(operation);
+        let bounded = std::future::poll_fn(|context| {
+            // Check every poll, including ready I/O resumed before the timer
+            // driver observes its next tick.
+            if Instant::now() >= deadline {
+                std::task::Poll::Ready(Err(Error::Timeout))
+            } else {
+                operation.as_mut().poll(context)
+            }
+        });
         tokio::select! {biased;
             _=self.cancellation.wait_for(|cancelled|*cancelled)=>Err(Error::Cancelled),
-            ()=sleep_until(self.deadline)=>Err(Error::Timeout),
-            result=operation=>result,
+            ()=sleep_until(deadline)=>Err(Error::Timeout),
+            result=bounded=>result,
         }
     }
 }
@@ -120,6 +131,71 @@ impl Request {
 mod tests {
     use super::*;
     use std::{future::pending, time::Duration};
+
+    #[tokio::test]
+    async fn real_clock_expired_request_never_polls_ready_io() {
+        let (_owner, cancellation) = watch::channel(false);
+        for _ in 0..16 {
+            let polled = std::cell::Cell::new(false);
+            let request = Request {
+                deadline: Instant::now(),
+                cancellation: cancellation.clone(),
+            };
+            let result = request
+                .run(async {
+                    polled.set(true);
+                    Ok(())
+                })
+                .await;
+            assert_eq!(result, Err(Error::Timeout));
+            assert!(
+                !polled.get(),
+                "expired requests must not start an I/O attempt"
+            );
+        }
+    }
+
+    #[test]
+    fn expired_request_does_not_resume_io_before_the_timer_driver_runs() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let (_owner, cancellation) = watch::channel(false);
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let polls = std::cell::Cell::new(0);
+        let operation = std::future::poll_fn(|_| {
+            let count = polls.get() + 1;
+            polls.set(count);
+            if count == 1 {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
+        });
+        let request = Request {
+            deadline,
+            cancellation,
+        };
+        let mut future = std::pin::pin!(request.run(operation));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        // Synchronous manual polling intentionally leaves the Tokio timer
+        // driver idle while wall time passes its registered deadline.
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+        );
+        assert_eq!(
+            future.as_mut().poll(&mut context),
+            std::task::Poll::Ready(Err(Error::Timeout))
+        );
+        assert_eq!(
+            polls.get(),
+            1,
+            "expired I/O must not be polled a second time"
+        );
+    }
     #[tokio::test(start_paused = true)]
     async fn request_total_deadline_and_owner_loss_cancel_owned_work() {
         let (owner, cancellation) = watch::channel(false);
