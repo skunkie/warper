@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Source/device-bound IPv4 TCP with current tuple proof and per-stream changes.
+//! Source/device-bound IPv4 transports with tuple proof and retained changes.
 //! Preparation is selection evidence; every dial verifies a fresh generation.
 
 use super::{
@@ -28,6 +28,8 @@ use tokio::{
 };
 use warper_core::transport::{self, EndpointConnector, OpenTcp, Request};
 
+pub mod udp;
+
 pub const MAX_ENDPOINTS: usize = 64;
 pub const MAX_STREAMS: usize = 16;
 pub const KERNEL_QUEUE_BYTES_PER_STREAM: usize = 3 * 65536;
@@ -50,20 +52,20 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::InvalidInput => "InvalidConfig: invalid protected TCP preparation",
+            Self::InvalidInput => "InvalidConfig: invalid protected transport preparation",
             Self::ResourceLimit => {
-                "ResourceLimit: protected TCP admission or queue budget exceeded"
+                "ResourceLimit: protected transport admission or queue budget exceeded"
             }
-            Self::Context(_) => "Authentication: protected TCP native context failed",
+            Self::Context(_) => "Authentication: protected transport native context failed",
             Self::Query(_) | Self::UnsupportedPath => {
-                "UnsupportedIntegration: protected TCP path is unavailable"
+                "UnsupportedIntegration: protected transport path is unavailable"
             }
             Self::Monitor(_) | Self::Changed(_) | Self::PathMismatch => {
-                "NativeUncertain: protected TCP path changed or cannot be verified"
+                "NativeUncertain: protected transport path changed or cannot be verified"
             }
-            Self::Cancelled => "Cancelled: protected TCP setup cancelled",
-            Self::Deadline => "Timeout: protected TCP setup deadline expired",
-            Self::Io(_) => "NativeIo: protected TCP socket failed",
+            Self::Cancelled => "Cancelled: protected transport setup cancelled",
+            Self::Deadline => "Timeout: protected transport setup deadline expired",
+            Self::Io(_) => "NativeIo: protected transport socket failed",
         })
     }
 }
@@ -72,6 +74,7 @@ impl std::error::Error for Error {}
 /// Construct this in a retained native worker. The capture index comes from
 /// the currently retained TUN owner, never a stored or caller-provided identity.
 pub struct Preparation {
+    protocol: route_lookup::Protocol,
     endpoints: Box<[SocketAddrV4]>,
     excluded: NonZeroU32,
     limit: usize,
@@ -109,6 +112,7 @@ impl Preparation {
         values.dedup();
         context.revalidate().map_err(Error::Context)?;
         Ok(Self {
+            protocol: route_lookup::Protocol::Tcp,
             endpoints: values.into_boxed_slice(),
             excluded,
             limit,
@@ -122,7 +126,7 @@ impl Preparation {
             for endpoint in self.endpoints {
                 let route = route_lookup::lookup(
                     route_lookup::Query {
-                        protocol: route_lookup::Protocol::Tcp,
+                        protocol: self.protocol,
                         destination: endpoint,
                         source: None,
                         interface: None,
@@ -142,6 +146,7 @@ impl Preparation {
                 }
                 monitor.check_pending().map_err(Error::Changed)?;
                 paths.push(Path {
+                    protocol: self.protocol,
                     endpoint,
                     route,
                     link,
@@ -159,6 +164,7 @@ impl Preparation {
 }
 
 struct Path {
+    protocol: route_lookup::Protocol,
     endpoint: SocketAddrV4,
     route: route_lookup::Observation,
     link: link_lookup::Observation,
@@ -179,7 +185,7 @@ impl Connector {
         let path = self
             .paths
             .iter()
-            .find(|path| path.endpoint == endpoint)
+            .find(|path| path.endpoint == endpoint && path.protocol == route_lookup::Protocol::Tcp)
             .ok_or(Error::InvalidInput)?;
         let slot = self
             .slots
@@ -343,7 +349,7 @@ impl fmt::Debug for Stream {
 pub struct PathInvalidated(pub Invalidation);
 impl fmt::Display for PathInvalidated {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("verified TCP path invalidated")
+        f.write_str("verified transport path invalidated")
     }
 }
 impl std::error::Error for PathInvalidated {}
@@ -413,7 +419,7 @@ async fn verify_link(path: &Path, request: Request) -> Result<(), Error> {
 async fn verify_route(path: &Path, source: SocketAddrV4, request: Request) -> Result<(), Error> {
     let current = route_lookup::lookup(
         route_lookup::Query {
-            protocol: route_lookup::Protocol::Tcp,
+            protocol: path.protocol,
             destination: path.endpoint,
             source: Some(source),
             interface: Some(path.link.index),

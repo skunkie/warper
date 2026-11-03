@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Production TCP contracts promoted from the executable initial slice.
+//! Production transport contracts promoted from executable networking slices.
 //! No implementation or third-party packet-stack type crosses this boundary.
 
 use crate::BackendId;
@@ -12,6 +12,8 @@ use tokio::{
     sync::watch,
     time::{Instant, sleep_until},
 };
+
+pub mod datagram;
 
 pub trait TcpIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> TcpIo for T {}

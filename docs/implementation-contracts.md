@@ -2947,3 +2947,54 @@ deadline failures are typed `ExchangeError::Direct`, distinct from selected
 backend errors, and neither role retries or invokes the other. Both share the
 same service-wide admission pool. Controlled direct and SOCKS5 peer tests verify
 the distinct wire protocols, negative results and joined stream cleanup.
+
+### Protected connected datagrams
+
+`warper_core::transport::datagram::{DatagramIo, Received, Socket,
+OpenDatagram, DatagramConnector}` defines a connected, fixed-peer datagram
+boundary. Poll-send succeeds only for a complete datagram; no byte-stream
+partial-write retry is permitted. Poll-receive returns the initialized copied
+length and explicit truncation flag. Callers must discard truncated packets,
+including prefixes fitting their buffer. Zero-length datagrams are valid.
+The caller owns buffers, deadlines and the socket; the boundary adds no queue
+or detached task. This currently serves physical DNS transport, not application
+UDP support in the SOCKS5 or other backend implementations.
+
+`linux::egress::udp::Preparation::new` runs in a retained native worker and uses
+the same authenticated context, 64-endpoint limit, excluded capture identity and
+supported underlays as TCP. It selects UDP tuples explicitly. `prepare(Request)`
+records immutable monitored paths. `Connector::connect` reserves one of at most
+16 lifetime association slots, subscribes afresh and verifies the saved link.
+It creates a nonblocking close-on-exec UDP socket, limits/readbacks receive and
+send queues before binding a local port, binds/readbacks the verified device,
+binds the saved source, and validates its actual UDP tuple route before connect.
+Post-connect tuple, route, link and pending-change checks precede publication.
+No alternate address, device or unbound socket is selected on failure.
+
+The returned `Datagram` owns its socket, monitor, two-direction waker table,
+admission permit and native context in that destruction order. Every poll checks
+path invalidation before I/O; a change/loss closes the socket and wakes pending
+I/O with typed `PathInvalidated`. The object retains admission/context until
+full drop. Sending rejects IPv4 payloads above 65507 bytes before the syscall.
+Receiving uses bounded `recvmsg`, rejects unexpected peers (including queued
+pre-connect data) or truncated ancillary metadata, and reports payload
+truncation without treating its prefix as a complete packet. No raw descriptor
+or reconfiguration API escapes.
+
+Kernel queue admission is 3 × 65536 bytes per association: UDP receive/send and
+monitor receive queues, including Linux's socket-buffer doubling. Native setup
+query buffers, path metadata, descriptors, packet buffers and allocator/kernel
+bookkeeping are additional costs. Service-wide data-plane and DNS admission
+must charge these before enabling DNS. IPv6/unsupported paths return typed
+unsupported integration; resolver discovery and loop-proof selection remain
+separate preflight obligations even for an accepted physical socket path.
+
+Local socket tests exercise zero/truncated datagrams, consumption boundaries,
+connected-peer filtering and rejection of an unexpected queued source. The
+isolated physical fixture adds actual production-connector roundtrips, retained
+admission, oversized sends, an independently parked receive, MTU invalidation
+and failed replacement. It also records a controlled 200-datagram workload's
+latency distribution, bytes, process CPU/cumulative peak RSS and private egress
+drop deltas. Native execution requires the disposable owner-dispatched gate;
+the production connector is not claimed verified until those manifests/logs
+are inspected. ADR 0025's earlier mechanism proof does not substitute for it.

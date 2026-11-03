@@ -76,3 +76,20 @@ contain no errors. Raw copies are under
 `target/evidence/phase-2/bound-udp-egress/ci-41611452768/`. This is native Linux
 x86-64 virtual routed mechanism evidence. ARM64 builds do not establish native
 UDP routing on ARM64, and no production DNS integration is claimed.
+
+## Production connector candidate
+
+`linux::egress::udp` now implements the retained IPv4 connector and the
+backend-neutral connected-datagram boundary. It bounds queues before a local
+port can receive data, proves the actual UDP tuple, retains native ownership
+and fails on monitored path changes. `recvmsg` reports truncation and verifies
+the sender rather than trusting a potentially pre-connect queued packet.
+The physical fixture now exercises this implementation, including zero and
+truncated datagrams, retained admission and a separately parked reader woken by
+the same MTU change as the TCP regression. It records a controlled workload
+with explicit process and interface-counter scope.
+
+This candidate needs its own owner-dispatched gate at its implementation
+revision. The earlier accepted binding mechanism alone does not establish
+production connector lifecycle, DNS integration or service-wide byte admission.
+Retain those results under `target/evidence/phase-2/protected-udp/`.

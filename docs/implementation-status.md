@@ -51,8 +51,11 @@ mechanism passes in [CI 41611452768](https://github.com/skunkie/warper/actions/r
 at `4cdce8e`, with real datagram boundaries and a competing TUN /32 in the private
 physical-peer fixture. Inspected raw manifests/logs are under
 `target/evidence/phase-2/bound-udp-egress/ci-41611452768/`. This establishes the
-Linux x86-64 virtual routed socket mechanism; the production datagram connector,
-queue budgets, retained ownership and change invalidation still need integration.
+Linux x86-64 virtual routed socket mechanism. The production datagram connector
+now bounds queues, retains native ownership, reports truncation and invalidates
+on changes. Its expanded isolated production gate remains pending; raw checks
+belong under `target/evidence/phase-2/protected-udp/`. UDP DNS exchange/fallback,
+resolver discovery, byte admission and full service integration remain open.
 
 ## Phase 0 Exit Evidence
 
