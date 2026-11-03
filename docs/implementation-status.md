@@ -117,6 +117,22 @@ closed/poisoned state. Evidence belongs under
 `target/evidence/phase-2/live-routing/`. Native dynamic route journaling/ACKs,
 DNS listener/output completion and resolved integration remain required.
 
+The retained Linux TUN owner now implements incremental IPv4 host publication
+against that live runtime mapping. It journals the complete route union before
+an exclusive add, awaits its correlated ACK, verifies the union and commits
+ownership. Existing owned coverage is checked before reuse; backend mismatches,
+foreign routes and failed prior state cannot authorize another mutation.
+The disposable native fixture exercises 20 additions, repeated publication,
+metadata flow pins and joined whole-batch withdrawal with a preserved foreign
+route. Local checks and raw native results belong under
+`target/evidence/phase-2/native-host/`; native acceptance remains unverified
+until its exact-commit CI artifacts pass. Individual route withdrawal, capacity
+alignment, DNS output and resolver integration remain open. Daemon DNS is still
+explicitly unavailable.
+Protected physical sockets currently invalidate on every network change,
+including owned route additions. Preserving unchanged physical paths across
+expected capture updates remains required before integrating live DNS sessions.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

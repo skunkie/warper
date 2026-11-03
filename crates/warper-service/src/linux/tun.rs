@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Journaled lifecycle of one fresh owned Linux TUN.
-//! Call only in retained native workers; this does not publish routes or traffic.
+//! Native operations run in retained workers; the caller supervises traffic.
 
 use super::context::{Context, RecordedOwner};
 use nix::{errno::Errno, net::if_::if_nametoindex};
@@ -14,6 +14,7 @@ use warper_core::transport::Request;
 
 mod address;
 mod capture;
+mod host_capture;
 mod link;
 mod node;
 mod packet;

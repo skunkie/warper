@@ -1105,6 +1105,17 @@ Linux VM with the existing harness; never run these mutations against live host
 resolver/bus/state. Evidence is nested under the same exact-commit CI artifact
 in `tun-recovery/`. Compilation is not privileged acceptance.
 
+The network probe also runs incremental host publication against the production
+DNS lease controller and live stack selector. In the disposable namespace it
+rejects a foreign /32 and wrong backend before mutation, installs 20 new /32s
+with original-expiry-zero pending reservations, checks idempotent publication,
+then drains and withdraws the full batch before releasing runtime ownership.
+Its `live_capture` row records add latency percentiles, total elapsed/CPU time
+and process peak RSS with concurrency one and zero application bytes. This
+measures native publication and metadata ownership, not packet throughput or
+DNS output completion. The existing isolated runner command includes this
+scope; no privileged tests should run against the developer's live network.
+
 The control fixture also exercises the fixed root-owned `/etc/warper` managed
 slot in its private `/etc` mount: generation fencing, ordinary owner/foreign
 read denial, reopened state, pending-token separation from the network journal

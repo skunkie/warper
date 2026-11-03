@@ -33,6 +33,45 @@ pub(super) struct Plan {
     pub(super) metric: u32,
 }
 impl Plan {
+    pub(super) fn extend_host(
+        previous: Option<&Self>,
+        address: Ipv4Addr,
+        metric: u32,
+    ) -> Result<(Self, bool), Error> {
+        if !super::record::valid_address(address) {
+            return Err(Error::InvalidCapturePolicy);
+        }
+        if let Some(previous) = previous {
+            previous.validate()?;
+            if previous.metric != metric {
+                return Err(Error::Conflict);
+            }
+            if previous
+                .prefixes
+                .iter()
+                .any(|prefix| u32::from(address) & mask(prefix.length) == u32::from(prefix.network))
+            {
+                return Ok((previous.clone(), false));
+            }
+            if previous.prefixes.len() == MAX_PREFIXES {
+                return Err(Error::InvalidCapturePolicy);
+            }
+        }
+        let mut prefixes = previous.map_or_else(Vec::new, |plan| plan.prefixes.clone());
+        prefixes.push(Prefix {
+            network: address,
+            length: 32,
+        });
+        prefixes.sort_unstable_by(|first, second| {
+            second
+                .length
+                .cmp(&first.length)
+                .then_with(|| first.network.cmp(&second.network))
+        });
+        let plan = Self { prefixes, metric };
+        plan.validate()?;
+        Ok((plan, true))
+    }
     pub(super) fn new(publication: &Publication, metric: u32) -> Result<Self, Error> {
         if !publication.is_published() || publication.is_quiescent() {
             return Err(Error::InvalidState);
@@ -285,6 +324,83 @@ mod tests {
         })
         .unwrap();
         plan.verify_entries(9, entries, committed, &wait)
+    }
+    #[test]
+    fn host_extensions_reuse_owned_coverage_and_preserve_canonical_batch_order() {
+        let previous = plan();
+        let covered = Ipv4Addr::new(198, 18, 0, 9);
+        let (reused, added) = Plan::extend_host(Some(&previous), covered, previous.metric).unwrap();
+        assert!(!added);
+        assert!(reused == previous);
+        let outside = Ipv4Addr::new(192, 0, 2, 9);
+        let (extended, added) =
+            Plan::extend_host(Some(&previous), outside, previous.metric).unwrap();
+        assert!(added);
+        assert_eq!(extended.prefixes.len(), 3);
+        assert_eq!(extended.prefixes[0].network, outside);
+        assert!(extended.prefixes[1..] == previous.prefixes);
+        let (reused, added) = Plan::extend_host(Some(&extended), outside, previous.metric).unwrap();
+        assert!(!added);
+        assert!(reused == extended);
+        let (initial, added) = Plan::extend_host(None, outside, previous.metric).unwrap();
+        assert!(added);
+        assert_eq!(initial.prefixes.len(), 1);
+        assert_eq!(initial.prefixes[0].length, 32);
+    }
+    #[test]
+    fn host_extensions_fail_before_overflow_or_changed_ownership() {
+        let previous = plan();
+        assert!(matches!(
+            Plan::extend_host(None, Ipv4Addr::new(192, 0, 2, 9), 1),
+            Err(Error::InvalidCapturePolicy)
+        ));
+        assert!(matches!(
+            Plan::extend_host(
+                Some(&previous),
+                Ipv4Addr::new(192, 0, 2, 9),
+                previous.metric + 1
+            ),
+            Err(Error::Conflict)
+        ));
+        for address in [
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::BROADCAST,
+            Ipv4Addr::new(224, 0, 0, 1),
+        ] {
+            assert!(matches!(
+                Plan::extend_host(None, address, previous.metric),
+                Err(Error::InvalidCapturePolicy)
+            ));
+        }
+        let full = Plan {
+            prefixes: (0..MAX_PREFIXES)
+                .map(|index| Prefix {
+                    network: Ipv4Addr::from(0xc6120000 + index as u32),
+                    length: 32,
+                })
+                .collect(),
+            metric: previous.metric,
+        };
+        assert!(matches!(
+            Plan::extend_host(Some(&full), Ipv4Addr::new(192, 0, 2, 9), full.metric),
+            Err(Error::InvalidCapturePolicy)
+        ));
+        assert!(
+            !Plan::extend_host(Some(&full), full.prefixes[0].network, full.metric)
+                .unwrap()
+                .1
+        );
+        let mut malformed = previous.clone();
+        malformed.prefixes.reverse();
+        assert!(matches!(
+            Plan::extend_host(
+                Some(&malformed),
+                Ipv4Addr::new(192, 0, 2, 9),
+                malformed.metric
+            ),
+            Err(Error::InvalidCapturePolicy)
+        ));
     }
     #[test]
     fn conflicts_preserve_local_and_equally_or_more_specific_foreign_routes() {

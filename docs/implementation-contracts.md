@@ -3266,3 +3266,31 @@ converts discovery expiry/deadline instants to core elapsed durations; already
 expired freshness remains zero. Native endpoint exclusions, ACK/journal proofs,
 DNS output completion and the service readiness gate remain separate required
 composition. The controller never creates kernel routes or claims them ready.
+
+### Incremental native IPv4 capture publication
+
+The retained Linux TUN owner may extend its capture batch with one IPv4 host
+whose backend mapping is already observable in the same live runtime. The
+caller retains the DNS reservation and serializes publication with retirement;
+it must exclude physical backend and direct DNS endpoints before calling. This
+operation grants no DNS output permission and does not confirm ledger state.
+
+Verify the prior committed batch, device, rules and quiet change subscription
+before mutation. Existing owned coverage may be reused only after full native
+verification and a matching live backend observation. For a new host, journal
+the union of all old keys and the new /32 as Routing before an exclusive add.
+Await its correlated ACK without replay, subscribe afresh and verify the full
+union, device and live mapping before committing Captured. Preserve the runtime
+identity and full intent on failure. Any post-intent failure is sticky; uncertain
+delivery never authorizes another add. The same runtime mapping stays retained
+until checked withdrawal, including active TCP pins.
+
+This increment retains WTUN version four's bounded 4096-key snapshot and its
+conservative abandoned-owner recovery. Whole-batch withdrawal still requires
+runtime quiescence, drained packet work and zero retained flows. Per-address
+retirement, larger native admission aligned with configured DNS capacity, and
+supervised DNS session integration remain required before enabling daemon DNS.
+This operation refreshes the capture monitor, not existing protected socket
+proofs. Those sockets still invalidate on any network change; preserving an
+unchanged verified physical path across owned additions is a separate required
+integration gate.
