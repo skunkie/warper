@@ -12,11 +12,14 @@ use std::{
     },
 };
 use tokio::sync::{Semaphore, mpsc};
-use warper_core::routing::{Entry, Policy};
+use warper_core::{
+    BackendId,
+    routing::{Entry, FlowSelector, SelectionError},
+};
 
 #[derive(Clone)]
 pub struct Publication {
-    policy: Arc<Policy>,
+    policy: Arc<dyn FlowSelector>,
     input: mpsc::WeakSender<Vec<u8>>,
     lifetimes: Arc<Semaphore>,
     limit: usize,
@@ -25,7 +28,7 @@ pub struct Publication {
 }
 impl Publication {
     pub(super) fn new(
-        policy: Arc<Policy>,
+        policy: Arc<dyn FlowSelector>,
         input: mpsc::Sender<Vec<u8>>,
         lifetimes: Arc<Semaphore>,
         limit: usize,
@@ -42,8 +45,17 @@ impl Publication {
         }
     }
     pub fn entries(&self) -> &[Entry] {
-        self.policy.entries()
+        self.policy.static_policy().entries()
     }
+    /// Observe this runtime's live mapping without admitting a flow. This is
+    /// handler identity, not native publication or network readiness.
+    pub fn selected_backend(&self, address: std::net::IpAddr) -> Result<BackendId, SelectionError> {
+        if !self.is_published() || self.is_quiescent() {
+            return Err(SelectionError::Unavailable);
+        }
+        self.policy.lookup(address)
+    }
+
     /// Allocated ingress/mapping publication, not task or network readiness.
     pub fn is_published(&self) -> bool {
         !self.stopped.load(Ordering::Acquire)

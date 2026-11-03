@@ -13,3 +13,6 @@ pub use seed::{Error as SeedError, Seed};
 
 #[cfg(test)]
 mod fixture;
+
+#[cfg(test)]
+mod routing_fixture;

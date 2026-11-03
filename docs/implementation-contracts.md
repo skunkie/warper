@@ -3181,7 +3181,8 @@ currently absent; positive/negative responses allocate no global cache entries.
 Request-local discovery snapshots remain transient data-plane buffers.
 
 Opaque response/flow handles mark their fixed control slot on Drop and notify
-one owner waiter. `advance(now)` reclaims those references and expired timed
+one owner waiter. `changes()` issues a single owned waiter so an actor can
+await without retaining a ledger borrow or lock. `advance(now)` reclaims those references and expired timed
 leases with bounded scans. Every time-bearing operation advances the same
 monotonic elapsed clock; backward time is rejected. Live pending output never
 expires merely because its deadline passes: cancellation must first destroy
@@ -3211,7 +3212,7 @@ uncertain operation. The service route manager must serialize native intent,
 ACK/ownership reconciliation and these transitions; daemon DNS remains disabled
 until that integration and NET-10–NET-12 native gates pass.
 
-The owner arms one timer from `next_expiry()` and one coalesced `changed()`
+The owner arms one timer from `next_expiry()` and one coalesced owned `Changes::wait()`
 notification. Ordinary renewals skip expiry scans until that timestamp is due;
 releasing a response checks only its own lease slots. Extending a lease can
 leave one early wake, which recomputes the timestamp without adding records.
@@ -3221,3 +3222,47 @@ performs checked retirement. `close` rejects new reservations, flow admission
 and handoff. After external DNS withdrawal and output/flow cancellation/join,
 `finish_drain` clears timed leases; it refuses live references and retains every
 address owner for native withdrawal. It does not report completed Disconnect.
+
+### Live route selection and TCP flow pins
+
+`warper_core::routing::FlowSelector` separates immutable static policy from
+live mapping observation and atomic flow selection. `static_policy()` returns
+the original capture snapshot; `lookup()` observes a mapping without granting
+flow ownership. `select_flow()` returns a `Selection` containing the backend
+and, for DNS-owned destinations, an owned lease flow pin. The static `Policy`
+implements this interface without a DNS pin. Core selection knows no backend
+implementations or platform operations.
+
+`HostAdapter::with_selector` and `Runtime::with_selector` use that interface.
+The first SYN acquires its selection before a listener becomes usable; errors
+release the selection immediately. Retransmissions and existing-flow packets
+reuse their original metadata and reference. The selection remains inside the
+shared driver/application lifetime until both are destroyed, including queued
+or retained accepted streams after runtime cancellation. Temporary selector
+contention/unready ownership rejects admission without choosing another route;
+selector failure terminates the runtime and reaches its supervisor.
+
+A runtime publication observes the same selector and static snapshot used by
+admission. Its live mapping observation does not acquire a flow pin and grants
+no kernel authority. The service must publish that mapping before native route
+addition and retain it through verified withdrawal. Runtime-created publication
+still establishes allocated mapping/ingress ownership, not native readiness.
+
+`warper_service::dns::routes::Controller` supplies the live selector using one
+shared core ledger and immutable static snapshot. Each synchronous operation
+uses `try_lock`; no caller receives a mutex guard or holds it across native
+I/O/await. Busy selection drops the new SYN for bounded TCP retry; poisoned
+state is fatal and cannot select a static/direct alternative. Selection and
+lease-pin acquisition run under the same lock as retirement, closing the
+SYN/retirement race. Static winner conflicts and static-mode coverage gaps fail
+whole-response reservation before metadata changes. A committed static winner
+can continue serving after its DNS metadata expires; dynamic destinations
+without protected references remain unready until checked retirement.
+
+The wrapper preallocates duplicate-address scratch and charges its own storage,
+control header and runtime selector handles before constructing the ledger.
+Its `reserved_bytes()` includes that overhead. One shared Tokio monotonic origin
+converts discovery expiry/deadline instants to core elapsed durations; already
+expired freshness remains zero. Native endpoint exclusions, ACK/journal proofs,
+DNS output completion and the service readiness gate remain separate required
+composition. The controller never creates kernel routes or claims them ready.

@@ -8,6 +8,10 @@ use std::{fmt, net::IpAddr};
 
 use crate::BackendId;
 
+mod selection;
+
+pub use selection::{FlowSelector, Selection, SelectionError};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Entry {
     pub network: IpAddr,

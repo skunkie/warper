@@ -189,6 +189,22 @@ process CPU/RSS, reserved bytes and capacities under
 CPU/RSS; renewal latency excludes it. This workload owns no sockets or kernel
 routes, so network throughput and packet-drop metrics do not apply.
 
+The stack has an explicit live-selection ownership workload:
+
+```sh
+cargo test --locked -p warper-stack --lib
+cargo test --locked -p warper-service --lib dns::routes
+cargo test --locked --release -p warper-stack --lib host::tests::selected_flow_ownership_workload -- --ignored --exact --nocapture
+```
+
+It runs 100 controlled TCP peer exchanges, transferring 20 bytes per flow,
+expiring DNS freshness, and retaining the routing reference through driver
+cancellation and final stream destruction. Record process CPU/RSS and latency
+under `target/evidence/phase-2/live-routing/`. Total CPU/wall time includes
+fixture setup; flow latency excludes it. The packet path is in memory, with a
+synthetic expiry clock and no induced loss, so there are no physical-interface
+drop counters or kernel-route claims.
+
 Configuration parser tests run as part of workspace tests, or separately with:
 
 ```sh

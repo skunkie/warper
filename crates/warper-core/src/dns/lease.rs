@@ -121,6 +121,7 @@ pub struct Stats {
 
 struct Control {
     dirty: AtomicBool,
+    observer: AtomicBool,
     markers: Vec<AtomicU64>,
     notify: Notify,
 }
@@ -153,6 +154,27 @@ impl fmt::Debug for Response {
 impl fmt::Debug for Flow {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("Flow([redacted])")
+    }
+}
+
+/// The sole owned notification waiter. No ledger borrow or mutex guard is
+/// retained while waiting; a mutable borrow prevents concurrent waits.
+pub struct Changes {
+    control: Arc<Control>,
+}
+impl Changes {
+    pub fn wait(&mut self) -> impl Future<Output = ()> + '_ {
+        self.control.notify.notified()
+    }
+}
+impl Drop for Changes {
+    fn drop(&mut self) {
+        self.control.observer.store(false, Ordering::Release);
+    }
+}
+impl fmt::Debug for Changes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Changes([redacted])")
     }
 }
 
@@ -247,6 +269,7 @@ impl Ledger {
         let mut ledger = Self {
             control: Arc::new(Control {
                 dirty: AtomicBool::new(false),
+                observer: AtomicBool::new(false),
                 markers: allocate(marker_count, || AtomicU64::new(0))?,
                 notify: Notify::new(),
             }),
@@ -531,10 +554,16 @@ impl Ledger {
         Ok(())
     }
 
-    /// Drop notifications coalesce to one permit. One serialized owner waiter
-    /// is enforced by the mutable borrow; it must drop this future before I/O.
-    pub fn changed(&mut self) -> impl Future<Output = ()> + '_ {
-        self.control.notify.notified()
+    /// Issue one owned waiter so an actor can wait without holding its ledger
+    /// lock. Dropping the waiter permits a replacement after its wait ends.
+    pub fn changes(&mut self) -> Result<Changes, Error> {
+        self.control
+            .observer
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| Error::ResourceLimit)?;
+        Ok(Changes {
+            control: self.control.clone(),
+        })
     }
 
     pub fn advance(&mut self, now: Duration) -> Result<(), Error> {
@@ -950,10 +979,13 @@ fn required_bytes(limits: Limits, leases: usize) -> Result<usize, Error> {
 }
 fn fixed_bytes(limits: Limits) -> Result<usize, Error> {
     let notify = Notify::new();
-    let mut bytes =
-        size_of::<Ledger>() + size_of::<Control>() + 2 * size_of::<usize>() + align_of::<Control>()
-            - 1
-            + size_of_val(&notify.notified());
+    let mut bytes = size_of::<Ledger>()
+        + size_of::<Changes>()
+        + size_of::<Control>()
+        + 2 * size_of::<usize>()
+        + align_of::<Control>()
+        - 1
+        + size_of_val(&notify.notified());
     for (count, size) in [
         (limits.response_entries, size_of::<Response>()),
         (limits.flow_entries, size_of::<Flow>()),

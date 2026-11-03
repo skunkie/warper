@@ -459,3 +459,139 @@ fn quiescent_reset_ingress_remains_bounded_without_flow_allocation() {
     assert_eq!(host.retained_flows(), 0);
     host.cancel();
 }
+
+#[tokio::test]
+async fn dynamic_flow_selection_is_pinned_before_syn_admission_through_last_stream_drop() {
+    let _elapsed = selected_flow_exchange().await;
+}
+
+async fn selected_flow_exchange() -> Duration {
+    // The manual packet driver uses a no-op poll waker. Start each exchange
+    // with a fresh cooperative budget before its bounded synchronous pumps.
+    tokio::task::yield_now().await;
+    use crate::routing_fixture::LeaseRoutes;
+    use std::sync::atomic::Ordering;
+    use warper_core::dns::lease::Error as LeaseError;
+
+    let mut peer = Peer::new(false, 50000);
+    let routes = LeaseRoutes::new(peer.destination.ip());
+    let (mut host, mut accepted) =
+        HostAdapter::with_selector(Limits::default(), routes.clone(), Seed::fixture()).unwrap();
+    let started = std::time::Instant::now();
+    let syn = peer.syn();
+    let id = host.inject(&syn).unwrap();
+    assert_eq!(
+        routes.ledger.lock().unwrap().stats().flows,
+        1,
+        "the initial SYN already owns its routing reference"
+    );
+    assert_eq!(
+        host.inject(&syn).unwrap(),
+        id,
+        "a retransmitted SYN reuses the existing selection"
+    );
+    assert_eq!(routes.ledger.lock().unwrap().stats().flows, 1);
+    for turn in 0..100 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+        if !accepted.is_empty() {
+            break;
+        }
+    }
+    let mut flow = accepted.try_recv().unwrap();
+    routes.advance(2);
+    assert_eq!(routes.ledger.lock().unwrap().stats().leases, 0);
+    assert_eq!(
+        routes
+            .ledger
+            .lock()
+            .unwrap()
+            .begin_retirement(Duration::from_secs(2), routes.route),
+        Err(LeaseError::Referenced)
+    );
+    routes.behavior.store(3, Ordering::Release);
+    peer.tcp().send_slice(b"stable selected flow").unwrap();
+    for _ in 0..20 {
+        pump(&mut host, &mut peer, Duration::from_secs(2));
+    }
+    let mut bytes = [0; 20];
+    flow.stream.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"stable selected flow");
+    assert_eq!(flow.metadata.backend, BackendId(70000));
+    let elapsed = started.elapsed();
+    host.cancel();
+    assert_eq!(
+        routes.ledger.lock().unwrap().stats().flows,
+        1,
+        "retained application streams still pin the route after driver cancellation"
+    );
+    drop(flow);
+    routes.advance(2);
+    let mut ledger = routes.ledger.lock().unwrap();
+    assert_eq!(ledger.stats().flows, 0);
+    ledger
+        .begin_retirement(Duration::from_secs(2), routes.route)
+        .unwrap();
+    ledger.finish_retirement(routes.route).unwrap();
+    elapsed
+}
+
+#[test]
+fn failed_syn_admission_releases_only_its_new_selection_without_fallback() {
+    use crate::routing_fixture::LeaseRoutes;
+    use std::sync::atomic::Ordering;
+
+    let mut peer = Peer::new(false, 50000);
+    let routes = LeaseRoutes::new(peer.destination.ip());
+    let (mut host, _accepted) = HostAdapter::with_selector(
+        Limits {
+            flows: 1,
+            accepted: 1,
+            ..Limits::default()
+        },
+        routes.clone(),
+        Seed::fixture(),
+    )
+    .unwrap();
+    let syn = peer.syn();
+    for (behavior, expected) in [
+        (1, AdmissionError::SelectionBusy),
+        (2, AdmissionError::SelectionUnready),
+        (3, AdmissionError::SelectionUnavailable),
+    ] {
+        routes.behavior.store(behavior, Ordering::Release);
+        assert_eq!(host.inject(&syn), Err(expected));
+        assert_eq!(host.active_flows(), 0);
+    }
+    routes.behavior.store(0, Ordering::Release);
+    host.inject(&syn).unwrap();
+    let mut other = Peer::new(false, 50001);
+    assert_eq!(
+        host.inject(&other.syn()),
+        Err(AdmissionError::ResourceLimit)
+    );
+    routes.advance(0);
+    assert_eq!(routes.ledger.lock().unwrap().stats().flows, 1);
+    host.cancel();
+    routes.advance(0);
+    assert_eq!(routes.ledger.lock().unwrap().stats().flows, 0);
+}
+
+#[tokio::test]
+#[ignore = "controlled stack flow ownership workload; run explicitly in release mode"]
+async fn selected_flow_ownership_workload() {
+    let started = std::time::Instant::now();
+    let mut latencies = Vec::new();
+    for index in 0..100 {
+        let elapsed = tokio::time::timeout(Duration::from_secs(2), selected_flow_exchange()).await;
+        assert!(elapsed.is_ok(), "controlled flow {index} stalled");
+        latencies.push(elapsed.unwrap().as_nanos());
+    }
+    latencies.sort_unstable();
+    println!(
+        "selected flow workload flows=100 payload_bytes=2000 elapsed_ns={} p50_ns={} p95_ns={} p99_ns={}; controlled in-memory TCP peers, synthetic expiry clock, no induced loss, fixture setup excluded from flow latency",
+        started.elapsed().as_nanos(),
+        latencies[49],
+        latencies[94],
+        latencies[98]
+    );
+}

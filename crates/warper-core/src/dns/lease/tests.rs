@@ -531,14 +531,15 @@ async fn cross_thread_drops_wake_one_owner_and_reclaim_all_their_exact_reference
     for thread in threads {
         thread.join().unwrap();
     }
-    tokio::time::timeout(seconds(1), ledger.changed())
+    let mut changes = ledger.changes().unwrap();
+    tokio::time::timeout(seconds(1), changes.wait())
         .await
         .unwrap();
     ledger.advance(Duration::ZERO).unwrap();
     assert_eq!(ledger.stats().responses, 0);
     assert_eq!(ledger.stats().leases, 0);
     assert!(
-        tokio::time::timeout(seconds(1), ledger.changed())
+        tokio::time::timeout(seconds(1), changes.wait())
             .await
             .is_err(),
         "drop notifications use one coalesced permit rather than an unbounded cleanup queue"

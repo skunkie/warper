@@ -106,6 +106,17 @@ service discovery/output integration and actual native publication/retirement
 still require NET-10–NET-12 acceptance. Global reusable DNS caching is absent;
 request-local discovery snapshots do not become retained response caches.
 
+The host TCP runtime now consumes a live flow selector and retains a DNS
+routing pin from first SYN admission through the last driver/application
+stream reference. The service controller serializes selection and retirement,
+checks static winners, bounds its own wrapper/scratch storage and shares one
+monotonic clock. Controlled TCP peers verify pinning before admission,
+retransmission reuse, failure cleanup and retained streams after cancellation;
+controller cases cover readiness, static conflicts, notification ownership and
+closed/poisoned state. Evidence belongs under
+`target/evidence/phase-2/live-routing/`. Native dynamic route journaling/ACKs,
+DNS listener/output completion and resolved integration remain required.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

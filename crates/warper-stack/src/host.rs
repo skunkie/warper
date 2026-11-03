@@ -40,7 +40,7 @@ use crate::{
     device::{BYTE_CAPACITY, PacketDevice},
 };
 use warper_core::{
-    routing::Policy,
+    routing::{FlowSelector, Policy, Selection, SelectionError},
     transport::{CapturedTcp, Metadata},
 };
 
@@ -57,6 +57,9 @@ pub enum AdmissionError {
     MalformedPacket,
     UnsupportedProtocol,
     UnselectedDestination,
+    SelectionBusy,
+    SelectionUnready,
+    SelectionUnavailable,
     UnknownFlow,
     ResourceLimit,
     AcceptQueueFull,
@@ -139,6 +142,7 @@ enum Termination {
 struct FlowLifetime {
     termination: AtomicU8,
     wake: Arc<AtomicWaker>,
+    _selection: Selection,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -256,7 +260,7 @@ pub struct HostAdapter {
     accepted: Option<Sender<AcceptedFlow>>,
     lifetimes: Arc<Semaphore>,
     wake: Arc<AtomicWaker>,
-    policy: Arc<Policy>,
+    policy: Arc<dyn FlowSelector>,
     limits: Limits,
     next_id: u64,
     now: Duration,
@@ -269,6 +273,14 @@ impl HostAdapter {
     pub fn new(
         limits: Limits,
         policy: Arc<Policy>,
+        seed: Seed,
+    ) -> Result<(Self, Receiver<AcceptedFlow>), AdmissionError> {
+        Self::with_selector(limits, policy, seed)
+    }
+
+    pub fn with_selector(
+        limits: Limits,
+        policy: Arc<dyn FlowSelector>,
         seed: Seed,
     ) -> Result<(Self, Receiver<AcceptedFlow>), AdmissionError> {
         limits.validate()?;
@@ -567,8 +579,8 @@ impl HostAdapter {
         }
         if self.quiescing {
             self.policy
-                .select(destination.ip())
-                .ok_or(AdmissionError::UnselectedDestination)?;
+                .lookup(destination.ip())
+                .map_err(selection_error)?;
             // No listener is created. The live interface can return a TCP RST
             // while route ownership and existing streams are still retained.
             self.device
@@ -583,10 +595,11 @@ impl HostAdapter {
         {
             return Err(AdmissionError::InvalidTime);
         }
-        let backend = self
+        let selection = self
             .policy
-            .select(destination.ip())
-            .ok_or(AdmissionError::UnselectedDestination)?;
+            .select_flow(destination.ip())
+            .map_err(selection_error)?;
+        let backend = selection.backend();
         let metadata = Metadata {
             id: self.next_id,
             source,
@@ -631,6 +644,7 @@ impl HostAdapter {
         let lifetime = Arc::new(FlowLifetime {
             termination: AtomicU8::new(Termination::Running as u8),
             wake: self.wake.clone(),
+            _selection: selection,
             _permit: lifetime_permit,
         });
         slot.flow = Some(FlowState {
@@ -780,6 +794,15 @@ fn tcp_metadata(bytes: &[u8]) -> Result<(SocketAddr, SocketAddr, bool), Admissio
         SocketAddr::new(destination.into(), representation.dst_port),
         syn,
     ))
+}
+
+fn selection_error(error: SelectionError) -> AdmissionError {
+    match error {
+        SelectionError::Unselected => AdmissionError::UnselectedDestination,
+        SelectionError::Busy => AdmissionError::SelectionBusy,
+        SelectionError::Unready => AdmissionError::SelectionUnready,
+        SelectionError::Unavailable => AdmissionError::SelectionUnavailable,
+    }
 }
 
 #[cfg(test)]

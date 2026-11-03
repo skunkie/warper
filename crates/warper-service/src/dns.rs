@@ -6,6 +6,7 @@
 
 mod packet;
 mod query;
+pub mod routes;
 mod tcp;
 mod udp;
 

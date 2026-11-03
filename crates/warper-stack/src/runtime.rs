@@ -21,7 +21,7 @@ use tokio::{
     sync::{Notify, mpsc, oneshot},
     time::{Instant, sleep_until},
 };
-use warper_core::routing::Policy;
+use warper_core::routing::{FlowSelector, Policy};
 
 mod admission;
 mod publication;
@@ -172,8 +172,18 @@ impl Runtime {
         capacity: usize,
         seed: Seed,
     ) -> Result<(Self, Channels), Error> {
+        Self::with_selector(limits, policy, capacity, seed)
+    }
+
+    pub fn with_selector(
+        limits: Limits,
+        policy: Arc<dyn FlowSelector>,
+        capacity: usize,
+        seed: Seed,
+    ) -> Result<(Self, Channels), Error> {
         let buffer_capacity = Self::required_buffer_capacity(limits, capacity)?;
-        let (host, tcp) = HostAdapter::new(limits, policy.clone(), seed).map_err(Error::Host)?;
+        let (host, tcp) =
+            HostAdapter::with_selector(limits, policy.clone(), seed).map_err(Error::Host)?;
         let (input, receiver) = mpsc::channel(capacity);
         let (output, packets) = mpsc::channel(capacity);
         let (admission, commands) = AdmissionControl::new();
@@ -290,7 +300,8 @@ impl Runtime {
                     Err(
                         error @ (AdmissionError::Cancelled
                         | AdmissionError::InvalidLimits
-                        | AdmissionError::InvalidTime),
+                        | AdmissionError::InvalidTime
+                        | AdmissionError::SelectionUnavailable),
                     ) => return Err(Error::Host(error)),
                     Err(error) => {
                         self.report.rejected_packets =

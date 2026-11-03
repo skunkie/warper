@@ -599,3 +599,36 @@ async fn forced_cancellation_releases_staged_and_queued_input_before_acknowledgi
     assert_eq!(report.rejected_packets, 1);
     assert_eq!(report.tcp.admitted, 0);
 }
+
+#[tokio::test]
+async fn selector_owner_failure_terminates_the_runtime_and_reaches_its_joiner() {
+    use crate::routing_fixture::LeaseRoutes;
+    use std::sync::atomic::Ordering;
+
+    let mut peer = Peer::new(false, 50000);
+    let routes = LeaseRoutes::new(peer.destination.ip());
+    let (runtime, channels) =
+        Runtime::with_selector(Limits::default(), routes.clone(), 2, Seed::fixture()).unwrap();
+    assert_eq!(
+        channels
+            .publication
+            .selected_backend(peer.destination.ip())
+            .unwrap(),
+        BackendId(70000)
+    );
+    assert_eq!(
+        routes.ledger.lock().unwrap().stats().flows,
+        0,
+        "publication lookup must not create a flow"
+    );
+    routes.behavior.store(3, Ordering::Release);
+    channels.ingress.try_inject(&peer.syn()).unwrap();
+    let task = tokio::spawn(runtime.run());
+    let failure = task.await.unwrap().unwrap_err();
+    assert_eq!(
+        failure.cause,
+        Error::Host(AdmissionError::SelectionUnavailable)
+    );
+    assert_eq!(failure.report.retained_streams, 0);
+    assert!(!channels.publication.is_published());
+}
