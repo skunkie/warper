@@ -2892,3 +2892,42 @@ no positive-answer publication permission. No library Debug/error text escapes.
 This synchronous adapter owns no tasks, sockets or asynchronous cleanup.
 DNS transport framing, endpoint validation, cache/lease admission, route commit,
 response handoff and native resolver integration remain required Phase 2 work.
+
+### Selected-backend TCP DNS exchange
+
+`warper_service::dns::{Admission, TcpTransport, ExchangeError}` implements one
+TCP DNS request per owned backend stream. `Admission::new(1..=4096)` creates
+a service-wide count pool; all transports must receive clones of that same pool.
+Acquisition is immediate and never queues. The permit spans encoding, setup,
+partial frame I/O and validation, and releases on every return, cancellation,
+timeout or dropped exchange future. The caller owns/polls the future; this
+adapter starts no task and retains no worker after it returns.
+
+`TcpTransport::new(Arc<dyn Backend>, SocketAddr, Limits, Admission)` validates a
+literal upstream and its selected backend's TCP/family capabilities. It owns
+no direct connector, resolver or alternate backend. `exchange(&Packet, Request)`
+uses the original total deadline and cancellation context through the entire
+operation, including backend setup. It writes one two-byte big-endian length
+and complete query, bounds the response length before allocation, reads exactly
+one frame, then applies packet correlation/validation. A TCP TC response fails;
+it is not retried or redirected. Valid negative packets pass unchanged in
+meaning. No query is retried following an I/O or selected-backend failure.
+
+One exchange retains a query frame of at most 65537 bytes (including its TCP
+prefix) and a received wire vector of at most 65535 bytes, plus bounded decoded
+packets, backend setup/stream buffers and
+allocator overhead. Request-count admission is not byte admission: service
+preflight must charge these capacities and decoded record/name storage before
+enabling DNS. The daemon still rejects DNS configurations until the complete
+session, route and resolver integration exists. There is no connection pool or
+unbounded pending queue. Local listener framing for multiple requests on a
+connection, UDP/direct transport, endpoint discovery and publication remain open.
+The query's prefix and body share one write operation to avoid artificial
+small-prefix/Nagle delays; partial writes still complete under the same deadline.
+
+Unit tests use bounded duplex peers and a controlled clock for partial framing,
+negatives, failures, admission, cancellation, timeout and dropped-future cleanup.
+`tests/dns_tcp.rs` checks actual loopback TCP against a controlled SOCKS5 peer,
+the original DNS destination, production backend negotiation, DNS frames and
+stream closure. This is protocol/transport evidence, not DNS-discovered TUN
+routing or system resolver acceptance.

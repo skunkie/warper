@@ -64,6 +64,10 @@ impl Limits {
         })
     }
 
+    pub fn wire_bytes(self) -> usize {
+        self.wire_bytes
+    }
+
     fn admit(self, bytes: &[u8]) -> Result<(), Error> {
         if bytes.len() > self.wire_bytes {
             return Err(Error::ResourceLimit);
@@ -139,6 +143,10 @@ impl Packet {
 
     pub fn response_code(&self) -> u16 {
         self.message.response_code.into()
+    }
+
+    pub fn is_response(&self) -> bool {
+        self.message.message_type == MessageType::Response
     }
 
     /// Encoding is for transport and later gated response handoff. It does not
