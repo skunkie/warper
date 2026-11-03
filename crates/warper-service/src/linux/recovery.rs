@@ -23,6 +23,7 @@ pub enum Error {
     Context(super::context::Error),
     Network(tun::Error),
     Invariant,
+    Pending,
     Incomplete(Box<Error>),
 }
 impl fmt::Display for Error {
@@ -38,6 +39,9 @@ impl fmt::Display for Error {
             Self::Network(error) => error.fmt(f),
             Self::Invariant => {
                 f.write_str("RecoveryRequired: exclusive recovery ownership was lost")
+            }
+            Self::Pending => {
+                f.write_str("RecoveryRequired: inspect and repair pending state before diagnostics")
             }
             Self::Incomplete(primary) => {
                 write!(f, "Recovery incomplete: {primary}; inspect before retrying")
@@ -159,6 +163,23 @@ pub fn inspect() -> Result<Report, Error> {
 /// preflight. This never starts a backend or changes accepted connection intent.
 pub fn recover() -> Result<(), Error> {
     prepare()?.repair()
+}
+
+pub(crate) fn diagnostic_context() -> Result<Context, Error> {
+    let mut prepared = prepare()?;
+    if prepared.report.owner_pending
+        || prepared.report.configuration_pending
+        || prepared.report.connection_pending
+        || prepared.report.network_pending
+    {
+        return Err(Error::Pending);
+    }
+    let runtime = Arc::get_mut(&mut prepared.runtime).ok_or(Error::Invariant)?;
+    endpoint::recover(runtime).map_err(Error::Endpoint)?;
+    let context =
+        Context::capture(prepared.runtime.clone(), &prepared.connection).map_err(Error::Context)?;
+    tun::recover_abandoned(&context, prepared.request.clone()).map_err(Error::Network)?;
+    Ok(context)
 }
 
 fn prepare() -> Result<Prepared, Error> {

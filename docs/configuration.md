@@ -530,6 +530,20 @@ explicit privileged foreground diagnostic mode sharing the service lock;
 `--headless`/`--verbose` are accepted legacy aliases there. Its signals stop
 that foreground runtime. GUI/CLI exit never implicitly disconnects.
 
+On Linux, `warperd run` imports the selected YAML and credentials under the
+validated invoking account before synchronous native bootstrap. The service must
+be stopped; both modes hold the same exclusive persistent lock. Diagnostics
+reject pending state and preserve managed configuration, enrollment and saved
+connection intent. They can reconcile proven-ended ownership, then use a
+transient in-memory configuration through the production network supervisor.
+No control endpoint is published. `--headless` is a legacy alias; `--verbose`
+and `--debug` enable a startup message and aggregate shutdown summary without
+packet contents, secrets or raw configuration. Repeated/unknown flags and invalid
+configuration-path forms exit 2. SIGTERM/SIGINT/SIGHUP cancel and drain the engine;
+success requires verified retirement and prints exactly `Diagnostic stopped.`.
+Output occurs outside active networking, so a blocked consumer cannot stall
+forwarding. Import and bootstrap filesystem waits have no hard kernel deadline.
+
 `up`/`down` return an operation ID and wait for completion by default, with
 `--wait-ms` default 30000. Wait expiry exits 1 and prints the operation ID;
 the accepted service operation continues. `--no-wait` exits 0 on acceptance
@@ -566,8 +580,8 @@ commands on other platforms, still return `UnsupportedCapability`.
 managed configuration and enrolled owner policy. It keeps networking independent
 of clients, handles SIGTERM/SIGINT through owned shutdown and shares the fixed
 instance lock. No service-manager installation is performed by building the
-binary. Diagnostic `warperd run` remains incomplete; stopped-service
-`warperd recover [--inspect]` is available on Linux.
+binary. Foreground diagnostics and stopped-service
+`warperd recover [--inspect]` are available on Linux.
 A missing service fails with exit 1;
 offline checks never attempt IPC.
 
@@ -591,7 +605,8 @@ a failed diagnostic write retains the primary failure and its exit code.
 invoke the CLI through explicit OS elevation. The client does not elevate itself.
 Under sudo, configuration materialization runs in a separate child with the
 validated invoking UID, its primary GID, and ordinary account groups from the
-OS database. No inherited administrative groups survive. The Linux client uses
+OS database. No inherited administrative groups survive; non-root accounts also
+receive empty ambient, inheritable and bounding capability sets. The Linux client uses
 `/usr/bin/setpriv` from util-linux with no-new-privileges before executing the
 materializer; the child verifies actual credentials and group membership before
 reading sources. The root parent receives

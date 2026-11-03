@@ -12,6 +12,7 @@ pub mod configuration;
 pub mod context;
 pub mod controller;
 pub mod daemon;
+pub mod diagnostic;
 pub mod egress;
 pub mod link_lookup;
 mod netlink;

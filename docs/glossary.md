@@ -11,7 +11,8 @@ SPDX-License-Identifier: MIT
 | Networking service | Privileged supervised `warperd` process owning the network engine, instance lock, journal, reconnects, and session lifecycle |
 | Desktop client | Ordinary-user Tauri application controlling/observing the service; its lifetime does not own routing |
 | Managed configuration | Approved protected service snapshot and credential material, distinct from a source/import YAML file in a user's home |
-| Configuration generation | Monotonic identity of an approved managed configuration snapshot; backend registry IDs are scoped to it |
+| Configuration generation | Nonzero monotonic identity of an approved managed configuration snapshot; backend registry IDs are scoped to it. Internal generation zero denotes transient foreground diagnostics, never a durable managed approval |
+| Foreground diagnostics | Explicit administrator-owned engine using imported configuration in memory, the production network supervisor and exclusive instance lock, without publishing local control or changing managed configuration/connection intent |
 | Desired-state revision | Monotonic revision of accepted connection intent, distinct from configuration generation and observed networking readiness |
 | Operation ID | Immutable control-command identity containing its original expected desired-state revision and a nonzero nonce; retry preserves the ID and fields, while a new command uses a new ID |
 | Service instance ID | Nonzero opaque identifier for one running service lifetime; a restart changes it, invalidating state-changing requests addressed to the old lifetime |

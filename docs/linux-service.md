@@ -84,6 +84,20 @@ the report, `sudo /usr/local/bin/warperd recover` repairs only verified unchange
 state. Both require the stopped service's exclusive instance lock. Repair
 preserves connection intent and starts no backend.
 
+For foreground diagnostics, disconnect and stop the service first, then run:
+
+```sh
+sudo /usr/local/bin/warperd run --config ./sample.yaml --headless --verbose
+```
+
+This imports with the invoking account's access, uses an in-memory configuration
+and holds the same instance lock. The CLI cannot control this foreground engine;
+SIGTERM, SIGINT or SIGHUP stop and drain it. Managed settings and saved connection
+intent remain unchanged. Verbose/debug output contains aggregate shutdown counts
+only. Diagnostics reject pending state until explicit stopped-service recovery
+completes. Building the daemon also builds its shared native client import
+helper; no separate helper executable is required.
+
 Unit syntax validation does not establish a successful systemd lifecycle.
 The [installed idle-unit gate](https://github.com/skunkie/warper/actions/runs/41568333593)
 passes at `a7e3505`, including owner access, restart, SIGKILL/automatic recovery,

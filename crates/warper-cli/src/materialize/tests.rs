@@ -24,6 +24,16 @@ fn failure_envelope_is_bounded_and_contains_no_source_or_secret_text() {
         Err(Error::TooLarge)
     ));
 }
+
+#[test]
+fn unsupported_import_remains_a_runtime_capability_error_across_the_private_pipe() {
+    let encoded = encode(Err(Error::Unsupported));
+    assert_eq!(encoded.expose(), b"WMIM\0\x01\0\x07\0\0\0\0");
+    let error = decode(encoded.expose()).unwrap_err();
+    assert!(matches!(error, Error::Unsupported));
+    assert_eq!(error.exit_code(), 1);
+    assert!(error.to_string().starts_with("UnsupportedCapability:"));
+}
 #[test]
 fn successful_materialization_round_trips_a_valid_managed_snapshot() {
     use warper_core::configuration::paths::{Account, Paths};

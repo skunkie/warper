@@ -16,7 +16,7 @@ fn daemon_entry_points_keep_usage_errors_and_offline_output_separate() {
             concat!("warperd ", env!("CARGO_PKG_VERSION")),
             "",
         ),
-        (vec!["run"], 1, "", "UnsupportedCapability:"),
+        (vec!["run", "--unknown"], 2, "", "InvalidArguments:"),
         (vec!["service", "sample-secret"], 2, "", "InvalidArguments:"),
     ] {
         let mut process = Command::new(env!("CARGO_BIN_EXE_warperd"));
@@ -46,6 +46,7 @@ fn unprivileged_native_commands_report_the_actual_authorization_cause() {
         &["service"][..],
         &["recover", "--inspect"][..],
         &["recover"][..],
+        &["run", "--config", "/nonexistent/sample.yaml"][..],
     ] {
         use std::os::unix::{fs::PermissionsExt, process::CommandExt};
         let binary = env!("CARGO_BIN_EXE_warperd");

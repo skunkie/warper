@@ -73,6 +73,21 @@ struct Approved {
 #[derive(Clone)]
 pub struct ConfigurationLease(Arc<Approved>);
 impl ConfigurationLease {
+    pub(crate) fn diagnostic(context: Arc<Context>, snapshot: Snapshot) -> Result<Self, Error> {
+        context.revalidate().map_err(Error::Context)?;
+        let ownership = Arc::new(Ownership::acquire(context.retain_runtime()).map_err(
+            |error| match error {
+                ClaimError::Busy => Error::Busy,
+                ClaimError::Runtime(error) => Error::Storage(StorageError::Runtime(error)),
+            },
+        )?);
+        Ok(Self(Arc::new(Approved {
+            generation: 0,
+            snapshot,
+            context,
+            _ownership: ownership,
+        })))
+    }
     pub fn generation(&self) -> u64 {
         self.0.generation
     }

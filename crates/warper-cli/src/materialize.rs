@@ -30,6 +30,7 @@ pub enum Error {
     Schema,
     Credential,
     TooLarge,
+    Unsupported,
     ChildFailed,
     Io(io::ErrorKind),
     Cleanup {
@@ -57,6 +58,7 @@ impl fmt::Display for Error {
             Self::Schema => "InvalidConfig: managed source validation failed; use check-config for offline diagnostics",
             Self::Credential => "InvalidConfig: invoking account could not import selected credentials",
             Self::TooLarge => "ResourceLimit: managed import exceeds its bounded envelope",
+            Self::Unsupported => "UnsupportedCapability: managed import currently requires SOCKS5 backends",
             Self::ChildFailed => "WorkerFailed: native configuration import child failed",
             Self::Io(_) => "NativeIo: configuration import pipe or process operation failed",
             Self::Cleanup { primary, .. } => { write!(f, "{primary}; import child cleanup also failed")?; return Ok(()); },
@@ -86,7 +88,9 @@ pub(crate) fn owner_uid(uid: Option<u32>) -> Result<u32, crate::Error> {
     Ok(uid)
 }
 
-pub(crate) fn prepare(path: Option<&Path>) -> Result<Secret<Vec<u8>>, crate::Error> {
+/// Materialize under the validated invoking account. The calling executable
+/// must dispatch its private `--native-materialize` entry point to [`child`].
+pub fn prepare(path: Option<&Path>) -> Result<Secret<Vec<u8>>, crate::Error> {
     require_admin()?;
     let account = crate::invoking_identity(&crate::NativeEnvironment)?;
     let user = User::from_uid(Uid::from_raw(account.uid))
@@ -102,7 +106,15 @@ pub(crate) fn prepare(path: Option<&Path>) -> Result<Secret<Vec<u8>>, crate::Err
         .arg("--regid")
         .arg(user.gid.as_raw().to_string())
         .arg("--init-groups")
-        .arg("--no-new-privs")
+        .arg("--no-new-privs");
+    if account.uid != 0 {
+        command.args([
+            "--ambient-caps=-all",
+            "--inh-caps=-all",
+            "--bounding-set=-all",
+        ]);
+    }
+    command
         .arg("--")
         .arg(executable)
         .arg("--native-materialize")
@@ -113,7 +125,7 @@ pub(crate) fn prepare(path: Option<&Path>) -> Result<Secret<Vec<u8>>, crate::Err
     }
     // The OS helper initializes only the invoking account's normal groups and
     // drops privileges before executing our parser. No parent/thread identity
-    // is changed; no inherited administrative groups survive.
+    // is changed; ordinary accounts inherit no administrative groups or caps.
     command
         .env_clear()
         .stdin(Stdio::null())
@@ -226,6 +238,7 @@ fn import(uid: u32, gid: u32, arguments: &[OsString]) -> Result<Secret<Vec<u8>>,
         .map_err(|error| match error {
             warper_config::managed::Error::Credential(_) => Error::Credential,
             warper_config::managed::Error::ResourceLimit => Error::TooLarge,
+            warper_config::managed::Error::UnsupportedBackend => Error::Unsupported,
             _ => Error::Schema,
         })?
         .encode()
@@ -252,6 +265,7 @@ fn encode(result: Result<Secret<Vec<u8>>, Error>) -> Envelope {
                 Error::Credential => 3,
                 Error::TooLarge => 4,
                 Error::Identity => 5,
+                Error::Unsupported => 7,
                 _ => 6,
             },
             None,
@@ -295,6 +309,7 @@ fn decode(bytes: &[u8]) -> Result<Secret<Vec<u8>>, Error> {
         4 => Err(Error::TooLarge),
         5 => Err(Error::Identity),
         6 => Err(Error::UnsafeChild),
+        7 => Err(Error::Unsupported),
         _ => Err(Error::UnsafeChild),
     }
 }

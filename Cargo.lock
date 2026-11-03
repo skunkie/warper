@@ -1803,6 +1803,7 @@ dependencies = [
  "tokio",
  "tun-rs",
  "warper-backends",
+ "warper-cli",
  "warper-config",
  "warper-control",
  "warper-core",

@@ -2463,6 +2463,29 @@ unavailable service or retained ownership requires explicit stopped-service
 recovery, never a client-side bypass. Partial errors preserve typed causes and
 require fresh inspection, without replaying accepted payload or operations.
 
+Foreground diagnostics import normalized configuration with the same validated
+invoking-account materializer as the client. Only the daemon binary's
+presentation layer reuses that client helper; core service modules consume
+normalized bytes and accept no user paths. Before creating an async runtime,
+diagnostic preparation validates the candidate and all fixed protected stores,
+requires the exclusive instance lock and rejects pending state. It can retire
+proven stale publication/journal ownership but never discards pending state or
+changes managed configuration, enrollment or accepted connection intent.
+
+The diagnostic lease is explicit in-memory approval with generation zero,
+meaning no managed generation; it is never exposed through a control endpoint
+or accepted as a durable managed approval. It retains the same context and
+exclusive configuration ownership guard as managed leases. Diagnostics use the
+production Network supervisor, physical protection, TUN journal, queues, flow
+handling and cancellation/drain deadlines. No local control endpoint is
+published. SIGTERM/SIGINT/SIGHUP stop the foreground engine; loss of signal
+observation preserves its primary error alongside cleanup failure. Presentation
+output occurs before networking starts or after it stops, so output backpressure
+cannot stall forwarding. Verbose/debug summaries contain aggregate counts only.
+Synchronous import/bootstrap filesystem waits retain their documented absence
+of a hard kernel deadline. Service/diagnostic exclusion uses the same persistent
+flock inode; diagnostic operation never clears a saved connection intent.
+
 ## Linux native import process
 
 The explicitly elevated CLI materializes configuration before starting its async
@@ -2476,8 +2499,9 @@ identity imports as root. Required util-linux helper failure is an error.
 
 The private stdout pipe uses a 12-byte big-endian header: magic `WMIM`, version
 u16=1, status u16 and payload length u32. Status zero carries one canonical WMCF
-snapshot of at most 1 MiB. Error statuses 1 through 6 respectively mean source,
-schema, credential, size, identity and unsafe child; they carry no payload.
+snapshot of at most 1 MiB. Error statuses 1 through 7 respectively mean source,
+schema, credential, size, identity, unsafe child and unsupported capability;
+they carry no payload.
 Reject unknown statuses, versions, truncation, trailing bytes and excess length.
 The child rejects stdout that is not a pipe. The parent bounds reads, validates
 the snapshot without opening paths, and always reaps the child; failed reads

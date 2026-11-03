@@ -477,6 +477,117 @@ mod linux {
         })
         .await?
     }
+    fn diagnostic_command(path: &str) -> Command {
+        let mut command = Command::new(DAEMON);
+        command
+            .args([
+                "run",
+                "--config",
+                path,
+                "--headless",
+                "--verbose",
+                "--debug",
+            ])
+            .env_clear()
+            .env("SUDO_UID", "1000")
+            .env("SUDO_USER", "owner")
+            .stdin(Stdio::null());
+        command
+    }
+    async fn foreground_diagnostic() -> Result<(), Failure> {
+        let protected = [
+            "/var/lib/warper/owner",
+            "/var/lib/warper/connection",
+            "/etc/warper/configuration",
+        ];
+        let snapshots = protected.map(fs::read);
+        let before = fixture::ip(&["-j", "route", "show", "table", "all"])?;
+        let rejected = diagnostic_command("/run/warper/bad-auth.yaml").output()?;
+        if rejected.status.code() != Some(2)
+            || !rejected.stdout.is_empty()
+            || String::from_utf8_lossy(&rejected.stderr).contains("fixture-root-password")
+        {
+            return Err("diagnostic import read a root-only credential or exposed it".into());
+        }
+        let stdout = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open("/run/warper/diagnostic.stdout")?;
+        let stderr = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open("/run/warper/diagnostic.stderr")?;
+        let mut child = diagnostic_command("/run/warper/source.yaml")
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()?;
+        let outcome = async {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if child.try_wait()?.is_some() {
+                    return Err("diagnostic exited before native capture readiness".into());
+                }
+                if String::from_utf8_lossy(&fixture::ip(&["-j", "route", "show", "198.18.0.2/32"])?)
+                    .contains(NAME)
+                {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err("diagnostic capture readiness deadline expired".into());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if Path::new("/run/warper/control.sock").exists() || cli(0, &["status"]).await?.0 {
+                return Err("diagnostic unexpectedly published a service endpoint".into());
+            }
+            let competing = Command::new("/usr/bin/timeout")
+                .args(["--kill-after=1s", "4s", DAEMON, "service"])
+                .env_clear()
+                .output()?;
+            if competing.status.success()
+                || !String::from_utf8_lossy(&competing.stderr).starts_with("Conflict:")
+            {
+                return Err("service did not respect diagnostic instance exclusion".into());
+            }
+            traffic().await?;
+            Ok::<_, Failure>(())
+        }
+        .await;
+        let mut cleanup = Vec::new();
+        if let Err(error) = stop(&mut child).await {
+            cleanup.push(error);
+        }
+        if child.try_wait()?.is_none() {
+            if let Err(error) = child.kill() {
+                cleanup.push(Box::new(error) as Failure);
+            }
+            if let Err(error) = child.wait() {
+                cleanup.push(Box::new(error) as Failure);
+            }
+        }
+        fixture::preserve(outcome, cleanup)?;
+        if fs::read("/run/warper/diagnostic.stdout")? != b"Diagnostic stopped.\n"
+            || !fs::read_to_string("/run/warper/diagnostic.stderr")?
+                .contains("diagnostic_summary retired=true admitted_flows=1")
+            || before != fixture::ip(&["-j", "route", "show", "table", "all"])?
+            || nix::net::if_::if_nameindex()?
+                .iter()
+                .any(|interface| interface.name().to_bytes() == NAME.as_bytes())
+        {
+            return Err("diagnostic did not report and restore owned networking".into());
+        }
+        for (path, snapshot) in protected.iter().zip(snapshots) {
+            if fs::read(path)? != snapshot? {
+                return Err("diagnostic changed protected managed state".into());
+            }
+        }
+        println!(
+            "PASS actual foreground diagnostic ordinary-account import, exclusive instance ownership, kernel TCP/FIN, signal cleanup and preserved managed intent"
+        );
+        Ok(())
+    }
     pub async fn exercise(mount: &str, net: &str) -> Result<(), Failure> {
         fixture::isolated(mount, net)?;
         let workers = warper_service::native::Workers::new(1)?;
@@ -695,6 +806,7 @@ mod linux {
         if before != fixture::ip(&["-j", "route", "show", "table", "all"])? {
             return Err("offline recovery changed namespace routes".into());
         }
+        foreground_diagnostic().await?;
         println!(
             "PASS actual warperd/warper owner authentication, accepted-client detach, kernel TCP/FIN, foreign denial, explicit Disconnect, failed-start rollback, active SIGTERM cleanup, SIGKILL recovery, same-boot desired restoration, persisted Disconnect, endpoint retirement and stopped-service inspection/repair"
         );

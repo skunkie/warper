@@ -745,6 +745,24 @@ cover skipped Status, unknown flags and lost acknowledgement without retry;
 actual owner-session/controller tests reject administrative recovery. The daemon
 fixture adds idle repair, connected Busy refusal, unsafe later-store validation,
 dirty configuration/connection inspection and preserved committed state. Local
-checks pass; this expanded native gate remains unverified. Evidence belongs
-under `target/evidence/phase-1/online-recovery/`. Foreground diagnostics and the
+checks pass; the [expanded native gate](https://github.com/skunkie/warper/actions/runs/41578551519)
+passes at `499451e`, including all four isolated probes with exit zero, no timeout
+and preserved host state. The full native build matrix is green. Evidence is
+under `target/evidence/phase-1/online-recovery/ci-41578551519/`. Foreground diagnostics and the
 final Phase 1 requirement/budget audit remain open.
+
+
+`warperd run` now imports through the invoking-account materializer and uses
+transient in-memory approval with the production Network supervisor. Synchronous
+bootstrap validates before mutation, rejects pending state and shares the
+service lock; it publishes no control endpoint or managed intent. Signals drain
+the engine, preserving signal-observation errors alongside shutdown failures.
+Presentation writes occur outside active forwarding, and verbose/debug summaries
+contain aggregate counts. Unsupported backend import retains its capability
+category through private IPC; ordinary materializers clear inherited capability
+sets. Local parsing/authorization/signal tests and full checks pass. The daemon
+fixture adds real foreground kernel TCP/FIN, instance exclusion, credential
+access denial and preserved managed state; this expanded native gate remains
+unverified. Evidence belongs under
+`target/evidence/phase-1/foreground-diagnostic/`. The final Phase 1 requirement,
+platform and budget audit remains open.
