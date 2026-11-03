@@ -77,7 +77,7 @@ contain no errors. Raw copies are under
 x86-64 virtual routed mechanism evidence. ARM64 builds do not establish native
 UDP routing on ARM64, and no production DNS integration is claimed.
 
-## Production connector candidate
+## Verified production connector
 
 `linux::egress::udp` now implements the retained IPv4 connector and the
 backend-neutral connected-datagram boundary. It bounds queues before a local
@@ -89,7 +89,14 @@ truncated datagrams, retained admission and a separately parked reader woken by
 the same MTU change as the TCP regression. It records a controlled workload
 with explicit process and interface-counter scope.
 
-This candidate needs its own owner-dispatched gate at its implementation
-revision. The earlier accepted binding mechanism alone does not establish
-production connector lifecycle, DNS integration or service-wide byte admission.
-Retain those results under `target/evidence/phase-2/protected-udp/`.
+The production connector passes in [CI 41618257779](https://github.com/skunkie/warper/actions/runs/41618257779)
+at `edadf71`. The inspected probe log confirms production UDP under competing
+capture, truncation, zero datagrams, retained admission and an independently
+woken idle receive with no path fallback. Its controlled 200-datagram workload
+records bytes, latency, process CPU/cumulative peak RSS and private interface
+drop deltas; these are virtual fixture measurements, not hardware performance.
+All four revision-matched probe manifests exit zero without timeout and preserve
+host state independently. Installed-unit results contain no errors. Raw copies
+are under `target/evidence/phase-2/protected-udp/ci-41618257779/`.
+DNS integration and service-wide byte admission remain open; this evidence
+establishes the scoped Linux x86-64 connector rather than Phase 2 completion.

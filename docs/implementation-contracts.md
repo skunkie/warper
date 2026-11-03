@@ -2995,6 +2995,9 @@ isolated physical fixture adds actual production-connector roundtrips, retained
 admission, oversized sends, an independently parked receive, MTU invalidation
 and failed replacement. It also records a controlled 200-datagram workload's
 latency distribution, bytes, process CPU/cumulative peak RSS and private egress
-drop deltas. Native execution requires the disposable owner-dispatched gate;
-the production connector is not claimed verified until those manifests/logs
-are inspected. ADR 0025's earlier mechanism proof does not substitute for it.
+drop deltas. Native execution passes in
+[CI 41618257779](https://github.com/skunkie/warper/actions/runs/41618257779)
+at `edadf71`, with inspected production UDP assertions, a measured controlled
+workload and all four zero-exit, no-timeout, host-preserving probe manifests.
+The installed-unit gate also passes. This establishes the Linux x86-64
+connector boundary; DNS integration and service-wide byte admission remain open.
