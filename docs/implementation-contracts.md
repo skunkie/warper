@@ -3037,6 +3037,7 @@ charges, valid negatives, malformed/truncated datagrams, foreign permits,
 oversized-query TCP selection and a delayed UDP reply followed by stalled TCP
 without deadline renewal. The native physical fixture adds 100 actual protected
 UDP/TCP DNS exchanges under competing capture, with source/query validation,
-one-slot admission, two charged attempts and a controlled workload. Its native
-gate must pass before that composition is claimed verified. This is transport
-evidence; endpoint/lease publication and daemon DNS readiness remain open.
+one-slot admission, two charged attempts and a controlled workload. The native
+composition passes in [CI 41671110746](https://github.com/skunkie/warper/actions/runs/41671110746)
+at `b8e8c52`, including inspected workload and isolated cleanup evidence.
+This is transport evidence; endpoint/lease publication and daemon DNS readiness remain open.
