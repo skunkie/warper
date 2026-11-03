@@ -2828,7 +2828,9 @@ volume and control admission. It does not retain payloads or configuration.
 `warperd service` and `warperd run` share network-supervisor transition events.
 The current-thread runtime installs the scoped dispatcher; native blocking
 workers do not emit lifecycle events. The executable writes the ordered tail
-and loss count only after the command returns and networking owners are released.
+and loss count only after the command returns and its asynchronous forwarding runtime stops.
+Uncertain native cleanup may still retain ownership and recovery obligations;
+writing diagnostics does not establish successful retirement.
 It preserves the primary error/exit classification if the diagnostic writer also
 fails; a writer failure after operational success produces a failure exit.
 Presentation may wait after shutdown, never during forwarding. This is shutdown

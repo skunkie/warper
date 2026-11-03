@@ -6,43 +6,18 @@ SPDX-License-Identifier: MIT
 
 # Implementation Status
 
-Phase 0 Linux role evidence includes integrated host-runtime PMTU; the
-required expanded host gate also runs genuine router transitions. [ADR 0002](adr/0002-network-stack.md)
-selects direct smoltcp role adapters and BoringTun within their declared
-limits. Both full role gates have real controlled-peer and independent
-cleanup evidence. This does not establish a production networking service
-or native macOS support. Phase 1 has begun with backend-independent static
-CIDR policy, offline paths, bounded YAML/schema validation and the check-config
-CLI. Linux kernel peer checks and owner/root authorization are implemented as a
-control boundary with mandatory initial-user-namespace admission. A bounded versioned
-frame codec now carries version-2 lifecycle revision/instance fences, validates
-before allocation and bounds total I/O with deadlines
-and cancellation. A production SOCKS5 TCP
-adapter now uses the promoted core TCP boundary with bounded negotiation,
-credential handling and stream admission. A production host TCP adapter and
-wake-driven runtime now preserve core metadata and half-close with bounded
-queues, native Linux seeds and retained-stream accounting (ADR 0012).
-Pure service preparation now validates the narrow static IPv4 capability and
-payload budget before composing the real adapters. Scoped physical protection
-and journaled capture now have native traffic and recovery evidence. The native
-controller and foreground service composition are implemented. The actual daemon/CLI native traffic and lifecycle gates, administrative CLI,
-source systemd installation and stopped-service recovery now have native
-evidence. Online recovery and foreground diagnostics now also have native
-evidence; the final requirement audit remains open.
-A fixed Linux runtime-directory lease pins protected state and holds the
-persistent nonblocking network-instance lock. The endpoint adapter now performs
-intent-backed publication, kernel-authorized acceptance and explicit owned
-retirement. A protected owner store supplies administrative revisioned snapshots.
-Real privileged CI now verifies root ownership/enrollment, owner/foreign peers
-and endpoint retirement; explicit pending inspection/discard preserves committed enrollment, with
-service integration covered by the daemon fixture. Linux client endpoint
-admission now pins protected state and verifies a real root peer before exposing
-a bounded connection. A bounded service relay set now retains/joins TCP workers independently of
-clients, enforcing selected-backend setup, idle/absolute expiry and cancellation.
-A Linux durable connection store now records accepted intent with native boot
-and instance IDs, revision/operation fences, explicit resync and pending discard;
-actual daemon/CLI lifecycle acceptance now has privileged CI evidence. A foreground
-`warperd service` executable now composes the native controller and supervisor.
+Phase 0 feasibility and Phase 1's headless Linux service slice are complete.
+The service and authenticated CLI forward static IPv4/SOCKS5 TCP through a
+journaled, acknowledged TUN lifecycle. Administrative enrollment/import,
+managed boot intent, online/offline recovery, foreground diagnostics and source
+systemd installation have controlled native evidence. The final
+[requirement and resource audit](phase-1-acceptance.md) maps every Phase 1
+increment and exit to implementation, tests and inspected artifacts.
+
+This is not a cross-platform release. Production DNS discovery, SSH/WireGuard,
+IPv6, native macOS networking and Tauri remain later phases. Native ARM64 builds
+are tested; privileged networking/systemd acceptance currently covers disposable
+Linux x86-64 only. Phase 2's production DNS/route transaction gate is next.
 
 ## Phase Ledger
 
@@ -51,7 +26,7 @@ actual daemon/CLI lifecycle acceptance now has privileged CI evidence. A foregro
 | Development infrastructure | Available | `scripts/check.sh`: licensing, actionlint with ShellCheck, composite validation, Python harness tests, Rust formatting/Clippy/rustdoc/tests/release and dependency policy |
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
-| 1: Headless Linux service slice | In progress | The actual foreground daemon and authenticated CLI forward controlled kernel TCP/FIN through service-owned static IPv4 capture and SOCKS5. Privileged evidence covers owner/foreign authorization, detached clients, explicit Disconnect, failed-start rollback, active SIGTERM, SIGKILL/restart, same-boot intent restoration and persisted Disconnect. Administrative import/enrollment, source systemd installation and stopped-service inspection/repair have native evidence. The full CI matrix passes at `c3b5721`; evidence is under `target/evidence/phase-1/`, with detailed gate locations below. Online recovery and foreground diagnostics pass the full CI matrix at `a681d6a`. Next: close the logging gap and final requirement/budget audit against section 8.4. |
+| 1: Headless Linux service slice | Complete for the verified Linux slice | [Closure audit](phase-1-acceptance.md): actual application TCP/FIN through selected SOCKS5/TUN, failed-start restoration, detached clients, explicit Down, authorization, bounded ownership, recovery, equivalent diagnostics and installed systemd lifecycle. Full native matrix and all privileged gates pass at `687b293` in [CI 41597810149](https://github.com/skunkie/warper/actions/runs/41597810149). Inspected evidence is under `target/evidence/phase-1/lifecycle-tracing/`. Linux ARM64 privileged acceptance and native macOS networking are not claimed. |
 | 2: Linux DNS and routing | Not started | Production DNS parsing/transport, complete service-binding dependency gates, response handoff, route leases, retained-state admission and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
@@ -770,34 +745,34 @@ The final Phase 1 requirement, platform and budget audit remains open.
 
 ## Phase 1 Closure Audit
 
-The actual daemon and foreground diagnostic now satisfy the controlled
-static IPv4/SOCKS5 traffic and lifecycle exit scenarios. Online and stopped-
-service recovery also have native evidence. Phase 1 remains open while the
-engineering and definition-of-done audit is completed: the planned `tracing`
-integration is absent, despite typed/redacted diagnostics being implemented.
-UI log delivery remains Phase 5 work; no GUI log stream is claimed.
+The [requirement-by-requirement audit](phase-1-acceptance.md) closes the
+headless Linux slice against the roadmap, exit criteria and section 8.4.
+The final tracing implementation uses the already-locked `tracing` version and
+retains at most 64 fixed lifecycle names, no event fields or payloads. It counts
+contention/overflow without blocking forwarding and flushes after the command
+returns. Desktop log streaming remains Phase 5 work.
 
-Native build/test jobs cover Linux x86-64/ARM64 and macOS ARM64. Privileged
-networking and installed-systemd acceptance currently run on disposable Linux
-x86-64 runners. ARM64 privileged networking and native macOS networking are
-not established by those jobs. Full DNS, SSH/WireGuard, IPv6 and desktop
-acceptance remain assigned to their later phases.
+The [final implementation gate](https://github.com/skunkie/warper/actions/runs/41597810149)
+at `687b293` passes all native build/test jobs, privileged control/TUN/crash/daemon
+fixtures and installed-systemd acceptance. All four probe manifests identify that
+revision, exit zero, no timeout and preserved host state. The daemon fixture
+checks actual lifecycle trace output in service and diagnostic modes as well as
+real TCP/FIN, owner/foreign authorization, detached clients, explicit Down,
+failed-start rollback, active TERM, KILL/restart, persisted intent and recovery.
+The installed-unit result reports no errors. Inspected local artifacts are under
+`target/evidence/phase-1/lifecycle-tracing/ci-41597810149/` and
+`target/evidence/phase-1/lifecycle-tracing/systemd-ci-41597810149/`.
 
-Payload admission in `preflight::Plan::prepare` checked-adds stack/runtime,
-relay, TUN I/O, backend-setup and credential capacity before allocation and
-network mutation. It caps backend and static-route counts, and clamps flow
-slots to the supported stack capacity. This payload budget is not a total RSS
-limit. Control byte admission, bounded daemon channels/client tasks/notices,
-native worker admission, managed snapshot limits and operation history are
-separate resource owners that must remain part of the final audit.
+The resource audit distinguishes payload capacity from control byte admission,
+bounded task/channel/native-worker metadata, snapshot/journal limits, operation
+history and lifecycle tracing. It does not claim a total RSS cap. Local full
+checks and focused tracing coverage/boundary tests pass. Disabled tracing span
+callbacks and poisoned-lock defenses are not established by local coverage;
+actual network transitions are established by the separate native gate.
 
-
-Lifecycle tracing now uses the already-locked `tracing` version with a scoped,
-64-event subscriber. Only fixed event names survive; arbitrary fields, spans,
-unknown targets/names are discarded. Recording never waits for a lock or performs
-I/O; contention and overwritten entries are counted. Service and diagnostic modes
-flush after networking owners return, preserving the original failure category
-if output also fails. Local tests cover overflow, redaction, contention and writer
-failure; expanded daemon acceptance checks both modes' real transition output.
-Native evidence for this change is pending. Phase 1 remains open for that evidence
-and completion of the closure audit.
+No required Phase 1 increment remains open. Phase 2 must implement production
+DNS transports, bounded retained lease/cache state, route publication and resolver
+integration before claiming DNS discovery. Required SSH/WireGuard/IPv6, macOS
+and desktop/release acceptance remain open in their assigned phases. The older
+increment notes above record the constraints at those increments; the ledger
+and closure audit describe current status.

@@ -270,8 +270,9 @@ stderr; foreground mode is a development/recovery tool rather than the main UX.
 ### 6.2 Tauri Desktop
 
 Replace the terminal UI with a Tauri 2 client. Provide first-run service
-registration/approval, existing YAML import or guided configuration, Connect/
-Disconnect, explicit startup preference, and health/traffic/routes/flows/logs.
+registration/approval, guided configuration forms with review before Apply,
+Connect/Disconnect, explicit startup preference, and health/traffic/routes/flows/
+logs. Keep YAML import in the native CLI; offer no desktop YAML upload or editor.
 Closing the window or quitting the desktop does not disconnect. Version
 mismatch, recovery required, stale observations, DNS restrictions, and missing
 SSH trust have distinct actionable states.
