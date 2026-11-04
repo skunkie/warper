@@ -286,6 +286,9 @@ impl Controller {
     pub fn stats(&self) -> Result<Stats, Error> {
         Ok(self.routes.lock()?.ledger.stats())
     }
+    pub fn is_closed(&self) -> Result<bool, Error> {
+        Ok(self.routes.lock()?.closed)
+    }
     pub fn reserved_bytes(&self) -> Result<usize, Error> {
         Ok(self.stats()?.reserved_bytes + self.overhead)
     }

@@ -169,6 +169,20 @@ completion observation, and destruction of partial output before cancellation.
 Evidence belongs under `target/evidence/phase-2/output-completion/`. These
 establish output ownership policy, not native listener/route/output integration.
 
+The concrete Linux route coordinator now owns accepted response commits,
+retirements and retained native workers. It preflights the complete address set,
+joins each native result before metadata application, and keeps work/device
+ownership through cancelled observation. Known unmutated rejection preserves
+session usability; post-intent failure closes admission and retains cleanup
+authority. Its native fixture includes protected/special-address rejection,
+queued-worker cancellation, zero-TTL framed output followed by a selected TUN
+TCP flow, deferred retirement, partial commit rollback and post-intent
+cancellation observed through the protected journal. Evidence belongs under
+`target/evidence/phase-2/route-coordinator/`; those native cases remain unverified
+until the exact-commit disposable CI artifacts pass. Daemon scheduling of this
+coordinator, listeners, global transient admission, capacity alignment, TTL
+aging and resolver integration remain required before enabling DNS.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

@@ -3255,6 +3255,47 @@ retained leases before native cleanup. These are ownership transitions;
 actual listener/writer integration, TTL aging and native output gates remain
 required before daemon DNS can be enabled.
 
+### Serialized Linux DNS route coordinator
+
+The service's Linux DNS route coordinator owns one original TUN owner and at
+most one accepted commit or retirement. Construction validates the runtime's
+selector identity, preallocates bounded route scratch and endpoint exclusions,
+and validates their byte reservation before taking native ownership. The caller
+supplies every preserved physical backend/direct-DNS endpoint exclusion. The
+reported reservation covers coordinator-owned structures and capacities;
+existing native-owner, allocator and admitted-worker overhead remain separately
+bounded. No queue or task is spawned for the coordinator itself.
+
+A commit takes the complete pending response. Validate every address's native
+capture eligibility, backend, family and exclusion before the first mutation.
+Publish/verify each route with
+the retained native worker, then apply its metadata commit exactly once after
+joining the worker. A known native result waiting for metadata admission cannot
+be replayed. Only the complete successful set returns its pending response for
+pre-I/O output authorization. Cancellation/deadline before another native step
+fails that response without giving output permission; unreferenced additions
+remain owned until checked retirement. Active-flow references survive that
+rollback.
+
+Caller observation uses a separate wait request. Cancelling/dropping a wait
+leaves the accepted operation, response, native job and original device retained
+for resumed observation or supervised shutdown. The original operation request
+still bounds each native step. Retirement checks zero references before moving
+the owner into a worker, and releases metadata only after joined native absence
+or retained-static-coverage proof. Definitively unmutated rejected retirements
+remain a bounded deferred candidate for the next maintenance attempt.
+IPv4 addresses rejected before publication still receive checked-absence
+retirement, so an unsupported answer cannot strand unreferenced metadata.
+
+An unchanged successful journal revision around an operation proves no intent
+or mutation was attempted. Only typed pre-mutation rejections with a quiet
+retained capture monitor may leave the session usable. Post-intent/uncertain
+failure, lost ownership or invalid capture closes routing admission and retains
+the owner for whole-session cleanup. Preserve the primary error alongside
+capture-validation/closure failures. Native ownership cannot be released while
+an accepted operation or worker remains. Caller supervision still owns expiry
+notifications, DNS output tasks, packet/flow draining and actual daemon wiring.
+
 ### Live route selection and TCP flow pins
 
 `warper_core::routing::FlowSelector` separates immutable static policy from

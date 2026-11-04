@@ -96,9 +96,6 @@ impl Plan {
     }
     pub(super) fn without_host(&self, address: Ipv4Addr) -> Result<(Option<Self>, bool), Error> {
         self.validate()?;
-        if !super::record::valid_address(address) {
-            return Err(Error::InvalidCapturePolicy);
-        }
         let mut remaining = self.clone();
         let position = remaining
             .prefixes
@@ -437,10 +434,12 @@ mod tests {
         let (empty, removed) = single.without_host(single.prefixes[0].network).unwrap();
         assert!(removed);
         assert!(empty.is_none());
-        assert!(matches!(
-            single.without_host(Ipv4Addr::UNSPECIFIED),
-            Err(Error::InvalidCapturePolicy)
-        ));
+        let (unchanged, removed) = single.without_host(Ipv4Addr::UNSPECIFIED).unwrap();
+        assert!(
+            !removed,
+            "an address rejected before publication still needs checked absence cleanup"
+        );
+        assert!(unchanged.unwrap() == single);
         let mut invalid = previous;
         invalid.prefixes.reverse();
         assert!(matches!(

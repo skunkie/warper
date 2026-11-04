@@ -4,7 +4,7 @@
 
 //! Withdraw a retired DNS host while preserving unrelated live capture.
 
-use super::{Error, Owner, Stage, capture, capture_cause, record, transaction};
+use super::{Error, Owner, Stage, capture, capture_cause, transaction};
 use std::net::{IpAddr, Ipv4Addr};
 use warper_core::{BackendId, transport::Request};
 use warper_stack::runtime::Publication;
@@ -22,9 +22,6 @@ impl Owner {
     ) -> Result<(), Error> {
         if !matches!(self.record.stage, Stage::Enabled | Stage::Captured) || !self.port_issued {
             return Err(Error::InvalidState);
-        }
-        if !record::valid_address(address) {
-            return Err(Error::InvalidCapturePolicy);
         }
         let wait = transaction::Wait::new(request.clone()).map_err(capture_cause)?;
         self.ready()?;

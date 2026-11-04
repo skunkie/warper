@@ -1140,6 +1140,27 @@ exchange; whole-workload time includes setup and conflict checks, and RSS
 includes prior scopes. This is a controlled retirement/continuity workload,
 not sustained forwarding throughput or integrated DNS response acceptance.
 
+The route-coordinator scope uses a nested runtime with one blocking thread.
+A bounded fixture gate queues a real native worker, then drops/cancels its
+observer and verifies that the operation, reservation and original TUN remain
+owned. Resumed observation joins that same operation before a controlled
+kernel TCP DNS peer receives a framed zero-TTL answer; a real TUN TCP flow then
+verifies the selected backend and bytes within route grace. The DNS peer is a
+fixture, not the production TUN DNS listener or system resolver integration.
+
+It checks whole-response protected/special-address rejection, a definitively
+unmutated deferred retirement, and rollback after one committed address meets
+a foreign-key conflict. A bounded protected-journal observer cancels a real
+operation after Routing intent to exercise admission closure and checked
+whole-session cleanup. No production pause hook or live resolver mutation is
+used. The `route_coordinator` row records 20 cancelled-reply commit/retire cycle
+latencies, total elapsed/process CPU time, process peak RSS, fixed coordinator
+reserved bytes, the selected flow's 32 application bytes, and adapter drops.
+Cycle latency excludes the separate reply/grace and fault scopes; overall time
+and peak RSS include fixture work. This is native transaction composition,
+not a sustained forwarding or full DNS-mode benchmark. Only run through the
+existing disposable `control_acceptance.py` namespace/VM harness.
+
 The control fixture also exercises the fixed root-owned `/etc/warper` managed
 slot in its private `/etc` mount: generation fencing, ordinary owner/foreign
 read denial, reopened state, pending-token separation from the network journal

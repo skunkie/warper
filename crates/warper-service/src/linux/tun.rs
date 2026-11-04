@@ -650,6 +650,31 @@ impl Owner {
     pub fn index(&self) -> Option<u32> {
         self.identity.as_ref().map(|identity| identity.index)
     }
+    pub(super) fn coordinator_ready(
+        &self,
+        publication: &warper_stack::runtime::Publication,
+    ) -> bool {
+        !self.failed
+            && self.port_issued
+            && match self.record.stage {
+                Stage::Enabled => {
+                    self.record.capture.is_none() && self.capture_publication.is_none()
+                }
+                Stage::Captured => {
+                    self.record.capture.is_some()
+                        && self
+                            .capture_publication
+                            .as_ref()
+                            .is_some_and(|current| current.same_runtime(publication))
+                }
+                _ => false,
+            }
+    }
+    /// A matching successful revision around one capture operation proves no
+    /// intent or external mutation was attempted. It is not kernel readiness.
+    pub(super) fn capture_revision(&self) -> Option<u64> {
+        (!self.failed).then_some(self.revision)
+    }
     fn ready(&self) -> Result<(), Error> {
         if self.failed {
             return Err(Error::RecoveryRequired);
@@ -731,6 +756,10 @@ fn capture_cause(cause: NativeCause) -> Error {
         delivery: NativeDelivery::NotSent,
         cause,
     })
+}
+
+pub(super) fn valid_capture_address(address: Ipv4Addr) -> bool {
+    record::valid_address(address)
 }
 
 fn native_error(error: io::Error) -> Error {

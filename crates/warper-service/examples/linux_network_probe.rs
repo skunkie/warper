@@ -39,6 +39,7 @@ mod linux {
     mod live_routes;
     mod physical;
     mod process_owner;
+    mod route_coordinator;
     mod supervised_network;
 
     pub fn configuration_peer() -> Result<(), Failure> {
@@ -1222,6 +1223,7 @@ mod linux {
             println!("PASS journaled TUN packet port, collision preservation, explicit retirement and joined peers");
             live_routes::exercise(context.clone()).await?;
             host_retirement::exercise(context.clone()).await?;
+            route_coordinator::exercise(context.clone(),runtime_lease.clone()).await?;
             supervised_network::exercise(context.clone(),runtime_lease.clone()).await?;
             controller_dispatch::exercise(runtime_lease.clone()).await?;
             Ok(())

@@ -13,6 +13,7 @@ pub mod context;
 pub mod controller;
 pub mod daemon;
 pub mod diagnostic;
+pub mod dns_routes;
 pub mod egress;
 pub mod link_lookup;
 mod netlink;

@@ -47,6 +47,10 @@ impl Publication {
     pub fn entries(&self) -> &[Entry] {
         self.policy.static_policy().entries()
     }
+    /// Provider identity only, without granting native readiness or authority.
+    pub fn uses_selector(&self, selector: &Arc<dyn FlowSelector>) -> bool {
+        Arc::ptr_eq(&self.policy, selector)
+    }
     /// Observe this runtime's live mapping without admitting a flow. This is
     /// handler identity, not native publication or network readiness.
     pub fn selected_backend(&self, address: std::net::IpAddr) -> Result<BackendId, SelectionError> {
