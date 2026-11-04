@@ -15,10 +15,10 @@ fn limits() -> lease::Limits {
         bytes: 128 * 1024,
     }
 }
-fn address() -> IpAddr {
+pub(super) fn address() -> IpAddr {
     "192.0.2.9".parse().unwrap()
 }
-fn key(backend: u64) -> QuestionKey {
+pub(super) fn key(backend: u64) -> QuestionKey {
     QuestionKey {
         backend: BackendId(backend),
         name: Name::from_ascii("sample.example.test").unwrap(),
@@ -26,7 +26,7 @@ fn key(backend: u64) -> QuestionKey {
         class: 1,
     }
 }
-fn create(entries: &[Entry]) -> Controller {
+pub(super) fn create(entries: &[Entry]) -> Controller {
     Controller::new(
         Arc::new(Policy::new(entries, 8).unwrap()),
         limits(),

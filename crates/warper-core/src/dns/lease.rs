@@ -144,11 +144,20 @@ impl Drop for Handle {
 }
 #[must_use = "retain through output, then hand off or cancel; Drop schedules cancellation"]
 pub struct Response(Handle);
+/// Authorization minted before output starts. Its pending references remain
+/// live until completed delivery is finalized or the destroyed I/O is cancelled.
+#[must_use = "retain through actual output I/O and finalize successful delivery"]
+pub struct Output(Handle);
 #[must_use = "retain until the actual flow is destroyed; Drop schedules release"]
 pub struct Flow(Handle);
 impl fmt::Debug for Response {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("Response([redacted])")
+    }
+}
+impl fmt::Debug for Output {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Output([redacted])")
     }
 }
 impl fmt::Debug for Flow {
@@ -447,13 +456,40 @@ impl Ledger {
         self.compact_indexes()
     }
 
+    /// Atomic authorization and retention at one clock observation. Asynchronous
+    /// output owners must use `begin_output` before I/O and `complete_output`
+    /// after successful delivery instead of checking the deadline after writing.
     pub fn handoff(
         &mut self,
         now: Duration,
         response: &mut Response,
         grace: Duration,
     ) -> Result<(), Error> {
-        let pending = self.response(response)?;
+        self.authorize_output(now, &response.0)?;
+        self.finish_output(now, &mut response.0, grace)
+    }
+
+    /// Authorize before any positive output bytes are written. On failure the
+    /// consumed response schedules cancellation; no output may have started.
+    pub fn begin_output(&mut self, now: Duration, response: Response) -> Result<Output, Error> {
+        self.authorize_output(now, &response.0)?;
+        Ok(Output(response.0))
+    }
+
+    /// Call only after the complete positive message has been handed to I/O.
+    /// Late observation, closure or uncertainty cannot erase its grace lease.
+    /// Errors leave this guard pending; retain it while surfacing the failure.
+    pub fn complete_output(
+        &mut self,
+        now: Duration,
+        output: &mut Output,
+        grace: Duration,
+    ) -> Result<(), Error> {
+        self.finish_output(now, &mut output.0, grace)
+    }
+
+    fn authorize_output(&mut self, now: Duration, handle: &Handle) -> Result<(), Error> {
+        let pending = self.pending_response(handle)?;
         self.advance(now)?;
         if self.closed {
             return Err(Error::Closed);
@@ -461,19 +497,33 @@ impl Ledger {
         if now >= pending.deadline {
             return Err(Error::Expired);
         }
-        let grace_until = now.checked_add(grace).ok_or(Error::InvalidTime)?;
-        let start = response.0.slot * self.limits.addresses_per_response;
+        let start = handle.slot * self.limits.addresses_per_response;
         for entry in &self.entries[start..start + pending.count] {
             let lease = self.leases[entry.lease]
                 .as_ref()
                 .ok_or(Error::InvalidHandle)?;
-            let owner = self.owners[lease.route]
+            if self.owners[lease.route]
                 .as_ref()
-                .ok_or(Error::InvalidHandle)?;
-            if owner.publication != Publication::Committed {
+                .ok_or(Error::InvalidHandle)?
+                .publication
+                != Publication::Committed
+            {
                 return Err(Error::NotCommitted);
             }
         }
+        Ok(())
+    }
+
+    fn finish_output(
+        &mut self,
+        now: Duration,
+        handle: &mut Handle,
+        grace: Duration,
+    ) -> Result<(), Error> {
+        let pending = self.pending_response(handle)?;
+        self.advance(now)?;
+        let grace_until = now.checked_add(grace).ok_or(Error::InvalidTime)?;
+        let start = handle.slot * self.limits.addresses_per_response;
         for entry in &self.entries[start..start + pending.count] {
             let lease = self.leases[entry.lease]
                 .as_mut()
@@ -488,8 +538,8 @@ impl Ledger {
                 );
             }
         }
-        self.release_response(response.0.slot)?;
-        response.0.id = 0;
+        self.release_response(handle.slot)?;
+        handle.id = 0;
         self.reclaim_leases()?;
         Ok(())
     }
@@ -746,11 +796,14 @@ impl Ledger {
         Ok(count)
     }
     fn response(&self, response: &Response) -> Result<Pending, Error> {
-        self.handle(&response.0)?;
+        self.pending_response(&response.0)
+    }
+    fn pending_response(&self, handle: &Handle) -> Result<Pending, Error> {
+        self.handle(handle)?;
         self.pending
-            .get(response.0.slot)
+            .get(handle.slot)
             .and_then(|pending| *pending)
-            .filter(|pending| pending.id == response.0.id)
+            .filter(|pending| pending.id == handle.id)
             .ok_or(Error::InvalidHandle)
     }
     fn handle(&self, handle: &Handle) -> Result<(), Error> {
@@ -987,7 +1040,10 @@ fn fixed_bytes(limits: Limits) -> Result<usize, Error> {
         - 1
         + size_of_val(&notify.notified());
     for (count, size) in [
-        (limits.response_entries, size_of::<Response>()),
+        (
+            limits.response_entries,
+            size_of::<Response>().max(size_of::<Output>()),
+        ),
         (limits.flow_entries, size_of::<Flow>()),
     ] {
         bytes = bytes
@@ -1012,5 +1068,7 @@ fn free_slots(length: usize) -> Result<Vec<usize>, Error> {
     })
 }
 
+#[cfg(test)]
+mod output_tests;
 #[cfg(test)]
 mod tests;

@@ -4,10 +4,10 @@
 
 use super::*;
 
-fn seconds(value: u64) -> Duration {
+pub(super) fn seconds(value: u64) -> Duration {
     Duration::from_secs(value)
 }
-fn limits() -> Limits {
+pub(super) fn limits() -> Limits {
     Limits {
         lease_entries: 8,
         route_entries: 8,
@@ -17,7 +17,7 @@ fn limits() -> Limits {
         bytes: 128 * 1024,
     }
 }
-fn question(label: &str, backend: u64) -> QuestionKey {
+pub(super) fn question(label: &str, backend: u64) -> QuestionKey {
     QuestionKey {
         backend: BackendId(backend),
         name: Name::from_ascii(&format!("{label}.example.test")).unwrap(),
@@ -25,18 +25,22 @@ fn question(label: &str, backend: u64) -> QuestionKey {
         class: 1,
     }
 }
-fn endpoint(last: u8, expires: u64) -> Contribution {
+pub(super) fn endpoint(last: u8, expires: u64) -> Contribution {
     Contribution {
         address: IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, last)),
         expires_at: seconds(expires),
     }
 }
-fn reserve(ledger: &mut Ledger, question: QuestionKey, endpoints: &[Contribution]) -> Response {
+pub(super) fn reserve(
+    ledger: &mut Ledger,
+    question: QuestionKey,
+    endpoints: &[Contribution],
+) -> Response {
     ledger
         .reserve(Duration::ZERO, question, endpoints, seconds(100))
         .unwrap()
 }
-fn publish(ledger: &mut Ledger, response: &Response) -> Vec<Route> {
+pub(super) fn publish(ledger: &mut Ledger, response: &Response) -> Vec<Route> {
     let routes = (0..ledger.response_len(response).unwrap())
         .map(|index| ledger.response_route(response, index).unwrap())
         .collect::<Vec<_>>();
@@ -711,10 +715,11 @@ fn lease_renewal_workload() {
         .map(|index| question(&format!("name{index}"), 1))
         .collect::<Vec<_>>();
     for key in &keys {
-        let mut response = reserve(&mut ledger, *key, &[endpoint(1, 1000)]);
+        let response = reserve(&mut ledger, *key, &[endpoint(1, 1000)]);
         publish(&mut ledger, &response);
+        let mut output = ledger.begin_output(Duration::ZERO, response).unwrap();
         ledger
-            .handoff(Duration::ZERO, &mut response, seconds(30))
+            .complete_output(Duration::ZERO, &mut output, seconds(30))
             .unwrap();
     }
     let before = ledger.stats();
@@ -723,9 +728,10 @@ fn lease_renewal_workload() {
     for index in 0..1000 {
         let started = std::time::Instant::now();
         let key = keys[index * 7919 % keys.len()];
-        let mut response = reserve(&mut ledger, key, &[endpoint(1, 2000)]);
+        let response = reserve(&mut ledger, key, &[endpoint(1, 2000)]);
+        let mut output = ledger.begin_output(Duration::ZERO, response).unwrap();
         ledger
-            .handoff(Duration::ZERO, &mut response, seconds(30))
+            .complete_output(Duration::ZERO, &mut output, seconds(30))
             .unwrap();
         latencies.push(started.elapsed().as_nanos());
     }

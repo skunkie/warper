@@ -186,6 +186,24 @@ impl Controller {
             .handoff(self.routes.now()?, response, grace)
             .map_err(Error::Ledger)
     }
+    pub fn begin_output(&self, response: Response) -> Result<lease::Output, Error> {
+        self.routes
+            .lock()?
+            .ledger
+            .begin_output(self.routes.now()?, response)
+            .map_err(Error::Ledger)
+    }
+    pub fn complete_output(
+        &self,
+        output: &mut lease::Output,
+        grace: Duration,
+    ) -> Result<(), Error> {
+        self.routes
+            .lock()?
+            .ledger
+            .complete_output(self.routes.now()?, output, grace)
+            .map_err(Error::Ledger)
+    }
     pub fn cancel(&self, response: &mut Response) -> Result<(), Error> {
         self.routes
             .lock()?
@@ -390,5 +408,7 @@ impl FlowSelector for LiveRoutes {
     }
 }
 
+#[cfg(test)]
+mod output_tests;
 #[cfg(test)]
 mod tests;

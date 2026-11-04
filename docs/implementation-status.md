@@ -152,10 +152,22 @@ Controller tests cover references, backend mismatch, contention and quiescence.
 The disposable fixture keeps a real TUN TCP flow open across 20 retire/reassign
 cycles on another address, then checks final-key removal, idempotence, static
 coverage and a changed-key conflict with joined cleanup. Evidence belongs under
-`target/evidence/phase-2/host-retirement/`; that native scope remains unverified
-until its exact-commit CI artifacts pass. The supervised DNS route actor,
+`target/evidence/phase-2/host-retirement/`. That native scope passes the
+[exact-commit gate](https://github.com/skunkie/warper/actions/runs/41746942012),
+including 20 retire/reassign cycles and zero adapter drops. All four isolated
+probe manifests report preserved host state; installed-unit acceptance reports
+no errors. The supervised DNS route actor,
 listener/output ownership and resolver policy still require integration and
 native acceptance before daemon DNS becomes available.
+
+DNS output now has separate pre-I/O authorization and successful-delivery
+completion transitions. The opaque output guard retains pending references
+across deadline expiry and delayed completion; finalized delivery receives full
+grace without reopening closed/uncertain routing admission. Controlled framed
+duplex tests verify unchanged zero TTL, first-flow protection after a delayed
+completion observation, and destruction of partial output before cancellation.
+Evidence belongs under `target/evidence/phase-2/output-completion/`. These
+establish output ownership policy, not native listener/route/output integration.
 
 ## Phase 0 Exit Evidence
 

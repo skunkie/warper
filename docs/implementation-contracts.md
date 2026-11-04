@@ -3186,8 +3186,8 @@ await without retaining a ledger borrow or lock. `advance(now)` reclaims those r
 leases with bounded scans. Every time-bearing operation advances the same
 monotonic elapsed clock; backward time is rejected. Live pending output never
 expires merely because its deadline passes: cancellation must first destroy
-its I/O owner, then drop/cancel the response handle. Handoff refuses expired
-requests. Successful handoff checks every address's committed publication,
+its I/O owner, then drop/cancel the response handle. Synchronous `handoff`
+refuses expired requests. Successful handoff checks every address's committed publication,
 then atomically exchanges pending references for retention through the greater
 of original expiry or `now + grace`, without shortening prior retention.
 Dropping/cancelling a response creates no grace lease.
@@ -3222,6 +3222,38 @@ performs checked retirement. `close` rejects new reservations, flow admission
 and handoff. After external DNS withdrawal and output/flow cancellation/join,
 `finish_drain` clears timed leases; it refuses live references and retains every
 address owner for native withdrawal. It does not report completed Disconnect.
+
+### DNS output authorization and delayed completion
+
+[ADR 0027](adr/0027-dns-output-completion.md) separates asynchronous output
+authorization from successful-delivery finalization. `begin_output(now,
+response)` consumes one pending response and validates its original deadline,
+open admission and every committed route before any positive byte is written.
+It returns one opaque non-cloneable `lease::Output` carrying the same pending
+reference; it allocates no additional slot or timer. The byte budget charges the
+larger of the response/output handle layouts for each pending slot.
+
+After complete message delivery, `complete_output(now, output, grace)` exchanges
+pending ownership for retention through at least `now + grace`, preserving any
+longer original expiry or prior retention. It does not reapply the request
+deadline: delivery may already have occurred before completion is observed.
+Existing authorized output can also finalize after admission closes or native
+publication becomes uncertain. This grants no new I/O permission and never
+restores route readiness. Reapplying those checks after delivery would erase
+the first-connection grace of an answer the client already received.
+
+The service controller exposes both transitions with its shared monotonic
+clock. A writer must keep its pending output owned during partial I/O and
+completion processing. Every I/O poll still uses the original request deadline
+and cancellation; output authorization never renews them.
+Destroy/join failed or cancelled I/O before dropping
+the guard; incomplete output creates no grace. After successful delivery,
+retain the guard through metadata contention/errors and finalization, rather
+than treating a late completion as undelivered cancellation. Session shutdown
+still closes admission, destroys/joins output owners, and explicitly drains
+retained leases before native cleanup. These are ownership transitions;
+actual listener/writer integration, TTL aging and native output gates remain
+required before daemon DNS can be enabled.
 
 ### Live route selection and TCP flow pins
 
