@@ -1775,6 +1775,11 @@ physical-path protection or mutation authority.
 
 Each retained future owns a nonblocking close-on-exec socket, a unique
 process-local sequence, at most 128 request bytes and 32769 receive bytes.
+The receive buffer uses fallibly allocated heap storage with exactly the
+reserved capacity, prepared before socket creation or send. Receive still
+borrows a fixed slice, so `BufMut` cannot grow it. Route/link query futures
+retain at most 16 KiB inline, independently of the datagram reservation, to
+bound stack use when composed into protected connections.
 Strict kernel input checking is mandatory; the verified kernel receive queue is
 at most 64 KiB including Linux bookkeeping doubling. The
 extra receive byte rejects oversized/truncated datagrams. Parsing allocations

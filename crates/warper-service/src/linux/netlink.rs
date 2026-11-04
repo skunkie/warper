@@ -87,6 +87,17 @@ pub(super) async fn bounded<T>(
 pub(super) async fn exchange(
     message: RouteNetlinkMessage,
 ) -> Result<RouteNetlinkMessage, QueryError> {
+    // Keep the bounded datagram out of nested async caller stack frames.
+    // Allocate before socket creation/send and fail without starting I/O if
+    // the allocation cannot fit the promised receive-byte reservation.
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(MAX_DATAGRAM + 1)
+        .map_err(|_| QueryError::ResourceLimit)?;
+    if buffer.capacity() != MAX_DATAGRAM + 1 {
+        return Err(QueryError::ResourceLimit);
+    }
+    buffer.resize(MAX_DATAGRAM + 1, 0);
     let sequence = sequence()?;
     let (socket, port) = socket(0).map_err(|error| match error {
         Error::Io(error) => socket_error(error),
@@ -102,7 +113,6 @@ pub(super) async fn exchange(
     }
     // A fixed slice cannot grow through BufMut. The extra byte makes every
     // oversized/truncated datagram fail closed, even if its prefix is valid.
-    let mut buffer = [0; MAX_DATAGRAM + 1];
     let mut remaining = &mut buffer[..];
     let sender = poll_fn(|context| socket.poll_recv_from(context, &mut remaining))
         .await
@@ -179,5 +189,43 @@ pub(super) fn decode(
         },
         NetlinkPayload::Overrun(_) => Err(QueryError::Lost),
         _ => Err(QueryError::InvalidReply),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linux::{link_lookup, route_lookup};
+    use std::{mem::size_of_val, num::NonZeroU32, time::Duration};
+    use tokio::{sync::watch, time::Instant};
+
+    #[test]
+    fn single_object_query_futures_bound_inline_state() {
+        let (_owner, cancellation) = watch::channel(false);
+        let request = Request {
+            deadline: Instant::now() + Duration::from_secs(1),
+            cancellation,
+        };
+        // Construct but do not poll: no socket, interface inspection or kernel
+        // operation is needed to check the retained caller stack footprint.
+        let route = route_lookup::lookup(
+            route_lookup::Query {
+                protocol: route_lookup::Protocol::Tcp,
+                destination: "192.0.2.53:53".parse().unwrap(),
+                source: None,
+                interface: None,
+            },
+            request.clone(),
+        );
+        let link = link_lookup::lookup(
+            link_lookup::Query::Index(NonZeroU32::new(1).unwrap()),
+            request,
+        );
+        for (name, bytes) in [("route", size_of_val(&route)), ("link", size_of_val(&link))] {
+            assert!(
+                bytes <= 16 * 1024,
+                "{name} query retains {bytes} inline bytes; nested protected connection futures must fit default worker stacks"
+            );
+        }
     }
 }
