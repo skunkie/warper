@@ -311,8 +311,20 @@ The native positive-reply workload now keeps its mailbox open after its final
 query and requires automatic route retirement without manually advancing the
 ledger. That privileged assertion remains unverified until its exact-commit
 CI run passes. Evidence belongs under
-`target/evidence/phase-2/idle-maintenance/`. Idle capture monitoring and daemon
-integration remain open; DNS preflight remains disabled.
+`target/evidence/phase-2/idle-maintenance/`. Daemon integration remains open;
+DNS preflight remains disabled.
+
+Both native mailbox modes now poll the retained capture monitor while idle,
+without invalidating the subscription when observation is dropped. A capture
+change closes routing and mailbox admission with a typed failure. The native
+fixture adds a separately cleaned scenario that parks the driver twice across
+dropped observation, then changes a fixture-owned address in its private
+namespace. It requires the kernel event to wake the parked future without
+polling it, issuing another query or waiting for its observation deadline.
+It then checks failure, rejected submission and joined cleanup. This privileged
+wakeup assertion remains unverified until exact-commit CI passes. Evidence
+belongs under `target/evidence/phase-2/idle-capture/`; daemon DNS, global
+transient admission, virtual TCP DNS and resolver integration remain open.
 
 ## Phase 0 Exit Evidence
 

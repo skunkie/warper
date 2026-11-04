@@ -3350,9 +3350,16 @@ cancellation retains the operation and any accepted native job. Maintenance
 failure closes admission and retains the same failure/cleanup reporting as
 commit failure. Mailbox closure drains accepted commands without waiting for
 all retained leases to expire; the supervisor still owns final withdrawal.
-Idle native change observation and global transient byte admission remain
-separate incomplete integration gates; the mailbox's request count does not
-stand in for their budgets.
+While idle, both driver modes poll the retained capture subscription alongside
+their command/expiry waits. Dropping an observation preserves the subscription;
+observation timeout or cancellation never invalidates it. A relevant native
+change or lost notification closes admission and records the typed capture
+failure for supervised cleanup. An enabled owner without capture has no capture
+subscription to poll; accepting a publication supplies the next subscription.
+Native operations continue to verify their own before/after capture state while
+the unique owner is outside the driver. Global transient byte admission remains
+an incomplete integration gate; the mailbox's request count does not stand in
+for its budget.
 
 `dns::prepare::Resolver` composes selected-backend A/AAAA and HTTPS/SVCB
 discovery with one whole-response route reservation. It checks the original

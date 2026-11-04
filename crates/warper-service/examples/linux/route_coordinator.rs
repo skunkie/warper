@@ -5,6 +5,7 @@
 //! Real coordinator transactions, reply gating and retained native ownership.
 
 use super::{Failure, capture_change, ip, join_native, owned_packet_port, preserve};
+mod idle_capture;
 mod selected_dns;
 use std::{
     future::{Future, poll_fn},
@@ -68,12 +69,19 @@ pub(super) async fn exercise(
             .build()?
             // The composed probe state is large in debug builds. Keep runtime
             // entry/poll moves pointer-sized on the default blocking stack.
-            .block_on(Box::pin(run(context, lease)))
+            .block_on(Box::pin(async {
+                run(context.clone(), lease.clone(), false).await?;
+                run(context, lease, true).await
+            }))
     })
     .await?
 }
 
-async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Failure> {
+async fn run(
+    context: Arc<Context>,
+    lease: Arc<RuntimeLease>,
+    idle_capture: bool,
+) -> Result<(), Failure> {
     let (owner, port) = owned_packet_port(context.clone()).await?;
     let capture_index = NonZeroU32::new(owner.index().ok_or("coordinator capture index missing")?)
         .ok_or("coordinator capture index zero")?;
@@ -422,6 +430,9 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             return Err("managed rollback changed a foreign key".into());
         }
 
+        if idle_capture {
+            idle_capture::exercise(&controller, &mut manager, &service_owner).await?;
+        } else {
         // Observe protected committed intent, then cancel through the real
         // operation's cancellation path. No production pause hook is needed.
         for index in 0..32 {
@@ -493,6 +504,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         }
         if !saw_intent {
             return Err("fixture did not exercise post-intent native cancellation".into());
+        }
         }
         Ok::<_, Failure>(())
     }
@@ -704,11 +716,11 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("coordinator RSS unavailable")?;
     println!(
-        "route_coordinator cycles=20 app_bytes=32 udp_dns_requests=41 routed_udp_requests=21 observer_cancellations=2 deferred_retirements=1 post_intent_failure={saw_intent} reserved_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} ingress_drops={} discarded_output={} {peak}",
+        "route_coordinator cycles=20 app_bytes=32 udp_dns_requests=41 routed_udp_requests=21 manager_udp_observer_cancellations=2 deferred_retirements=1 post_intent_failure={saw_intent} idle_capture_failure={idle_capture} reserved_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} ingress_drops={} discarded_output={} {peak}",
         latency[9], latency[18], latency[19], report.ingress_drops, report.discarded_output
     );
     println!(
-        "PASS native coordinator retains cancelled waits, discovers 21 DNS answers through selected SOCKS before route commit and zero-TTL UDP output, protects first TUN TCP through selected SOCKS before UDP completion observation, preserves foreign state and closes post-intent failure with joined cleanup"
+        "PASS native coordinator retains cancelled waits, discovers 21 DNS answers through selected SOCKS before route commit and zero-TTL UDP output, protects first TUN TCP through selected SOCKS before UDP completion observation, preserves foreign state and joins the selected final failure scenario"
     );
     Ok(())
 }

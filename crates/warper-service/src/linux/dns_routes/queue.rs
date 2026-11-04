@@ -316,7 +316,10 @@ impl<'a> Driver<'a> {
                         .run(async {
                             loop {
                                 let Some(maintenance) = &mut self.maintenance else {
-                                    return Ok(Ok(self.inbox.recv().await));
+                                    return Ok(tokio::select! {
+                                        command = self.inbox.recv() => Ok(command),
+                                        error = capture_change(self.manager) => Err(error),
+                                    });
                                 };
                                 let expiry = match self.manager.controller.next_expiry() {
                                     Ok(expiry) => expiry,
@@ -328,6 +331,7 @@ impl<'a> Driver<'a> {
                                 };
                                 return tokio::select! {
                                     command = self.inbox.recv() => Ok(Ok(command)),
+                                    error = capture_change(self.manager) => Ok(Err(error)),
                                     result = maintenance.wait(expiry) => {
                                         Ok(result.map(|()| None))
                                     }
@@ -437,6 +441,19 @@ impl<'a> Driver<'a> {
         {
             active.finish(Err(primary));
         }
+    }
+}
+
+async fn capture_change(manager: &mut Manager) -> NativeError {
+    match manager.owner.as_ref().map(super::Owner::stage) {
+        Some(super::Stage::Enabled) => std::future::pending().await,
+        Some(super::Stage::Captured) => match manager.capture_changes() {
+            Ok(monitor) => NativeError::Native(super::tun::Error::CaptureChanged(
+                std::future::poll_fn(|context| monitor.poll_invalidation(context)).await,
+            )),
+            Err(error) => error,
+        },
+        _ => NativeError::InvalidState,
     }
 }
 
