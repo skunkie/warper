@@ -49,6 +49,168 @@ fn request_roundtrip_preserves_service_labels_and_case_on_wire() {
 }
 
 #[test]
+fn local_replies_preserve_correlation_without_exposing_records_or_authority() {
+    struct Case {
+        id: &'static str,
+        reply: LocalReply,
+        expected_code: u16,
+        expected_tc: bool,
+    }
+    for case in [
+        Case {
+            id: "failure",
+            reply: LocalReply::ServFail,
+            expected_code: 2,
+            expected_tc: false,
+        },
+        Case {
+            id: "tcp_retry",
+            reply: LocalReply::Truncated,
+            expected_code: 0,
+            expected_tc: true,
+        },
+        Case {
+            id: "disabled_ipv6",
+            reply: LocalReply::DisabledIpv6,
+            expected_code: 0,
+            expected_tc: false,
+        },
+    ] {
+        let mut bytes = request_wire();
+        let question_end = bytes.len();
+        bytes[question_end - 3] = 28;
+        // Input assertions of AA/AD/RA must not survive synthesis.
+        bytes[2] |= 4;
+        bytes[3] = 0xb0;
+        let request = Packet::request(&bytes, limits()).unwrap();
+        let wire = request.local_reply(case.reply).unwrap();
+        let mut decoder = BinDecoder::new(&wire);
+        let message = Message::read(&mut decoder).unwrap();
+        assert_eq!(decoder.index(), wire.len(), "{}", case.id);
+        assert_eq!(message.id, request.id(), "{}", case.id);
+        assert_eq!(
+            u16::from(message.response_code),
+            case.expected_code,
+            "{}",
+            case.id
+        );
+        assert_eq!(message.truncation, case.expected_tc, "{}", case.id);
+        assert_eq!(wire[2] & !2, 0x81, "{}", case.id);
+        assert_eq!(wire[3] & 0xf0, 0x90, "{}", case.id);
+        assert_eq!(&wire[12..], &bytes[12..], "{}", case.id);
+        assert!(
+            message.answers.is_empty()
+                && message.authorities.is_empty()
+                && message.additionals.is_empty(),
+            "{}",
+            case.id
+        );
+        assert!(message.edns.is_none(), "{}", case.id);
+        assert_eq!(request.encode().unwrap(), bytes, "{}", case.id);
+    }
+}
+
+#[test]
+fn local_edns_replies_negotiate_capacity_and_reject_unsupported_versions() {
+    for capacity in [1_u16, 512, 1232, u16::MAX] {
+        for version in [0, 1, 255] {
+            let mut bytes = request_wire();
+            bytes[11] = 1;
+            bytes.extend_from_slice(&[0, 0, 41]);
+            bytes.extend_from_slice(&capacity.to_be_bytes());
+            // DO plus reserved flags and an unknown option with four bytes.
+            bytes.extend_from_slice(&[0, version, 0x80, 1, 0, 8, 0xfd, 0xe8, 0, 4, 1, 2, 3, 4]);
+            let request = Packet::request(&bytes, limits()).unwrap();
+            assert_eq!(
+                request.udp_payload_limit(),
+                usize::from(capacity).clamp(512, 1232)
+            );
+            for reply in [LocalReply::ServFail, LocalReply::Truncated] {
+                let wire = request.local_reply(reply).unwrap();
+                assert!(wire.len() <= request.udp_payload_limit());
+                let mut decoder = BinDecoder::new(&wire);
+                let message = Message::read(&mut decoder).unwrap();
+                let edns = message.edns.as_ref().unwrap();
+                assert_eq!(edns.version(), 0);
+                assert_eq!(edns.max_payload(), 1232);
+                assert!(edns.flags().dnssec_ok);
+                assert_eq!(edns.flags().z, 0);
+                assert!(edns.options().as_ref().is_empty());
+                assert_eq!(
+                    u16::from(message.response_code),
+                    if version != 0 {
+                        16
+                    } else if reply == LocalReply::ServFail {
+                        2
+                    } else {
+                        0
+                    }
+                );
+                assert_eq!(
+                    message.truncation,
+                    version == 0 && reply == LocalReply::Truncated
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn local_reply_rejects_wrong_family_responses_and_unrelated_additional_data() {
+    let request = Packet::request(&request_wire(), limits()).unwrap();
+    assert!(matches!(
+        request.local_reply(LocalReply::DisabledIpv6),
+        Err(Error::UnsupportedOperation)
+    ));
+    let response = Packet::response(&response_wire(), &request, limits()).unwrap();
+    assert!(matches!(
+        response.local_reply(LocalReply::ServFail),
+        Err(Error::UnsupportedOperation)
+    ));
+    let mut bytes = request_wire();
+    bytes[11] = 1;
+    bytes.extend_from_slice(&[0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 192, 0, 2, 1]);
+    let request = Packet::request(&bytes, limits()).unwrap();
+    assert!(matches!(
+        request.local_reply(LocalReply::ServFail),
+        Err(Error::UnsupportedOperation)
+    ));
+
+    let bytes = request_wire();
+    let request = Packet::request(&bytes, Limits::new(bytes.len(), 1).unwrap()).unwrap();
+    assert_eq!(request.udp_payload_limit(), bytes.len());
+    assert!(request.local_reply(LocalReply::ServFail).is_ok());
+}
+
+#[test]
+fn local_reply_does_not_invent_request_flags_or_edns_capacity() {
+    let mut bytes = request_wire();
+    bytes[2] = 0;
+    bytes[11] = 1;
+    bytes.extend_from_slice(&[0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]);
+    let request = Packet::request(&bytes, Limits::new(512, 16).unwrap()).unwrap();
+    let wire = request.local_reply(LocalReply::ServFail).unwrap();
+    let mut decoder = BinDecoder::new(&wire);
+    let message = Message::read(&mut decoder).unwrap();
+    assert!(!message.recursion_desired && !message.checking_disabled);
+    assert!(message.recursion_available);
+    let edns = message.edns.as_ref().unwrap();
+    assert!(!edns.flags().dnssec_ok);
+    assert_eq!(edns.max_payload(), 512);
+    assert_eq!(request.udp_payload_limit(), 512);
+
+    let mut bytes = request_wire();
+    let end = bytes.len();
+    bytes[end - 3] = 28;
+    bytes[end - 1] = 3;
+    let request = Packet::request(&bytes, limits()).unwrap();
+    assert!(matches!(
+        request.local_reply(LocalReply::DisabledIpv6),
+        Err(Error::UnsupportedOperation)
+    ));
+}
+
+#[test]
 fn wire_names_preserve_binary_labels_and_the_maximum_length() {
     let long = [b'a'; 63];
     for name in [
@@ -574,6 +736,10 @@ fn dependency_synthesis_refuses_response_additional_records_and_oversize_names()
         request.dependency(request.question()),
         Err(Error::UnsupportedOperation)
     ));
+    assert!(matches!(
+        request.local_reply(LocalReply::ServFail),
+        Err(Error::UnsupportedOperation)
+    ));
     let bytes = request_wire();
     let request = Packet::request(&bytes, Limits::new(bytes.len(), 1).unwrap()).unwrap();
     let question = Question {
@@ -610,6 +776,10 @@ fn dependency_synthesis_refuses_a_transaction_signature() {
     record.dns_class = DNSClass::ANY;
     request.message.signature = Some(Box::new(record));
     assert!(matches!(
+        request.local_reply(LocalReply::ServFail),
+        Err(Error::UnsupportedOperation)
+    ));
+    assert!(matches!(
         request.dependency(request.question()),
         Err(Error::UnsupportedOperation)
     ));
@@ -620,6 +790,10 @@ fn dependency_synthesis_refuses_a_transaction_signature() {
     assert!(parsed.message.signature.is_some() || !parsed.message.additionals.is_empty());
     assert!(matches!(
         parsed.dependency(parsed.question()),
+        Err(Error::UnsupportedOperation)
+    ));
+    assert!(matches!(
+        parsed.local_reply(LocalReply::ServFail),
         Err(Error::UnsupportedOperation)
     ));
 }

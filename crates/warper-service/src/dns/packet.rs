@@ -8,7 +8,7 @@ use std::{fmt, time::Duration};
 
 use hickory_proto::{
     ProtoError,
-    op::{Header, Message, MessageType, OpCode, Query},
+    op::{Edns, Header, Message, MessageType, OpCode, Query, ResponseCode},
     serialize::binary::{BinDecodable, BinDecoder, BinEncodable, BinEncoder},
 };
 use warper_core::dns::Name;
@@ -103,6 +103,14 @@ pub struct Question {
     pub class: u16,
 }
 
+/// Local replies contain no upstream records and grant no routing permission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalReply {
+    ServFail,
+    Truncated,
+    DisabledIpv6,
+}
+
 /// Owns a complete, bounded decoded packet. There is no route publication or
 /// positive-answer permission here; the endpoint/route gate owns that decision.
 pub struct Packet {
@@ -177,6 +185,73 @@ impl Packet {
 
     pub fn question(&self) -> Question {
         self.question
+    }
+
+    /// The virtual UDP endpoint caps payloads at 1232 bytes. EDNS values below
+    /// 512 mean 512; absent EDNS retains the original DNS UDP limit.
+    pub fn udp_payload_limit(&self) -> usize {
+        usize::from(
+            self.message
+                .edns
+                .as_ref()
+                .map_or(512, |edns| edns.max_payload().max(512)),
+        )
+        .min(warper_stack::runtime::udp_dns::MAX_PAYLOAD)
+        .min(self.limits.wire_bytes)
+    }
+
+    /// Synthesize a small reply from a validated request. Unsupported EDNS
+    /// versions take precedence and receive BADVERS with supported version 0.
+    /// Transaction authentication and unrelated Additional records cannot be
+    /// copied into an unsigned local answer.
+    pub fn local_reply(&self, reply: LocalReply) -> Result<Vec<u8>, Error> {
+        if self.is_response()
+            || self.message.signature.is_some()
+            || !self.message.additionals.is_empty()
+            || (reply == LocalReply::DisabledIpv6
+                && (self.question.record_type != 28 || self.question.class != 1))
+        {
+            return Err(Error::UnsupportedOperation);
+        }
+        let bad_version = self
+            .message
+            .edns
+            .as_ref()
+            .is_some_and(|edns| edns.version() != 0);
+        let mut message = Message::new(self.id(), MessageType::Response, OpCode::Query);
+        message.metadata.recursion_desired = self.message.recursion_desired;
+        message.metadata.checking_disabled = self.message.checking_disabled;
+        message.metadata.recursion_available = true;
+        message.metadata.response_code = if bad_version {
+            ResponseCode::BADVERS
+        } else if reply == LocalReply::ServFail {
+            ResponseCode::ServFail
+        } else {
+            ResponseCode::NoError
+        };
+        message.queries.push(self.message.queries[0].clone());
+        if let Some(request_edns) = &self.message.edns {
+            let mut edns = Edns::new();
+            edns.set_max_payload(
+                self.limits
+                    .wire_bytes
+                    .clamp(512, warper_stack::runtime::udp_dns::MAX_PAYLOAD) as u16,
+            );
+            edns.set_dnssec_ok(request_edns.flags().dnssec_ok);
+            message.edns = Some(edns);
+        }
+        let packet = Self {
+            message,
+            question: self.question,
+            limits: self.limits,
+        };
+        let mut wire = packet.encode_limited(self.udp_payload_limit())?;
+        // Set intentional TC only after the entire small message fits. Ordinary
+        // encoding still rejects a library-truncated serialization.
+        if reply == LocalReply::Truncated && !bad_version {
+            wire[2] |= 2;
+        }
+        Ok(wire)
     }
 
     pub fn response_code(&self) -> u16 {

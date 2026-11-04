@@ -272,8 +272,10 @@ async fn invalid_or_uncommitted_udp_replies_never_start_native_output() {
         drop(result);
         let retained_for_failure = !matches!(expected, OutputError::Submission(_));
         if retained_for_failure {
-            let mut wire = query();
-            wire[2..4].copy_from_slice(&[0x81, 0x82]);
+            let wire = Packet::request(&query(), Limits::new(512, 8).unwrap())
+                .unwrap()
+                .local_reply(crate::dns::LocalReply::ServFail)
+                .unwrap();
             let mut receipt = fixture
                 .datagram
                 .take()

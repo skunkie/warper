@@ -13,8 +13,8 @@ mod udp;
 
 pub use packet::{
     Address, AddressAnswer, AddressError, AddressLookup, AddressProgress, AddressSection,
-    BindingSet, Error, Limits, Packet, Question, RelatedAddress, RelatedSet, ServiceAlias,
-    ServiceBinding, ServiceError, TimedAlias,
+    BindingSet, Error, Limits, LocalReply, Packet, Question, RelatedAddress, RelatedSet,
+    ServiceAlias, ServiceBinding, ServiceError, TimedAlias,
 };
 pub use query::QueryBudget;
 pub use tcp::{

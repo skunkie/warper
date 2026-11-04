@@ -3300,6 +3300,26 @@ and joins DNS writers, runtime and native packet pump before releasing routes.
 
 ### Routed UDP reply ownership
 
+`Packet::local_reply` constructs record-free SERVFAIL, explicit TC and local
+IN AAAA NODATA replies from a fully validated request. These grant no route
+or output authorization. Preserve ID, question case, RD and CD; set RA for the
+recursive service and clear AA/AD. Reject signed requests and non-EDNS
+Additional records rather than copying authentication or unrelated data.
+Disabled-family NODATA is available only for IN AAAA. No upstream query is
+needed to construct it.
+
+Local replies obey the smaller of configured wire capacity, the virtual UDP
+1232-byte ceiling and the client's EDNS capacity (512 without EDNS; clamp
+smaller advertisements to 512). An EDNS request receives a fresh version-zero
+OPT, echoes DO, advertises server capacity and omits unsupported options and
+reserved flags. Unsupported EDNS versions produce BADVERS, ahead of the
+requested local reply kind. Encode the complete empty reply before setting
+intentional TC; never expose a partially encoded address set. These semantics
+follow [RFC 1035 section 4.1.1](https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1)
+and [RFC 6891 section 6](https://datatracker.ietf.org/doc/html/rfc6891#section-6).
+The caller retains admission and joins native output; this primitive performs
+no I/O and does not enable daemon DNS.
+
 Shared packet-runtime construction obtains an opaque native seed before
 mutation. Linux retains nonblocking `getrandom` through rustix. macOS uses
 the already locked `getrandom` 0.4.3 library's `getentropy(2)` backend for one

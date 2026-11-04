@@ -230,10 +230,23 @@ native additions pass the isolated Linux gate in
 at `8e27449`: all five native manifests preserve host state, and the routed
 workload reports zero ingress drops and discarded output. That run fails
 macOS unit tests because packet-runtime seed generation was Linux-only.
-Native macOS entropy now uses the already locked `getrandom` library;
-its platform test and the portable routed-output tests await native CI.
+Native macOS entropy now uses the already locked `getrandom` library.
+[CI 41793591014](https://github.com/skunkie/warper/actions/runs/41793591014)
+at `3794f0c` passes all jobs, including the native macOS entropy test and all
+ten routed-output cases in both test configurations. All five native
+manifests were inspected with preserved host state, and the routed workload
+reports zero ingress drops/discarded output. Evidence is retained under
+`target/evidence/phase-2/macos-seed/`.
 This does not implement upstream discovery scheduling, virtual TCP DNS or complete
 daemon/resolver integration; DNS remains disabled in service preflight.
+
+The packet adapter also constructs record-free local SERVFAIL, explicit TC
+and disabled-IPv6 IN AAAA NODATA replies, including bounded EDNS negotiation
+and BADVERS. It preserves request correlation without asserting AA/AD or
+copying transaction authentication. Controlled tests cover those wire
+semantics and native-receipt handoff after rejected routed output. Evidence
+belongs under `target/evidence/phase-2/local-replies/`. Production listener
+dispatch, full transient admission and daemon wiring remain incomplete.
 
 ## Phase 0 Exit Evidence
 
