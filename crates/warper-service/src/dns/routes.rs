@@ -358,6 +358,36 @@ impl FlowSelector for LiveRoutes {
             Err(_) => Err(SelectionError::Unavailable),
         }
     }
+    fn verify_retirement(
+        &self,
+        destination: IpAddr,
+        backend: BackendId,
+    ) -> Result<(), SelectionError> {
+        let owner = self.selection_lock()?;
+        let route = owner
+            .ledger
+            .route_for(destination)
+            .ok_or(SelectionError::Unready)?;
+        let info = owner
+            .ledger
+            .route_info(route)
+            .map_err(|_| SelectionError::Unavailable)?;
+        if info.key.backend != backend
+            || info.publication != lease::Publication::Retiring
+            || info.leases != 0
+            || info.flows != 0
+        {
+            return Err(SelectionError::Unready);
+        }
+        if self
+            .policy
+            .select(destination)
+            .is_some_and(|selected| selected != backend)
+        {
+            return Err(SelectionError::Unavailable);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

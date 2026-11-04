@@ -35,6 +35,7 @@ mod linux {
     use fixture::{CombinedFailure, Failure, ip, isolated, join_native, preserve};
     mod configuration_installation;
     mod controller_dispatch;
+    mod host_retirement;
     mod live_routes;
     mod physical;
     mod process_owner;
@@ -1220,6 +1221,7 @@ mod linux {
             preserve(outcome,cleanup)?;
             println!("PASS journaled TUN packet port, collision preservation, explicit retirement and joined peers");
             live_routes::exercise(context.clone()).await?;
+            host_retirement::exercise(context.clone()).await?;
             supervised_network::exercise(context.clone(),runtime_lease.clone()).await?;
             controller_dispatch::exercise(runtime_lease.clone()).await?;
             Ok(())

@@ -21,7 +21,7 @@ impl fmt::Display for SelectionError {
         formatter.write_str(match self {
             Self::Unselected => "destination has no selected route",
             Self::Busy => "route selection admission is busy",
-            Self::Unready => "selected route is not ready for flow admission",
+            Self::Unready => "selected route ownership is not ready",
             Self::Unavailable => "route selection owner is unavailable",
         })
     }
@@ -61,6 +61,16 @@ pub trait FlowSelector: Send + Sync {
     fn static_policy(&self) -> &Policy;
     fn lookup(&self, destination: IpAddr) -> Result<BackendId, SelectionError>;
     fn select_flow(&self, destination: IpAddr) -> Result<Selection, SelectionError>;
+    /// Verify retiring ownership with no remaining references. The owner must
+    /// remain retiring until joined native withdrawal finishes. Static-only
+    /// selectors cannot grant this proof.
+    fn verify_retirement(
+        &self,
+        _destination: IpAddr,
+        _backend: BackendId,
+    ) -> Result<(), SelectionError> {
+        Err(SelectionError::Unready)
+    }
 }
 impl FlowSelector for Policy {
     fn static_policy(&self) -> &Policy {

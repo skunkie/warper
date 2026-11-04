@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Exclusive static capture metadata, conflict inspection and kernel requests.
+//! Exclusive capture metadata, conflict inspection and kernel requests.
 
 use super::{
     Error,
@@ -93,6 +93,22 @@ impl Plan {
         let plan = Self { prefixes, metric };
         plan.validate()?;
         Ok(plan)
+    }
+    pub(super) fn without_host(&self, address: Ipv4Addr) -> Result<(Option<Self>, bool), Error> {
+        self.validate()?;
+        if !super::record::valid_address(address) {
+            return Err(Error::InvalidCapturePolicy);
+        }
+        let mut remaining = self.clone();
+        let position = remaining
+            .prefixes
+            .iter()
+            .position(|prefix| prefix.length == 32 && prefix.network == address);
+        let Some(position) = position else {
+            return Ok((Some(remaining), false));
+        };
+        remaining.prefixes.remove(position);
+        Ok(((!remaining.prefixes.is_empty()).then_some(remaining), true))
     }
     pub(super) fn validate(&self) -> Result<(), Error> {
         if self.prefixes.is_empty()
@@ -399,6 +415,36 @@ mod tests {
                 Ipv4Addr::new(192, 0, 2, 9),
                 malformed.metric
             ),
+            Err(Error::InvalidCapturePolicy)
+        ));
+    }
+    #[test]
+    fn individual_host_removal_preserves_other_prefixes_and_clears_the_last_batch() {
+        let previous = plan();
+        let (remaining, removed) = previous.without_host(previous.prefixes[0].network).unwrap();
+        assert!(removed);
+        let remaining = remaining.unwrap();
+        assert!(remaining.prefixes == previous.prefixes[1..]);
+        assert_eq!(remaining.metric, previous.metric);
+        remaining.validate().unwrap();
+        let (unchanged, removed) = remaining
+            .without_host(Ipv4Addr::new(198, 18, 0, 9))
+            .unwrap();
+        assert!(!removed, "broader owned coverage must remain intact");
+        assert!(unchanged.unwrap() == remaining);
+        let (single, _) =
+            Plan::extend_host(None, Ipv4Addr::new(192, 0, 2, 9), previous.metric).unwrap();
+        let (empty, removed) = single.without_host(single.prefixes[0].network).unwrap();
+        assert!(removed);
+        assert!(empty.is_none());
+        assert!(matches!(
+            single.without_host(Ipv4Addr::UNSPECIFIED),
+            Err(Error::InvalidCapturePolicy)
+        ));
+        let mut invalid = previous;
+        invalid.prefixes.reverse();
+        assert!(matches!(
+            invalid.without_host(Ipv4Addr::new(192, 0, 2, 9)),
             Err(Error::InvalidCapturePolicy)
         ));
     }

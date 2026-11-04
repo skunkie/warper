@@ -15,6 +15,7 @@ use warper_core::transport::Request;
 mod address;
 mod capture;
 mod host_capture;
+mod host_retirement;
 mod link;
 mod node;
 mod packet;
@@ -49,6 +50,7 @@ pub enum Error {
     CaptureChanged(super::change_monitor::Invalidation),
     CaptureActive,
     CaptureFlowsActive,
+    CaptureHostActive,
     DeviceUnavailable,
     DeviceInspection(io::ErrorKind),
     Conflict,
@@ -83,6 +85,9 @@ impl fmt::Display for Error {
             Self::CaptureActive => "Conflict: withdraw capture routes before closing the TUN",
             Self::CaptureFlowsActive => {
                 "Conflict: quiesce and drain flows before withdrawing capture"
+            }
+            Self::CaptureHostActive => {
+                "Conflict: capture host lacks unreferenced retirement ownership"
             }
             Self::Address(_) => "SystemConfiguration: native TUN address transaction failed",
             Self::Activation(_) => "SystemConfiguration: native TUN activation failed",

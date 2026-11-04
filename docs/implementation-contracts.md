@@ -3314,3 +3314,30 @@ input still invalidate. A check/poll consumes at most 64 datagrams of at most
 flood cannot stall forwarding or be mistaken for a proven empty queue. No
 socket is reopened, payload replayed, monitor task spawned or kernel path proof
 replaced. Connector preparation remains globally conservative.
+
+### Individual native DNS host retirement
+
+`FlowSelector::verify_retirement` verifies the same live address owner used for
+SYN admission: matching backend, Retiring state and zero lease/output/flow
+references. Static-only selectors reject this operation. A runtime publication
+forwards the check to its own selector while the runtime mapping remains
+published; quiescent admission is allowed, but a stopped runtime is not proof.
+The service serializes retirement, renewal and native work and cannot restore
+or release that owner while its native worker is still running.
+
+The retained TUN owner may withdraw an individual /32 after this check without
+quiescing unrelated flows. Verify the same runtime, full committed batch, device
+and quiet subscription first. Static /32 coverage is preserved. A missing
+recorded host requires checked absence of its exact owned route key. Otherwise,
+journal RoutesRetiring with the complete old batch before removing the one
+exact owned key. Check retirement again around the deletion; require its ACK,
+fresh absence, verified remaining batch and device before committing the smaller
+Captured batch, or Enabled with no capture batch when the final key is gone.
+Keep the live mapping until the caller completes ledger retirement after the
+joined native result. Repeating a successful native withdrawal before releasing
+that owner is safe and does not delete another key.
+
+Failure after intent retains the full old batch and sticky failure. Do not retry
+an uncertain deletion or silently restore availability; supervised whole-batch
+drain/withdrawal or abandoned-owner reconciliation remains necessary. A changed
+or foreign route is preserved. This operation grants no DNS output permission.

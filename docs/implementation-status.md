@@ -129,9 +129,8 @@ route. Local checks and raw native results belong under
 the [exact-commit gate](https://github.com/skunkie/warper/actions/runs/41708153607),
 with all five result manifests reporting success, four isolated probes reporting
 preserved host state, and installed-unit acceptance reporting no errors.
-Individual route withdrawal, capacity
-alignment, DNS output and resolver integration remain open. Daemon DNS is still
-explicitly unavailable.
+Capacity alignment, DNS output and resolver integration remain open. Daemon DNS
+is still explicitly unavailable.
 Protected physical sockets now discard only exact disjoint /32 capture updates
 on their retained TUN, preserving the original physical tuple and socket.
 Peer/source/gateway routes, broader or ambiguous changes, rules, links, addresses
@@ -139,8 +138,24 @@ and notification loss still invalidate. Controlled classifier cases verify the
 exception and its failure boundaries. The native fixture keeps one real TCP
 connection and UDP association across all 20 additions and final withdrawal,
 verifying exact bytes and joined peer shutdown. Evidence belongs under
-`target/evidence/phase-2/physical-continuity/`; that expanded native scope remains
-unverified until its exact-commit CI run passes.
+`target/evidence/phase-2/physical-continuity/`. The expanded native scope passes
+the [exact-commit gate](https://github.com/skunkie/warper/actions/runs/41710038468),
+including 21 verified TCP/UDP exchanges without reopening either association.
+All four isolated probe manifests report preserved host state; installed-unit
+acceptance reports no errors.
+
+Individual IPv4 host retirement now checks unreferenced Retiring ownership
+through the runtime's own selector, journals the full old batch before deleting
+one exact key, and commits the verified remainder. It preserves static /32
+coverage and retains uncertain intent for whole-session cleanup/recovery.
+Controller tests cover references, backend mismatch, contention and quiescence.
+The disposable fixture keeps a real TUN TCP flow open across 20 retire/reassign
+cycles on another address, then checks final-key removal, idempotence, static
+coverage and a changed-key conflict with joined cleanup. Evidence belongs under
+`target/evidence/phase-2/host-retirement/`; that native scope remains unverified
+until its exact-commit CI artifacts pass. The supervised DNS route actor,
+listener/output ownership and resolver policy still require integration and
+native acceptance before daemon DNS becomes available.
 
 ## Phase 0 Exit Evidence
 

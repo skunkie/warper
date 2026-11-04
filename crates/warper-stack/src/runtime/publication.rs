@@ -55,6 +55,18 @@ impl Publication {
         }
         self.policy.lookup(address)
     }
+    /// Observe unreferenced retirement in this runtime's own selector. The
+    /// caller must keep that owner retiring through joined native withdrawal.
+    pub fn verify_retirement(
+        &self,
+        address: std::net::IpAddr,
+        backend: BackendId,
+    ) -> Result<(), SelectionError> {
+        if !self.is_published() {
+            return Err(SelectionError::Unavailable);
+        }
+        self.policy.verify_retirement(address, backend)
+    }
 
     /// Allocated ingress/mapping publication, not task or network readiness.
     pub fn is_published(&self) -> bool {

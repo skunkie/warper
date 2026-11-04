@@ -1123,6 +1123,21 @@ not sustained packet throughput or DNS output completion.
 The existing isolated runner command includes this
 scope; no privileged tests should run against the developer's live network.
 
+The same disposable probe tests individual host retirement with the production
+lease controller, TUN packet pump and TCP runtime. One real kernel TCP flow
+remains open while another /32 is published, retired and reassigned between two
+backends 20 times. Each retirement checks the still-published mapping before
+ledger release; each cycle transfers and verifies 32 bytes in both directions
+over the unrelated flow. Final checks cover TCP FIN, the last dynamic key,
+repeated withdrawal, static /32 retention and preservation of a deliberately
+changed route before the fixture restores its own mutation for cleanup.
+The `host_retirement` row reports 20 withdrawal latency samples, whole-workload
+elapsed/process CPU time, process peak RSS, 1280 application bytes and adapter
+packet/byte/drop counts. Withdrawal latency excludes publication and application
+exchange; whole-workload time includes setup and conflict checks, and RSS
+includes prior scopes. This is a controlled retirement/continuity workload,
+not sustained forwarding throughput or integrated DNS response acceptance.
+
 The control fixture also exercises the fixed root-owned `/etc/warper` managed
 slot in its private `/etc` mount: generation fencing, ordinary owner/foreign
 read denial, reopened state, pending-token separation from the network journal

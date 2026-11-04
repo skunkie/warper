@@ -179,6 +179,10 @@ async fn lock_contention_and_poison_never_fall_back_to_static_routes() {
             Err(SelectionError::Busy)
         ));
         assert_eq!(controller.stats(), Err(Error::Busy));
+        assert_eq!(
+            selector.verify_retirement(address(), BackendId(7)),
+            Err(SelectionError::Busy)
+        );
     }
     let routes = controller.routes.clone();
     let poisoned = std::thread::spawn(move || {
@@ -192,6 +196,109 @@ async fn lock_contention_and_poison_never_fall_back_to_static_routes() {
         Err(SelectionError::Unavailable)
     ));
     assert_eq!(controller.stats(), Err(Error::Unavailable));
+    assert_eq!(
+        selector.verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unavailable)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retirement_proof_requires_matching_unreferenced_retiring_ownership() {
+    let controller = create(&[]);
+    let selector = controller.selector();
+    assert_eq!(
+        selector.verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unready)
+    );
+    let (mut response, route) = reserve(&controller, 7);
+    assert_eq!(
+        selector.verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unready)
+    );
+    controller.confirm_publication(route).unwrap();
+    let pin = selector.select_flow(address()).unwrap();
+    controller.cancel(&mut response).unwrap();
+    assert_eq!(
+        controller.begin_retirement(route),
+        Err(Error::Ledger(lease::Error::Referenced))
+    );
+    assert_eq!(
+        selector.verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unready)
+    );
+    drop(pin);
+    controller.begin_retirement(route).unwrap();
+    assert_eq!(
+        selector.verify_retirement(address(), BackendId(8)),
+        Err(SelectionError::Unready)
+    );
+    assert_eq!(selector.verify_retirement(address(), BackendId(7)), Ok(()));
+    assert_eq!(selector.lookup(address()).unwrap(), BackendId(7));
+    controller.close().unwrap();
+    assert_eq!(selector.verify_retirement(address(), BackendId(7)), Ok(()));
+    controller.finish_retirement(route).unwrap();
+    assert_eq!(
+        selector.verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unready)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(start_paused = true)]
+async fn retirement_proof_uses_the_published_selector_through_admission_quiescence() {
+    use warper_stack::{Seed, host::Limits, runtime::Runtime};
+    let controller = create(&[]);
+    let (mut response, route) = reserve(&controller, 7);
+    controller.cancel(&mut response).unwrap();
+    controller.begin_retirement(route).unwrap();
+    let (runtime, channels) = Runtime::with_selector(
+        Limits::default(),
+        controller.selector(),
+        1,
+        Seed::generate().unwrap(),
+    )
+    .unwrap();
+    let (static_runtime, static_channels) = Runtime::new(
+        Limits::default(),
+        Arc::new(Policy::new(&[static_entry(7)], 1).unwrap()),
+        1,
+        Seed::generate().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        static_channels
+            .publication
+            .verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unready)
+    );
+    drop(static_runtime);
+    let task = tokio::spawn(runtime.run());
+    let (owner, cancellation) = tokio::sync::watch::channel(false);
+    let mut receipt = channels.admission.quiesce().unwrap();
+    receipt
+        .wait(warper_core::transport::Request {
+            deadline: Instant::now() + Duration::from_secs(1),
+            cancellation,
+        })
+        .await
+        .unwrap();
+    assert!(channels.publication.is_quiescent());
+    assert_eq!(
+        channels
+            .publication
+            .verify_retirement(address(), BackendId(7)),
+        Ok(())
+    );
+    channels.shutdown.send(()).unwrap();
+    task.await.unwrap().unwrap();
+    assert_eq!(
+        channels
+            .publication
+            .verify_retirement(address(), BackendId(7)),
+        Err(SelectionError::Unavailable)
+    );
+    drop(owner);
+    controller.finish_retirement(route).unwrap();
 }
 
 #[tokio::test(start_paused = true)]
