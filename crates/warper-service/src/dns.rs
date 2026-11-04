@@ -6,6 +6,7 @@
 
 pub mod output;
 mod packet;
+pub mod prepare;
 mod query;
 pub mod routes;
 mod tcp;

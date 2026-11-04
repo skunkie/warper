@@ -3300,6 +3300,26 @@ and joins DNS writers, runtime and native packet pump before releasing routes.
 
 ### Routed UDP reply ownership
 
+`dns::prepare::Resolver` composes selected-backend A/AAAA and HTTPS/SVCB
+discovery with one whole-response route reservation. It checks the original
+domain's winning backend, unsigned synthesis eligibility and open routing
+admission before I/O, retains the caller's request deadline and
+dependency budget, and never tries direct DNS after selected-backend failure.
+Disabled IPv6 IN AAAA requests produce local NODATA without upstream work.
+Unsupported EDNS versions produce local BADVERS. Other query types remain
+outside this routing preparation operation and return typed unsupported errors.
+
+Complete discovery precedes route reservation. Carry original observation
+times into contribution expiry, retain zero TTLs, and reject all contributions
+on static/shared-IP conflict or disabled families. Empty endpoint sets retain
+their original negative/CNAME response without creating a routing reservation.
+Nonempty sets produce an uncommitted reservation: the caller must pass it
+through the native coordinator and retain output ownership before replying.
+Preparation neither confirms routes nor starts output, and dropping its future
+cannot detach discovery work. Its contribution vector is bounded by the
+configured endpoint count; full transient admission and daemon scheduling
+remain separate, incomplete gates.
+
 `Packet::local_reply` constructs record-free SERVFAIL, explicit TC and local
 IN AAAA NODATA replies from a fully validated request. These grant no route
 or output authorization. Preserve ID, question case, RD and CD; set RA for the

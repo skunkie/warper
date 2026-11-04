@@ -154,12 +154,7 @@ impl Packet {
     /// Construct a dependency query without copying authentication over a
     /// changed question. Each dependency uses its own owned TCP stream.
     pub(super) fn dependency(&self, question: Question) -> Result<Self, Error> {
-        if self.is_response()
-            || self.message.signature.is_some()
-            || !self.message.additionals.is_empty()
-        {
-            return Err(Error::UnsupportedOperation);
-        }
+        self.check_synthesis()?;
         let mut decoder = BinDecoder::new(question.name.wire());
         let name = hickory_proto::rr::Name::read(&mut decoder).map_err(|_| Error::Malformed)?;
         let mut message = Message::new(self.id(), MessageType::Query, OpCode::Query);
@@ -187,6 +182,10 @@ impl Packet {
         self.question
     }
 
+    pub fn edns_version(&self) -> Option<u8> {
+        self.message.edns.as_ref().map(Edns::version)
+    }
+
     /// The virtual UDP endpoint caps payloads at 1232 bytes. EDNS values below
     /// 512 mean 512; absent EDNS retains the original DNS UDP limit.
     pub fn udp_payload_limit(&self) -> usize {
@@ -205,11 +204,9 @@ impl Packet {
     /// Transaction authentication and unrelated Additional records cannot be
     /// copied into an unsigned local answer.
     pub fn local_reply(&self, reply: LocalReply) -> Result<Vec<u8>, Error> {
-        if self.is_response()
-            || self.message.signature.is_some()
-            || !self.message.additionals.is_empty()
-            || (reply == LocalReply::DisabledIpv6
-                && (self.question.record_type != 28 || self.question.class != 1))
+        self.check_synthesis()?;
+        if reply == LocalReply::DisabledIpv6
+            && (self.question.record_type != 28 || self.question.class != 1)
         {
             return Err(Error::UnsupportedOperation);
         }
@@ -252,6 +249,16 @@ impl Packet {
             wire[2] |= 2;
         }
         Ok(wire)
+    }
+
+    pub(super) fn check_synthesis(&self) -> Result<(), Error> {
+        if self.is_response()
+            || self.message.signature.is_some()
+            || !self.message.additionals.is_empty()
+        {
+            return Err(Error::UnsupportedOperation);
+        }
+        Ok(())
     }
 
     pub fn response_code(&self) -> u16 {

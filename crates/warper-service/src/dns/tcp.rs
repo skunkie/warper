@@ -147,6 +147,10 @@ impl TcpTransport {
     pub fn backend(&self) -> BackendId {
         self.backend.id()
     }
+
+    pub fn capabilities(&self) -> warper_core::transport::Capabilities {
+        self.backend.capabilities()
+    }
 }
 
 /// Direct DNS is a separate transport, constructed only for preserved physical

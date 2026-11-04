@@ -248,6 +248,17 @@ semantics and native-receipt handoff after rejected routed output. Evidence
 belongs under `target/evidence/phase-2/local-replies/`. Production listener
 dispatch, full transient admission and daemon wiring remain incomplete.
 
+Selected-backend preparation now composes A/AAAA and HTTPS/SVCB discovery
+with one complete-set route reservation. It checks the winning domain,
+synthesis eligibility and routing admission before I/O, retains the root
+deadline/dependency budget, coalesces endpoint provenance at the earliest
+expiry and rejects static/shared-IP conflicts and unsupported endpoint
+families. Local AAAA NODATA/BADVERS bypass upstream work; valid empty endpoint
+sets allocate no routes. Controlled tests prove reservations remain
+uncommitted and cannot authorize output. Evidence belongs under
+`target/evidence/phase-2/query-preparation/`. Native coordinator composition,
+serialized scheduling and complete daemon/resolver integration remain open.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)
