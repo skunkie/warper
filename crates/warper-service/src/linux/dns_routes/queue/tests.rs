@@ -57,6 +57,97 @@ fn request(owner: &watch::Sender<bool>) -> Request {
 }
 
 #[tokio::test(start_paused = true)]
+async fn maintenance_retries_keep_the_original_operation_deadline() {
+    let controller = controller();
+    let (owner, cancellation) = watch::channel(false);
+    let mut maintenance = Maintenance {
+        changes: controller.changes().unwrap(),
+        timeout: Duration::from_secs(2),
+        cancellation,
+        operation: None,
+    };
+    let first = maintenance.request().unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(maintenance.request().unwrap().deadline, first.deadline);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(matches!(
+        maintenance.request(),
+        Err(NativeError::RequestExpired)
+    ));
+    maintenance.operation = None;
+    assert!(maintenance.request().unwrap().deadline > first.deadline);
+    owner.send_replace(true);
+    assert!(matches!(
+        maintenance.request(),
+        Err(NativeError::RequestCancelled)
+    ));
+    controller.close().unwrap();
+    controller.finish_drain().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn maintenance_idle_wait_survives_observation_loss_and_wakes_on_expiry() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    let controller = controller();
+    let (_owner, cancellation) = watch::channel(false);
+    let mut maintenance = Maintenance {
+        changes: controller.changes().unwrap(),
+        timeout: Duration::from_secs(2),
+        cancellation,
+        operation: None,
+    };
+    let expiry = Instant::now() + Duration::from_secs(1);
+    {
+        let mut wait = std::pin::pin!(maintenance.wait(Some(expiry)));
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    }
+    // Dropping observation does not consume the expiry or cancel its owner.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    maintenance.wait(Some(expiry)).await.unwrap();
+    {
+        let mut wait = std::pin::pin!(maintenance.wait(None));
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    }
+    controller.close().unwrap();
+    let mut wait = std::pin::pin!(maintenance.wait(None));
+    assert_eq!(
+        wait.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Ok(()))
+    );
+    controller.finish_drain().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn maintenance_session_loss_wakes_an_idle_owner() {
+    let controller = controller();
+    let (owner, cancellation) = watch::channel(false);
+    let mut maintenance = Maintenance {
+        changes: controller.changes().unwrap(),
+        timeout: Duration::from_secs(2),
+        cancellation,
+        operation: None,
+    };
+    drop(owner);
+    assert_eq!(
+        maintenance.wait(None).await,
+        Err(NativeError::RequestCancelled)
+    );
+    controller.close().unwrap();
+    controller.finish_drain().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn completed_results_hold_admission_until_consumed() {
     let controller = controller();
     let (owner, _) = watch::channel(false);

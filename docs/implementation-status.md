@@ -290,17 +290,29 @@ passes in [CI 41872208892](https://github.com/skunkie/warper/actions/runs/418722
 at `456dd9b`; all five native manifests preserve host state with zero reported
 drops and joined interrupted/failing work. Its macOS job was cancelled, so the
 exact-commit macOS check remains unverified. Evidence belongs under
-`target/evidence/phase-2/commit-mailbox/`. Timer/retirement scheduling, native
-change observation, global transient byte admission and daemon DNS remain
-incomplete.
+`target/evidence/phase-2/commit-mailbox/`. Native change observation, global
+transient byte admission and daemon DNS remain incomplete.
 
 Explicit ledger handoff/output completion, response cancellation, flow release
 and first closure now wake the coalesced expiry observer. Controlled tests
 verify new grace deadlines, newly retireable routes, retained pending ownership
 on closure and idempotent repeated closure without extra notifications. This
-fixes the notification prerequisite for an idle maintenance loop; it does not
-implement that loop. Evidence belongs under
+fixes the notification prerequisite for an idle maintenance loop. Evidence
+belongs under
 `target/evidence/phase-2/expiry-notifications/`.
+
+The optional mailbox maintenance owner now wakes on the next expiry or ledger
+notification and serializes retirement with queued commits. It retains the
+original bounded maintenance operation across worker/metadata contention and
+interrupted observation, and gives queued commands a turn between retirements.
+Controlled clock tests cover expiry wakeup, dropped observation, no-deadline
+sleep, reference-change wakeup, session loss and unchanged retry deadlines.
+The native positive-reply workload now keeps its mailbox open after its final
+query and requires automatic route retirement without manually advancing the
+ledger. That privileged assertion remains unverified until its exact-commit
+CI run passes. Evidence belongs under
+`target/evidence/phase-2/idle-maintenance/`. Idle capture monitoring and daemon
+integration remain open; DNS preflight remains disabled.
 
 ## Phase 0 Exit Evidence
 

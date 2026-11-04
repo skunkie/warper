@@ -856,7 +856,12 @@ async fn routed_udp_workload(
     let reserved = controller.reserved_bytes()?;
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
-    let (mailbox, mut driver) = warper_service::linux::dns_routes::queue::Driver::new(manager, 2)?;
+    let (mailbox, mut driver) = warper_service::linux::dns_routes::queue::Driver::with_maintenance(
+        manager,
+        2,
+        Duration::from_secs(2),
+        owner.subscribe(),
+    )?;
     let (cancelled, _) = watch::channel(true);
     if driver.run(request(&cancelled)).await
         != Err(warper_service::linux::dns_routes::queue::Error::WaitCancelled)
@@ -907,6 +912,15 @@ async fn routed_udp_workload(
             }
             latencies.push(before.elapsed().as_nanos());
         }
+        // Keep the mailbox open without submitting another DNS query. Only
+        // the retained maintenance owner may advance expiry and retire routes.
+        timeout(Duration::from_secs(3), async {
+            while controller.stats()?.routes != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            Ok::<_, Failure>(())
+        })
+        .await??;
         Ok::<_, Failure>(())
     };
     let driven = async {

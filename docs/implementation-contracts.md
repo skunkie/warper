@@ -3338,9 +3338,21 @@ keeps the active owner for resumed observation rather than releasing its guard.
 The caller retains the driver, joins accepted work, joins DNS output/flow
 owners, then releases the native manager for cleanup. Closing the driver
 prevents new submission and drains accepted commands. The mailbox starts no
-task. Maintenance scheduling, native change observation and global transient
-byte admission remain separate incomplete integration gates; the mailbox's
-request count does not stand in for their budgets.
+task. `Driver::with_maintenance` additionally owns the sole ledger change
+observer and schedules retirement from the next lease deadline or a coalesced
+reference-change notification. An idle driver with no deadline sleeps until a
+notification or command arrives. It checks retirement between commits and
+gives an already queued command a turn after each retirement. Neither a busy
+metadata lock nor a busy native worker renews the maintenance operation's
+original deadline. Each attempt has a configured positive timeout of at most
+30 seconds and an independent session cancellation signal; observation
+cancellation retains the operation and any accepted native job. Maintenance
+failure closes admission and retains the same failure/cleanup reporting as
+commit failure. Mailbox closure drains accepted commands without waiting for
+all retained leases to expire; the supervisor still owns final withdrawal.
+Idle native change observation and global transient byte admission remain
+separate incomplete integration gates; the mailbox's request count does not
+stand in for their budgets.
 
 `dns::prepare::Resolver` composes selected-backend A/AAAA and HTTPS/SVCB
 discovery with one whole-response route reservation. It checks the original

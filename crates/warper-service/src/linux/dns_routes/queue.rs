@@ -2,13 +2,16 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Count-bounded native commits with retained observation and completion.
+//! Count-bounded native commits and optional expiry-driven route maintenance.
 
 use super::{Completion, Error as NativeError, Failure, Manager};
-use std::{fmt, sync::Arc};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use std::{fmt, sync::Arc, time::Duration};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
+    time::Instant,
+};
 use warper_core::{
-    dns::lease::Response,
+    dns::lease::{Changes, Response},
     transport::{Error as ObserverError, Request},
 };
 
@@ -143,6 +146,43 @@ pub struct Driver<'a> {
     failure: Option<Failure>,
     join_error: Option<NativeError>,
     closure_pending: bool,
+    maintenance: Option<Maintenance>,
+    retiring: bool,
+    prefer_command: bool,
+}
+
+struct Maintenance {
+    changes: Changes,
+    timeout: Duration,
+    cancellation: watch::Receiver<bool>,
+    operation: Option<Request>,
+}
+impl Maintenance {
+    fn request(&mut self) -> Result<Request, NativeError> {
+        if self.operation.is_none() {
+            self.operation = Some(Request {
+                deadline: Instant::now()
+                    .checked_add(self.timeout)
+                    .ok_or(NativeError::InvalidLimits)?,
+                cancellation: self.cancellation.clone(),
+            });
+        }
+        let request = self.operation.as_ref().ok_or(NativeError::InvalidState)?;
+        super::check_operation(request)?;
+        Ok(request.clone())
+    }
+    async fn wait(&mut self, expiry: Option<Instant>) -> Result<(), NativeError> {
+        tokio::select! { biased;
+            _ = self.cancellation.wait_for(|cancelled| *cancelled) => Err(NativeError::RequestCancelled),
+            () = self.changes.wait() => Ok(()),
+            () = async {
+                match expiry {
+                    Some(expiry) => tokio::time::sleep_until(expiry).await,
+                    None => std::future::pending().await,
+                }
+            } => Ok(()),
+        }
+    }
 }
 impl<'a> Driver<'a> {
     pub fn new(manager: &'a mut Manager, limit: usize) -> Result<(Mailbox, Self), Error> {
@@ -161,7 +201,37 @@ impl<'a> Driver<'a> {
             failure: None,
             join_error: None,
             closure_pending: false,
+            maintenance: None,
+            retiring: false,
+            prefer_command: false,
         };
+        Ok((mailbox, driver))
+    }
+    /// Session cancellation belongs to maintenance operations; an interrupted
+    /// `run` observation does not cancel their original deadline or native work.
+    pub fn with_maintenance(
+        manager: &'a mut Manager,
+        limit: usize,
+        timeout: Duration,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<(Mailbox, Self), Error> {
+        if timeout.is_zero()
+            || timeout > Duration::from_secs(30)
+            || Instant::now().checked_add(timeout).is_none()
+        {
+            return Err(Error::InvalidLimit);
+        }
+        let changes = manager
+            .controller
+            .changes()
+            .map_err(|error| Error::Operation(NativeError::Metadata(error)))?;
+        let (mailbox, mut driver) = Self::new(manager, limit)?;
+        driver.maintenance = Some(Maintenance {
+            changes,
+            timeout,
+            cancellation,
+            operation: None,
+        });
         Ok((mailbox, driver))
     }
     pub async fn run(&mut self, observer: Request) -> Result<(), Error> {
@@ -203,15 +273,81 @@ impl<'a> Driver<'a> {
                 }
                 return Err(Error::Operation(failure.primary));
             }
-            if self.active.is_none() {
-                let Some(command) = observer
-                    .clone()
-                    .run(async { Ok(self.inbox.recv().await) })
-                    .await
-                    .map_err(observer_error)?
-                else {
+            if self.active.is_none() && !self.retiring {
+                let command = if self.prefer_command {
+                    self.inbox.try_recv().ok()
+                } else {
+                    None
+                };
+                self.prefer_command = false;
+                if command.is_none() && self.inbox.is_closed() && self.inbox.is_empty() {
                     self.admission.close();
                     return Ok(());
+                }
+                if command.is_none()
+                    && let Some(maintenance) = &mut self.maintenance
+                {
+                    let result = maintenance
+                        .request()
+                        .and_then(|request| self.manager.begin_next_retirement(request));
+                    match result {
+                        Ok(true) => {
+                            self.retiring = true;
+                            continue;
+                        }
+                        Ok(false) => maintenance.operation = None,
+                        Err(
+                            NativeError::Metadata(crate::dns::routes::Error::Busy)
+                            | NativeError::Worker(crate::native::Error::Busy),
+                        ) => {
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                        Err(error) => {
+                            self.fail(error);
+                            continue;
+                        }
+                    }
+                }
+                let command = match command {
+                    Some(command) => Ok(Some(command)),
+                    None => observer
+                        .clone()
+                        .run(async {
+                            loop {
+                                let Some(maintenance) = &mut self.maintenance else {
+                                    return Ok(Ok(self.inbox.recv().await));
+                                };
+                                let expiry = match self.manager.controller.next_expiry() {
+                                    Ok(expiry) => expiry,
+                                    Err(crate::dns::routes::Error::Busy) => {
+                                        tokio::task::yield_now().await;
+                                        continue;
+                                    }
+                                    Err(error) => return Ok(Err(NativeError::Metadata(error))),
+                                };
+                                return tokio::select! {
+                                    command = self.inbox.recv() => Ok(Ok(command)),
+                                    result = maintenance.wait(expiry) => {
+                                        Ok(result.map(|()| None))
+                                    }
+                                };
+                            }
+                        })
+                        .await
+                        .map_err(observer_error)?,
+                };
+                let command = match command {
+                    Ok(command) => command,
+                    Err(error) => {
+                        self.fail(error);
+                        continue;
+                    }
+                };
+                let Some(command) = command else {
+                    // A maintenance wake is distinct from mailbox EOF, which
+                    // is checked at the top of the next idle iteration.
+                    continue;
                 };
                 let Command {
                     response,
@@ -236,11 +372,21 @@ impl<'a> Driver<'a> {
                         .finish(Ok(response));
                 }
                 Ok(Completion::Retired) => {
-                    self.fail(NativeError::InvalidState);
-                    continue;
+                    if !self.retiring {
+                        self.fail(NativeError::InvalidState);
+                        continue;
+                    }
+                    self.retiring = false;
+                    self.prefer_command = true;
+                    if let Some(maintenance) = &mut self.maintenance {
+                        maintenance.operation = None;
+                    }
                 }
                 Err(error) => {
-                    if self.manager.failure().is_some() || self.manager.has_pending() {
+                    if self.retiring
+                        || self.manager.failure().is_some()
+                        || self.manager.has_pending()
+                    {
                         self.fail(error);
                         continue;
                     }
