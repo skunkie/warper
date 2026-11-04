@@ -886,29 +886,40 @@ async fn routed_udp_workload(
     let (query_owner, _) = watch::channel(false);
     let workload = async {
         let mailbox = mailbox;
-        for _ in 0..20 {
+        for index in 0..20 {
             let before = Instant::now();
             let operation = request(&query_owner);
-            let (client, datagram, query, mut reply) =
+            let (client, datagram, query, reply) =
                 routed_udp_query(endpoint, peer, &controller, operation.clone()).await?;
             transferred += datagram.payload().len();
-            let mut receipt = mailbox.submit(reply.reservation, operation.clone())?;
-            reply.reservation = receipt.wait(request(&query_owner)).await?;
-            if mailbox.active() != 0 {
-                return Err("joined commit receipt retained mailbox admission".into());
-            }
             let mut datagram = Some(datagram);
-            *pending = Some(UdpOutput::begin(
+            *pending = Some(UdpOutput::begin_queued(
                 controller.clone(),
                 &mut datagram,
                 reply,
+                &mailbox,
                 operation,
             )?);
+            if index == 0 {
+                let output = pending.as_mut().ok_or("queued UDP output owner lost")?;
+                if output.wait(request(&cancelled)).await
+                    != Err(warper_service::dns::output::Error::WaitCancelled)
+                    || !output.has_pending()
+                    || output.take_unsubmitted_datagram().is_some()
+                {
+                    return Err(
+                        "queued UDP observation lost its accepted commit or datagram".into(),
+                    );
+                }
+            }
             pending
                 .as_mut()
                 .ok_or("routed UDP workload lost output")?
                 .wait(request(owner))
                 .await?;
+            if mailbox.active() != 0 {
+                return Err("joined commit receipt retained mailbox admission".into());
+            }
             let mut wire = [0; 512];
             let length = timeout(Duration::from_secs(2), client.recv(&mut wire)).await??;
             if Packet::response(&wire[..length], &query, PacketLimits::new(512, 8)?)?

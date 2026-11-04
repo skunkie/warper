@@ -309,8 +309,8 @@ Controlled clock tests cover expiry wakeup, dropped observation, no-deadline
 sleep, reference-change wakeup, session loss and unchanged retry deadlines.
 The native positive-reply workload now keeps its mailbox open after its final
 query and requires automatic route retirement without manually advancing the
-ledger. That privileged assertion remains unverified until its exact-commit
-CI run passes. Evidence belongs under
+ledger. That privileged assertion passes at `ec77995` in the complete native
+gate linked below. Evidence belongs under
 `target/evidence/phase-2/idle-maintenance/`. Daemon integration remains open;
 DNS preflight remains disabled.
 
@@ -322,7 +322,7 @@ dropped observation, then changes a fixture-owned address in its private
 namespace. It requires the kernel event to wake the parked future without
 polling it, issuing another query or waiting for its observation deadline.
 It then checks failure, rejected submission and joined cleanup. This privileged
-wakeup assertion remains unverified until exact-commit CI passes. Evidence
+wakeup assertion passes at `ec77995` in the complete native gate below. Evidence
 belongs under `target/evidence/phase-2/idle-capture/`; daemon DNS, global
 transient admission, virtual TCP DNS and resolver integration remain open.
 
@@ -338,6 +338,30 @@ Evidence belongs under `target/evidence/phase-2/tcp-framing/`. Stream acceptance
 is not a virtual TCP delivery receipt: the virtual TCP DNS role and native
 output barrier remain incomplete, as do daemon/resolver integration and global
 transient admission.
+
+The combined expiry, idle capture and TCP framing increment passes
+[CI 41910667449](https://github.com/skunkie/warper/actions/runs/41910667449)
+at `ec77995`, including Linux x86-64/ARM64 and macOS ARM64 builds/tests. All four
+Linux probe manifests identify that revision, report zero exit/no timeout and
+preserved host state; the installed-unit manifest reports zero exit and no
+errors for its idle-service scope. The native log includes both joined final
+failure scenarios, automatic idle retirement, 21 selected SOCKS DNS exchanges
+per scenario, first-flow forwarding, zero reported packet drops and preserved
+foreign state. Inspected evidence belongs under
+`target/evidence/phase-2/tcp-framing/ci-41910667449/`. This verifies the scoped
+composition and regression gates, not daemon DNS or resolved integration.
+
+The Linux routed UDP owner now also retains queued publication through native
+packet output and grace completion. It validates reply size/correlation before
+queue admission, preserves both phases across observation cancellation and
+keeps failed, unsubmitted input available for a bounded SERVFAIL/TC response.
+Controlled tests cover pre-admission rejection, retained commits, TTL aging
+across queue delay and known commit rejection without positive output. The
+native workload now uses this service-owned composition rather than joining
+commit receipts in fixture code; that new path remains unverified until its
+exact-commit gate passes. Evidence belongs under
+`target/evidence/phase-2/queued-udp/`. Daemon listeners/supervision, global
+transient admission, virtual TCP delivery and resolved integration remain open.
 
 ## Phase 0 Exit Evidence
 

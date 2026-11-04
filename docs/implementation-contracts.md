@@ -3446,8 +3446,21 @@ original query. Validate it against the virtual endpoint ceiling and enforce
 it during encoding, including the 512-byte default without EDNS. An oversized
 positive reply leaves the datagram available for a record-free TC reply.
 Preparation/authorization leaves the caller's original datagram available for
-a bounded SERVFAIL/TC response. Take it only when native submission begins;
+a bounded SERVFAIL/TC response. Direct `begin` takes it when packet submission begins;
 cancellation/expiry/closed output at that point cannot admit a fallback reply.
+
+On Linux, `begin_queued` also owns native publication through the bounded
+mailbox. Validate correlation, size, timestamps and retention arithmetic before
+queue admission; validation encoding does not subtract elapsed TTL time.
+After admission, the same owner retains the datagram, original operation and
+commit receipt. Wait for the committed reservation before starting packet
+output, then age TTLs once from the original observation. Observation loss
+preserves both phases and cannot replay either submission. The supervisor
+must retain/run the native driver until all accepted work joins, including
+when output observation ends. A joined commit rejection or pre-output error
+permits `take_unsubmitted_datagram` for a bounded negative reply under the
+original request; it cannot extract input while accepted work remains pending.
+The driver's failure/cleanup report remains independently required.
 
 After submission, retain the output guard and original native receipt in the
 same owner. Cancelled/dropped observation resumes that same operation. Native

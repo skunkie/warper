@@ -471,6 +471,42 @@ fn channel(limit: usize) -> Result<(Mailbox, mpsc::Receiver<Command>), Error> {
         inbox,
     ))
 }
+
+#[cfg(test)]
+pub(crate) fn closed_mailbox() -> Mailbox {
+    let (mailbox, mut inbox) = channel(1).unwrap();
+    inbox.close();
+    mailbox.admission.close();
+    mailbox
+}
+
+#[cfg(test)]
+pub(crate) struct FixtureCommits(mpsc::Receiver<Command>);
+#[cfg(test)]
+impl FixtureCommits {
+    pub(crate) async fn finish_next(
+        &mut self,
+        publish: impl FnOnce(&Response) -> Result<(), NativeError>,
+    ) {
+        let Command {
+            response,
+            completion,
+            ..
+        } = self.0.recv().await.unwrap();
+        match publish(&response) {
+            Ok(()) => completion.finish(Ok(response)),
+            Err(error) => {
+                drop(response);
+                completion.finish(Err(error));
+            }
+        }
+    }
+}
+#[cfg(test)]
+pub(crate) fn fixture_mailbox() -> (Mailbox, FixtureCommits) {
+    let (mailbox, inbox) = channel(1).unwrap();
+    (mailbox, FixtureCommits(inbox))
+}
 fn observer_error(error: ObserverError) -> Error {
     match error {
         ObserverError::Cancelled => Error::WaitCancelled,

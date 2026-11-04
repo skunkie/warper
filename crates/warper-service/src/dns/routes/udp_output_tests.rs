@@ -327,6 +327,212 @@ async fn invalid_or_uncommitted_udp_replies_never_start_native_output() {
 }
 
 #[tokio::test(start_paused = true)]
+#[cfg(target_os = "linux")]
+async fn queued_udp_validation_and_closed_admission_preserve_unsubmitted_input() {
+    for case in 0..5 {
+        let mut fixture = Fixture::new(false).await;
+        let mut reply = fixture.reply(0);
+        let expected = match case {
+            0 => {
+                reply.udp_payload_limit = 0;
+                OutputError::Packet(crate::dns::Error::InvalidLimits)
+            }
+            1 => {
+                reply.packet = packet_with_padding(0, 17, 600);
+                OutputError::Packet(crate::dns::Error::ResourceLimit)
+            }
+            2 => {
+                reply.packet = packet(0, 18, false);
+                OutputError::Packet(crate::dns::Error::MismatchedResponse)
+            }
+            3 => {
+                reply.received_at += Duration::from_secs(1);
+                OutputError::InvalidTime
+            }
+            _ => OutputError::Commit(crate::linux::dns_routes::queue::Error::Closed),
+        };
+        let result = UdpOutput::begin_queued(
+            fixture.controller.clone(),
+            &mut fixture.datagram,
+            reply,
+            &crate::linux::dns_routes::queue::closed_mailbox(),
+            request(&fixture.owner),
+        );
+        assert!(
+            matches!(result, Err(error) if error == expected),
+            "case {case}"
+        );
+        assert!(fixture.datagram.is_some(), "case {case}");
+        assert_eq!(fixture.endpoint.retained_requests(), 1, "case {case}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), fixture.channels.packets.recv())
+                .await
+                .is_err(),
+            "case {case}"
+        );
+        fixture.close().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+#[cfg(target_os = "linux")]
+async fn queued_udp_resumes_the_same_commit_and_ages_ttl_once_after_confirmation() {
+    let mut fixture = Fixture::with_ttl(false, 5).await;
+    let (mailbox, mut commits) = crate::linux::dns_routes::queue::fixture_mailbox();
+    let reply = fixture.reply(5);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let mut output = UdpOutput::begin_queued(
+        fixture.controller.clone(),
+        &mut fixture.datagram,
+        reply,
+        &mailbox,
+        request(&fixture.owner),
+    )
+    .unwrap();
+    let (cancelled, _) = watch::channel(true);
+    assert_eq!(
+        output.wait(request(&cancelled)).await,
+        Err(OutputError::WaitCancelled)
+    );
+    assert!(output.has_pending());
+    assert!(output.take_unsubmitted_datagram().is_none());
+    assert_eq!(mailbox.active(), 1);
+    let mut observer = request(&fixture.owner);
+    observer.deadline = Instant::now() + Duration::from_millis(1);
+    assert_eq!(output.wait(observer).await, Err(OutputError::WaitDeadline));
+    let (observation_owner, _) = watch::channel(false);
+    let observer = request(&observation_owner);
+    let cancel = async {
+        tokio::task::yield_now().await;
+        observation_owner.send_replace(true);
+    };
+    let (observed, ()) = tokio::join!(output.wait(observer), cancel);
+    assert_eq!(observed, Err(OutputError::WaitCancelled));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), fixture.channels.packets.recv())
+            .await
+            .is_err()
+    );
+    tokio::time::advance(Duration::from_secs(2)).await;
+    // Ledger-only confirmation models an ACK for this unit test. The native
+    // fixture separately proves real publication through the same owner.
+    commits
+        .finish_next(|_| {
+            fixture
+                .controller
+                .confirm_publication(fixture.route)
+                .map_err(crate::linux::dns_routes::Error::Metadata)
+        })
+        .await;
+    let observation = request(&fixture.owner);
+    let receive = async {
+        let native = fixture.channels.packets.recv().await.unwrap();
+        let wire = &native[28..];
+        let ttl = u32::from_be_bytes(wire[wire.len() - 10..wire.len() - 6].try_into().unwrap());
+        native.complete(Ok(())).unwrap();
+        ttl
+    };
+    let (completed, ttl) = tokio::join!(output.wait(observation), receive);
+    completed.unwrap();
+    assert_eq!(
+        ttl, 1,
+        "pre-queue and ACK delays must be aged together exactly once"
+    );
+    assert!(!output.has_pending());
+    assert!(output.failure().is_none());
+    assert_eq!(mailbox.active(), 0);
+    drop(output);
+    drop(commits);
+    drop(mailbox);
+    fixture.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+#[cfg(target_os = "linux")]
+async fn known_queued_commit_rejection_retains_input_for_servfail_without_positive_output() {
+    let mut fixture = Fixture::new(false).await;
+    let (mailbox, mut commits) = crate::linux::dns_routes::queue::fixture_mailbox();
+    let reply = fixture.reply(0);
+    let mut output = UdpOutput::begin_queued(
+        fixture.controller.clone(),
+        &mut fixture.datagram,
+        reply,
+        &mailbox,
+        request(&fixture.owner),
+    )
+    .unwrap();
+    let rejection = crate::linux::dns_routes::Error::Native(crate::linux::tun::Error::Conflict);
+    commits.finish_next(|_| Err(rejection)).await;
+    assert_eq!(
+        output.wait(request(&fixture.owner)).await,
+        Err(OutputError::Commit(
+            crate::linux::dns_routes::queue::Error::Operation(rejection)
+        ))
+    );
+    assert!(!output.has_pending());
+    assert_eq!(mailbox.active(), 0);
+    let datagram = output.take_unsubmitted_datagram().unwrap();
+    assert!(output.take_unsubmitted_datagram().is_none());
+    let query = Packet::request(&query(), Limits::new(512, 8).unwrap()).unwrap();
+    let wire = query.local_reply(crate::dns::LocalReply::ServFail).unwrap();
+    let mut receipt = datagram.respond(&wire, request(&fixture.owner)).unwrap();
+    let native = fixture.channels.packets.recv().await.unwrap();
+    assert_eq!(
+        Packet::response(&native[28..], &query, Limits::new(512, 8).unwrap())
+            .unwrap()
+            .response_code(),
+        2
+    );
+    native.complete(Ok(())).unwrap();
+    receipt.wait(request(&fixture.owner)).await.unwrap();
+    drop(output);
+    drop(commits);
+    drop(mailbox);
+    fixture.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+#[cfg(target_os = "linux")]
+async fn routing_closure_after_commit_prevents_positive_output_and_retains_input() {
+    let mut fixture = Fixture::new(false).await;
+    let (mailbox, mut commits) = crate::linux::dns_routes::queue::fixture_mailbox();
+    let reply = fixture.reply(0);
+    let mut output = UdpOutput::begin_queued(
+        fixture.controller.clone(),
+        &mut fixture.datagram,
+        reply,
+        &mailbox,
+        request(&fixture.owner),
+    )
+    .unwrap();
+    commits
+        .finish_next(|_| {
+            fixture
+                .controller
+                .confirm_publication(fixture.route)
+                .map_err(crate::linux::dns_routes::Error::Metadata)
+        })
+        .await;
+    fixture.controller.close().unwrap();
+    assert_eq!(
+        output.wait(request(&fixture.owner)).await,
+        Err(OutputError::Metadata(Error::Ledger(lease::Error::Closed)))
+    );
+    assert!(!output.has_pending());
+    assert_eq!(mailbox.active(), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), fixture.channels.packets.recv())
+            .await
+            .is_err()
+    );
+    drop(output.take_unsubmitted_datagram().unwrap());
+    drop(output);
+    drop(commits);
+    drop(mailbox);
+    fixture.close().await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn known_native_cancellation_and_expiry_release_output_without_new_grace() {
     for failure in [delivery::Failure::Cancelled, delivery::Failure::Deadline] {
         let mut fixture = Fixture::new(true).await;
