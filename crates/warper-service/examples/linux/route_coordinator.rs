@@ -369,12 +369,16 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             let stopped = watcher_stop.clone();
             let lease = lease.clone();
             watcher = Some(std::thread::spawn(move || -> Result<bool, Failure> {
-                let journal = NetworkJournal::open(&lease)?;
                 ready
                     .send(())
                     .map_err(|_| "intent observer owner stopped")?;
                 let deadline = std::time::Instant::now() + Duration::from_secs(2);
                 while !stopped.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                    // A journal handle fences its first observed revision.
+                    // This read-only fixture samples successive committed
+                    // revisions, so each sample needs a fresh handle. A rename
+                    // racing that sample is inconclusive, never mutation proof.
+                    let journal = NetworkJournal::open(&lease)?;
                     match journal.read(&lease) {
                         Ok(Some(snapshot))
                             if snapshot.payload().get(96) == Some(&(tun::Stage::Routing as u8)) =>
@@ -382,7 +386,12 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
                             cancel.send_replace(true);
                             return Ok(true);
                         }
-                        Ok(_) | Err(StorageError::Conflict | StorageError::RecoveryRequired) => {}
+                        Ok(_)
+                        | Err(
+                            StorageError::Conflict
+                            | StorageError::RecoveryRequired
+                            | StorageError::UnsafeState,
+                        ) => {}
                         Err(error) => return Err(error.into()),
                     }
                     std::thread::sleep(Duration::from_micros(50));
