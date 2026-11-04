@@ -3300,6 +3300,13 @@ and joins DNS writers, runtime and native packet pump before releasing routes.
 
 ### Routed UDP reply ownership
 
+Shared packet-runtime construction obtains an opaque native seed before
+mutation. Linux retains nonblocking `getrandom` through rustix. macOS uses
+the already locked `getrandom` 0.4.3 library's `getentropy(2)` backend for one
+eight-byte seed; errors remain typed and redacted with no weaker fallback or
+configured seed. This portable primitive enables controlled packet-runtime
+tests on macOS; it grants no native macOS interface/helper capability.
+
 `warper_service::dns::output::UdpOutput` consumes one validated routed reply,
 its pending route reservation and the original virtual datagram. The caller
 must have completed address/service discovery and reserved the complete

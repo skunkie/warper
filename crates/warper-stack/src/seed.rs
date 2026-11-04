@@ -34,7 +34,18 @@ impl Seed {
                 .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()).kind())
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    pub fn generate() -> Result<Self, Error> {
+        read_seed(|bytes| {
+            getrandom::fill(bytes).map_err(|error| {
+                error.raw_os_error().map_or(io::ErrorKind::Other, |errno| {
+                    io::Error::from_raw_os_error(errno).kind()
+                })
+            })?;
+            Ok(bytes.len())
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn generate() -> Result<Self, Error> {
         Err(Error::UnsupportedPlatform)
     }
@@ -51,7 +62,7 @@ impl fmt::Debug for Seed {
         f.write_str("Seed(<redacted>)")
     }
 }
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn read_seed(
     fill: impl FnOnce(&mut [u8; 8]) -> Result<usize, io::ErrorKind>,
 ) -> Result<Seed, Error> {
@@ -82,6 +93,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn native_linux_entropy_can_prepare_a_stack_seed() {
+        Seed::generate().unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_macos_entropy_can_prepare_a_stack_seed() {
         Seed::generate().unwrap();
     }
 }

@@ -2011,6 +2011,7 @@ name = "warper-stack"
 version = "0.0.0"
 dependencies = [
  "futures",
+ "getrandom 0.4.3",
  "rustix",
  "smoltcp 0.14.0",
  "tokio",

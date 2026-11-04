@@ -225,8 +225,14 @@ expiry, first-flow protection and preservation of primary/closure failures.
 Evidence belongs under `target/evidence/phase-2/routed-udp-output/`. The extended
 native fixture sends a positive zero-TTL UDP answer after capture publication,
 connects before completion observation and repeats 20 routed replies. Those
-native additions remain unverified until their exact-commit CI passes. This
-does not implement upstream discovery scheduling, virtual TCP DNS or complete
+native additions pass the isolated Linux gate in
+[CI 41792097541](https://github.com/skunkie/warper/actions/runs/41792097541)
+at `8e27449`: all five native manifests preserve host state, and the routed
+workload reports zero ingress drops and discarded output. That run fails
+macOS unit tests because packet-runtime seed generation was Linux-only.
+Native macOS entropy now uses the already locked `getrandom` library;
+its platform test and the portable routed-output tests await native CI.
+This does not implement upstream discovery scheduling, virtual TCP DNS or complete
 daemon/resolver integration; DNS remains disabled in service preflight.
 
 ## Phase 0 Exit Evidence
