@@ -66,7 +66,9 @@ pub(super) async fn exercise(
             .enable_all()
             .max_blocking_threads(1)
             .build()?
-            .block_on(run(context, lease))
+            // The composed probe state is large in debug builds. Keep runtime
+            // entry/poll moves pointer-sized on the default blocking stack.
+            .block_on(Box::pin(run(context, lease)))
     })
     .await?
 }
