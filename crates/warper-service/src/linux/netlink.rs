@@ -16,8 +16,9 @@ use std::{
     future::{Future, poll_fn},
     io,
     sync::atomic::{AtomicU32, Ordering},
+    task::Poll,
 };
-use tokio::time::sleep_until;
+use tokio::time::{Instant, sleep_until};
 use warper_core::transport::Request;
 
 pub(super) const MAX_REQUEST: usize = 128;
@@ -77,10 +78,20 @@ pub(super) async fn bounded<T>(
     mut request: Request,
     operation: impl Future<Output = Result<T, QueryError>>,
 ) -> Result<T, QueryError> {
+    let deadline = request.deadline;
+    let mut operation = std::pin::pin!(operation);
+    let checked = poll_fn(|context| {
+        // Check each poll even when the timer driver has not run again.
+        if Instant::now() >= deadline {
+            Poll::Ready(Err(QueryError::Timeout))
+        } else {
+            operation.as_mut().poll(context)
+        }
+    });
     tokio::select! { biased;
         _ = request.cancellation.wait_for(|cancelled| *cancelled) => Err(QueryError::Cancelled),
-        () = sleep_until(request.deadline) => Err(QueryError::Timeout),
-        result = operation => result,
+        () = sleep_until(deadline) => Err(QueryError::Timeout),
+        result = checked => result,
     }
 }
 
@@ -227,5 +238,47 @@ mod tests {
                 "{name} query retains {bytes} inline bytes; nested protected connection futures must fit default worker stacks"
             );
         }
+    }
+
+    #[test]
+    fn expired_native_io_does_not_resume_before_timer_driver_runs() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let (_owner, cancellation) = watch::channel(false);
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let polls = std::cell::Cell::new(0);
+        let operation = std::future::poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            if polls.get() == 1 {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok::<_, QueryError>(()))
+            }
+        });
+        let mut operation = std::pin::pin!(bounded(
+            Request {
+                deadline,
+                cancellation
+            },
+            operation
+        ));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(operation.as_mut().poll(&mut context).is_pending());
+        // Keep the timer driver idle while the real monotonic deadline passes.
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+        );
+        assert_eq!(
+            operation.as_mut().poll(&mut context),
+            std::task::Poll::Ready(Err(QueryError::Timeout))
+        );
+        assert_eq!(
+            polls.get(),
+            1,
+            "expired native queries must not be polled again"
+        );
     }
 }

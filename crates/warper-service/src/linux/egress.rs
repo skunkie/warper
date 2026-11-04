@@ -12,7 +12,7 @@ use super::{
 };
 use std::{
     fmt,
-    future::Future,
+    future::{Future, poll_fn},
     io,
     net::{SocketAddr, SocketAddrV4},
     num::NonZeroU32,
@@ -24,7 +24,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpSocket, TcpStream},
     sync::{OwnedSemaphorePermit, Semaphore},
-    time::sleep_until,
+    time::{Instant, sleep_until},
 };
 use warper_core::transport::{self, EndpointConnector, OpenTcp, Request};
 
@@ -449,10 +449,21 @@ async fn bounded<T>(
     mut request: Request,
     operation: impl Future<Output = Result<T, Error>>,
 ) -> Result<T, Error> {
+    let deadline = request.deadline;
+    let mut operation = std::pin::pin!(operation);
+    let checked = poll_fn(|context| {
+        // Ready native I/O must not bypass a timer whose driver has not yet
+        // observed the original deadline.
+        if Instant::now() >= deadline {
+            Poll::Ready(Err(Error::Deadline))
+        } else {
+            operation.as_mut().poll(context)
+        }
+    });
     tokio::select! { biased;
         _=request.cancellation.wait_for(|cancelled|*cancelled)=>Err(Error::Cancelled),
-        ()=sleep_until(request.deadline)=>Err(Error::Deadline),
-        result=operation=>result,
+        ()=sleep_until(deadline)=>Err(Error::Deadline),
+        result=checked=>result,
     }
 }
 fn io_error(error: io::Error) -> Error {

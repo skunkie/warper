@@ -1787,6 +1787,10 @@ are bounded by that datagram; callers must reserve transient parse memory and
 bound concurrent queries before using this boundary in a service. No worker,
 subscription, hidden queue, retries after successful send or persistent cache is
 created. Cancellation, owner loss and one total deadline drop the socket.
+Both query and protected transport setup wrappers check that original deadline
+before every operation poll, including ready I/O resumed while the Tokio timer
+driver is idle. Cancellation retains priority when both conditions are ready;
+an expired operation cannot start or resume I/O through a stale timer poll.
 Exactly one complete kernel unicast reply with matching port and sequence is
 required. An ACK is not a route, and a negative kernel errno remains typed.
 Unknown, ambiguous, missing, duplicate or unsupported routing metadata fails

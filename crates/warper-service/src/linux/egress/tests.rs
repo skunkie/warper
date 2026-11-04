@@ -152,6 +152,44 @@ async fn setup_deadline_and_owner_loss_end_owned_operations() {
         Err(Error::Cancelled)
     );
 }
+
+#[test]
+fn expired_native_io_does_not_resume_before_timer_driver_runs() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let (_owner, cancellation) = watch::channel(false);
+    let deadline = Instant::now() + Duration::from_millis(25);
+    let polls = std::cell::Cell::new(0);
+    let operation = std::future::poll_fn(|_| {
+        polls.set(polls.get() + 1);
+        if polls.get() == 1 {
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok::<_, Error>(()))
+        }
+    });
+    let mut operation = std::pin::pin!(bounded(
+        Request {
+            deadline,
+            cancellation
+        },
+        operation
+    ));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(operation.as_mut().poll(&mut context).is_pending());
+    // Keep the timer driver idle while the real monotonic deadline passes.
+    std::thread::sleep(
+        deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+    );
+    assert_eq!(
+        operation.as_mut().poll(&mut context),
+        Poll::Ready(Err(Error::Deadline))
+    );
+    assert_eq!(polls.get(), 1, "expired I/O must not be polled again");
+}
 #[test]
 fn portable_setup_errors_keep_failure_categories_without_native_details() {
     for (error, expected) in [
