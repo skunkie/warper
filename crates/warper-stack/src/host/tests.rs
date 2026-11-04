@@ -57,6 +57,236 @@ fn connected(
 }
 
 #[tokio::test]
+async fn local_dns_tcp_preserves_tuple_and_response_after_fin_without_backend_acceptance() {
+    for ipv6 in [false, true] {
+        let endpoint = if ipv6 {
+            "[2001:db8::9]:53"
+        } else {
+            "192.0.2.9:53"
+        }
+        .parse()
+        .unwrap();
+        let mut peer = Peer::with_destination(ipv6, 50000, endpoint);
+        // A matching backend route must not override the explicit local role.
+        let (mut host, mut backend, mut dns) = HostAdapter::with_dns(
+            Limits::default(),
+            policy(endpoint),
+            Seed::fixture(),
+            endpoint,
+        )
+        .unwrap();
+        let mut accepted = None;
+        for turn in 0..100 {
+            pump(&mut host, &mut peer, Duration::from_millis(turn));
+            if let Ok(flow) = dns.try_recv() {
+                accepted = Some(flow);
+                break;
+            }
+        }
+        let mut flow = accepted.unwrap();
+        assert_eq!(flow.metadata.source, peer.source);
+        assert_eq!(flow.metadata.destination, endpoint);
+        assert!(backend.try_recv().is_err());
+        let request = b"\x00\x04one!\x00\x04two!";
+        let response = b"\x00\x04yes!\x00\x04done";
+        let mut sent = 0;
+        let mut actual = Vec::new();
+        let mut closed = false;
+        let server = async {
+            let mut input = Vec::new();
+            flow.stream.read_to_end(&mut input).await.unwrap();
+            assert_eq!(input, request);
+            flow.stream.write_all(response).await.unwrap();
+            flow.stream.shutdown().await.unwrap();
+        };
+        let client = async {
+            for turn in 100..10100 {
+                let socket = peer.tcp();
+                if socket.can_send() && sent < request.len() {
+                    sent += socket.send_slice(&request[sent..]).unwrap();
+                }
+                if sent == request.len() && !closed {
+                    socket.close();
+                    closed = true;
+                }
+                if socket.can_recv() {
+                    socket
+                        .recv(|bytes| {
+                            actual.extend_from_slice(bytes);
+                            (bytes.len(), ())
+                        })
+                        .unwrap();
+                }
+                let finished = actual.len() == response.len() && !socket.may_recv();
+                pump(&mut host, &mut peer, Duration::from_millis(turn));
+                if finished {
+                    assert_eq!(actual, response);
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+            panic!("bounded local DNS TCP exchange did not complete");
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(server, client);
+        })
+        .await
+        .unwrap();
+        host.cancel();
+        drop(flow);
+        assert_eq!(host.retained_flows(), 0);
+        assert!(backend.try_recv().is_err());
+    }
+}
+
+#[test]
+fn local_dns_rejects_other_ports_and_closed_consumers_before_backend_selection() {
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (mut host, mut backend, dns) = HostAdapter::with_dns(
+        Limits::default(),
+        policy(endpoint),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut wrong_port = Peer::new(false, 50000);
+    assert_eq!(
+        host.inject(&wrong_port.syn()),
+        Err(AdmissionError::UnsupportedProtocol)
+    );
+    drop(dns);
+    let mut peer = Peer::with_destination(false, 50001, endpoint);
+    assert_eq!(
+        host.inject(&peer.syn()),
+        Err(AdmissionError::ConsumerClosed)
+    );
+    assert_eq!(host.retained_flows(), 0);
+    assert_eq!(host.active_flows(), 0);
+    assert!(backend.try_recv().is_err());
+    host.cancel();
+}
+
+#[tokio::test]
+async fn local_dns_and_backend_tcp_share_lifetime_admission() {
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let destination = "192.0.2.10:443".parse().unwrap();
+    let limits = Limits {
+        flows: 1,
+        accepted: 1,
+        ..Limits::default()
+    };
+    let (mut host, mut backend, mut dns) =
+        HostAdapter::with_dns(limits, policy(destination), Seed::fixture(), endpoint).unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    let mut accepted = None;
+    for turn in 0..100 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+        if let Ok(flow) = dns.try_recv() {
+            accepted = Some(flow);
+            break;
+        }
+    }
+    let mut flow = accepted.unwrap();
+    let mut application = Peer::with_destination(false, 50001, destination);
+    assert_eq!(
+        host.inject(&application.syn()),
+        Err(AdmissionError::ResourceLimit)
+    );
+    host.cancel_flows().unwrap();
+    assert_eq!(host.active_flows(), 0);
+    assert_eq!(host.retained_flows(), 1);
+    assert_eq!(
+        flow.stream.read(&mut [0]).await.unwrap_err().kind(),
+        io::ErrorKind::Interrupted
+    );
+    drop(flow);
+    assert_eq!(host.retained_flows(), 0);
+    assert!(backend.try_recv().is_err());
+    host.cancel();
+}
+
+#[test]
+fn local_dns_quiescence_aborts_pending_handshakes_and_rejects_new_ones() {
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+        Limits::default(),
+        Arc::new(Policy::new(&[], 1).unwrap()),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    host.inject(&peer.syn()).unwrap();
+    host.quiesce().unwrap();
+    assert_eq!(host.active_flows(), 0);
+    assert_eq!(host.retained_flows(), 0);
+    let mut next = Peer::with_destination(false, 50001, endpoint);
+    assert_eq!(host.inject(&next.syn()), Err(AdmissionError::Quiescing));
+    poll(&mut host, Duration::ZERO);
+    assert!(dns.try_recv().is_err());
+    host.cancel();
+}
+
+#[test]
+fn local_dns_full_accept_queue_retains_only_the_existing_lifetime() {
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let limits = Limits {
+        flows: 2,
+        accepted: 1,
+        ..Limits::default()
+    };
+    let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+        limits,
+        Arc::new(Policy::new(&[], 1).unwrap()),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    for turn in 0..8 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+    }
+    assert_eq!(dns.len(), 1);
+    let mut next = Peer::with_destination(false, 50001, endpoint);
+    assert_eq!(
+        host.inject(&next.syn()),
+        Err(AdmissionError::AcceptQueueFull)
+    );
+    assert_eq!(host.active_flows(), 1);
+    assert_eq!(host.retained_flows(), 1);
+    host.cancel();
+    assert_eq!(host.active_flows(), 0);
+    assert_eq!(host.retained_flows(), 1);
+    drop(dns.try_recv().unwrap());
+    assert_eq!(host.retained_flows(), 0);
+}
+
+#[test]
+fn local_dns_validates_endpoint_before_allocating_host_buffers() {
+    for endpoint in [
+        "192.0.2.9:0",
+        "192.0.2.9:54",
+        "127.0.0.1:53",
+        "0.0.0.0:53",
+        "[::]:53",
+        "[::1]:53",
+    ] {
+        assert!(
+            matches!(
+                HostAdapter::with_dns(
+                    Limits::default(),
+                    Arc::new(Policy::new(&[], 1).unwrap()),
+                    Seed::fixture(),
+                    endpoint.parse().unwrap()
+                ),
+                Err(AdmissionError::InvalidLimits)
+            ),
+            "{endpoint}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn packet_flows_preserve_original_metadata_bytes_and_response_after_fin() {
     for quiescing in [false, true] {
         for ipv6 in [false, true] {

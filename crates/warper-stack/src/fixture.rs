@@ -23,17 +23,23 @@ pub(crate) struct Peer {
 }
 impl Peer {
     pub(crate) fn new(ipv6: bool, port: u16) -> Self {
+        Self::with_destination(
+            ipv6,
+            port,
+            if ipv6 {
+                "[2001:db8::9]:443"
+            } else {
+                "192.0.2.9:443"
+            }
+            .parse()
+            .unwrap(),
+        )
+    }
+    pub(crate) fn with_destination(ipv6: bool, port: u16, destination: SocketAddr) -> Self {
         let source: SocketAddr = if ipv6 {
             format!("[2001:db8::2]:{port}")
         } else {
             format!("192.0.2.2:{port}")
-        }
-        .parse()
-        .unwrap();
-        let destination: SocketAddr = if ipv6 {
-            "[2001:db8::9]:443"
-        } else {
-            "192.0.2.9:443"
         }
         .parse()
         .unwrap();

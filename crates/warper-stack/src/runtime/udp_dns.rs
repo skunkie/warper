@@ -159,6 +159,7 @@ pub(super) struct Driver {
     quiescent: bool,
     cancellation: watch::Sender<bool>,
     pub(super) statistics: Statistics,
+    tcp: bool,
 }
 impl Driver {
     pub(super) fn new(config: Config, wake: Arc<Notify>) -> Result<(Self, Endpoint), Error> {
@@ -177,6 +178,7 @@ impl Driver {
                 quiescent: false,
                 cancellation: watch::channel(false).0,
                 statistics: Statistics::default(),
+                tcp: false,
             },
             Endpoint {
                 requests: receiver,
@@ -188,8 +190,20 @@ impl Driver {
     pub(super) fn consumer(&self) -> mpsc::Sender<Datagram> {
         self.requests.clone()
     }
+    pub(super) fn allow_tcp(&mut self) {
+        self.tcp = true;
+    }
     pub(super) fn inject(&mut self, packet: &[u8]) -> Result<bool, AdmissionError> {
         if destination(packet) != Some(self.config.endpoint.ip()) {
+            return Ok(false);
+        }
+        if self.tcp
+            && match packet.first().map(|byte| byte >> 4) {
+                Some(4) => packet.get(9) == Some(&6),
+                Some(6) => packet.get(6) == Some(&6),
+                _ => false,
+            }
+        {
             return Ok(false);
         }
         self.statistics.received = self.statistics.received.saturating_add(1);

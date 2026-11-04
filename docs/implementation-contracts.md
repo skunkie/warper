@@ -3280,7 +3280,7 @@ Its address is reserved for local DNS processing; packets for other ports or
 protocols at that address never enter backend selection. UDP datagrams use
 smoltcp's checked IP/UDP parsing and serialization, preserve source/destination
 and datagram boundaries, reject fragments/extensions and malformed checksums,
-and admit at most 1,232 payload bytes. TCP support is a separate required gate;
+and admit at most 1,232 payload bytes. TCP uses the separate local role below;
 an allocated UDP handler alone grants no native DNS-route publication authority.
 
 Bound queued, handling and replying datagrams with one retained admission
@@ -3312,6 +3312,36 @@ Its cancellation signal also travels with extracted/queued native output, so
 forced cancellation or runtime loss prevents a late native write.
 Endpoint consumer loss is a supervised runtime failure. Shutdown still retains
 and joins DNS writers, runtime and native packet pump before releasing routes.
+
+### Virtual TCP DNS endpoint
+
+`Runtime::with_dns` reserves the same explicit address for UDP and TCP port 53.
+TCP input at that address enters `HostAdapter`'s local DNS role rather than
+backend selection. Other TCP ports at the reserved address are rejected. The
+UDP-only constructor retains its earlier behavior and does not enable TCP.
+Checked TCP/IP parsing still applies before admission; malformed input cannot
+create a flow or fall through to a backend.
+
+`Channels::tcp_dns` carries `AcceptedDnsFlow` with `StreamMetadata` containing
+the original source/destination tuple and driver ID. It has no backend ID and
+no conversion to a backend `CapturedTcp`. Backend acceptance keeps its existing
+metadata and queue. Local DNS lifetimes own no backend route selection; both
+roles share the same TCP socket, lifetime and payload-buffer admission. Each
+accept queue is bounded by the host accept limit, and queued/retained streams
+keep their lifetime permits after driver slot retirement. The extra queue is
+fixed metadata, not another payload-buffer pool or a total RSS reservation.
+
+Local streams preserve TCP ordering, backpressure and half-close. Quiescence
+aborts pending local handshakes and rejects new ones while retaining accepted
+streams; forced cancellation terminates both roles and releases storage only
+after retained application handles drop. Runtime supervision treats loss of
+either DNS consumer as a failure and joins shutdown as for backend consumption.
+
+This is a transport role, not output authorization. `AcceptedStream::flush`
+only flushes its duplex buffer. A production positive TCP DNS response still
+requires joined native delivery confirmation while its route guard remains
+owned. The controlled native fixture instead uses actual kernel-peer receipt
+as its explicit output oracle; it does not grant that oracle to daemon code.
 
 ### Server-side DNS TCP framing
 

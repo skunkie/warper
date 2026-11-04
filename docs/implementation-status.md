@@ -376,9 +376,30 @@ and duplicate access, cancelled observation with an accepted command,
 unconsumed-result admission, real route commit, and manager handoff followed
 by joined retirement. The supervisor keeps the manager outside all driver
 futures so daemon state can retain it without borrowing another field. This
-new native scenario remains unverified until its exact-commit gate passes.
-Evidence belongs under `target/evidence/phase-2/owned-driver/`. This ownership
+native scenario passes at `a4f3017` in
+[CI 41933253598](https://github.com/skunkie/warper/actions/runs/41933253598),
+including the full build matrix and all five inspected Linux manifests. The
+four probes preserve host state with zero exit/no timeout; installed-unit
+acceptance has no errors for its idle-service scope. Evidence belongs under
+`target/evidence/phase-2/owned-driver/`. This ownership
 boundary does not yet wire DNS into the daemon or enable DNS configurations.
+
+The virtual endpoint now has a distinct local TCP DNS role alongside UDP.
+Its accepted metadata has the original tuple and no backend ID; backend
+acceptance remains separate. Both roles share TCP socket/lifetime/buffer
+limits, retain queued handles through cancellation and stop on consumer loss.
+Controlled IPv4/IPv6 tests cover local-role precedence, response after FIN,
+reserved-port rejection, shared admission, queue pressure and shutdown.
+The native coordinator now connects a real kernel TCP DNS client through TUN
+to the server framing adapter for 20 queries on one connection and keeps the
+positive output guard until the controlled peer consumes every zero-TTL reply.
+The workload records latency distributions, CPU, peak RSS and transferred DNS
+and framing bytes; it performs no upstream discovery and uses peer consumption
+as its explicit output oracle. That new privileged path remains
+unverified until its exact-commit CI gate passes. Evidence belongs under
+`target/evidence/phase-2/local-tcp-dns/`. Production native TCP output
+confirmation, daemon DNS supervision, transient admission and resolved modes
+remain open; daemon DNS preflight remains disabled.
 
 ## Phase 0 Exit Evidence
 

@@ -25,6 +25,70 @@ fn create(capacity: usize) -> (Runtime, Channels) {
     Runtime::new(Limits::default(), policy, capacity, Seed::fixture()).unwrap()
 }
 
+#[tokio::test]
+async fn local_dns_runtime_dispatches_tcp_separately_and_cancels_retained_streams() {
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (runtime, mut channels) = Runtime::with_dns(
+        Limits::default(),
+        Arc::new(Policy::new(&[], 1).unwrap()),
+        8,
+        Seed::fixture(),
+        udp_dns::Config {
+            endpoint,
+            requests: 1,
+        },
+    )
+    .unwrap();
+    let mut dns = channels.tcp_dns.take().unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    channels.ingress.try_inject(&peer.syn()).unwrap();
+    let task = tokio::spawn(runtime.run());
+    let syn_ack = channels.packets.recv().await.unwrap();
+    peer.device.inject(syn_ack.into_bytes()).unwrap();
+    peer.poll(Duration::ZERO);
+    while let Some(packet) = peer.device.outgoing.pop_front() {
+        channels.ingress.try_inject(&packet).unwrap();
+    }
+    let mut flow = tokio::time::timeout(Duration::from_secs(1), dns.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(flow.metadata.source, peer.source);
+    assert_eq!(flow.metadata.destination, endpoint);
+    assert!(channels.tcp.try_recv().is_err());
+    channels.shutdown.send(()).unwrap();
+    let report = task.await.unwrap().unwrap();
+    assert_eq!(report.tcp.accepted, 1);
+    assert_eq!(report.udp_dns.received, 0);
+    assert_eq!(report.retained_streams, 1);
+    assert_eq!(
+        flow.stream.read(&mut [0]).await.unwrap_err().kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    drop(flow);
+    assert_eq!(channels.publication.retained_flows(), 0);
+}
+
+#[tokio::test]
+async fn local_dns_tcp_consumer_loss_stops_the_runtime() {
+    let (runtime, mut channels) = Runtime::with_dns(
+        Limits::default(),
+        Arc::new(Policy::new(&[], 1).unwrap()),
+        8,
+        Seed::fixture(),
+        udp_dns::Config {
+            endpoint: "192.0.2.9:53".parse().unwrap(),
+            requests: 1,
+        },
+    )
+    .unwrap();
+    drop(channels.tcp_dns.take());
+    let result = runtime.run().await.unwrap_err();
+    assert_eq!(result.cause, Error::ConsumerClosed);
+    assert_eq!(result.report.retained_streams, 0);
+    assert!(!channels.publication.is_published());
+}
+
 #[tokio::test(start_paused = true)]
 async fn long_idle_admission_uses_the_wake_clock_and_shutdown_closes_retained_streams() {
     let (runtime, mut channels) = create(8);
@@ -122,6 +186,7 @@ async fn lost_input_output_acceptance_or_shutdown_owners_surface_failures() {
             packets,
             tcp,
             udp_dns: _,
+            tcp_dns: _,
             admission: _,
             publication,
             shutdown,

@@ -6,7 +6,7 @@
 
 use crate::{
     Seed,
-    host::{AcceptedFlow, AdmissionError, HostAdapter, Limits, MTU, Statistics},
+    host::{AcceptedDnsFlow, AcceptedFlow, AdmissionError, HostAdapter, Limits, MTU, Statistics},
 };
 use std::{
     fmt,
@@ -107,6 +107,7 @@ pub struct Channels {
     pub packets: Egress,
     pub tcp: mpsc::Receiver<AcceptedFlow>,
     pub udp_dns: Option<udp_dns::Endpoint>,
+    pub tcp_dns: Option<mpsc::Receiver<AcceptedDnsFlow>>,
     pub admission: AdmissionControl,
     pub publication: Publication,
     pub shutdown: oneshot::Sender<()>,
@@ -188,7 +189,7 @@ impl Runtime {
         capacity: usize,
         seed: Seed,
     ) -> Result<(Self, Channels), Error> {
-        Self::build(limits, policy, capacity, seed, None)
+        Self::build(limits, policy, capacity, seed, None, false)
     }
 
     pub fn with_udp_dns(
@@ -198,7 +199,19 @@ impl Runtime {
         seed: Seed,
         dns: udp_dns::Config,
     ) -> Result<(Self, Channels), Error> {
-        Self::build(limits, policy, capacity, seed, Some(dns))
+        Self::build(limits, policy, capacity, seed, Some(dns), false)
+    }
+
+    /// Both DNS transports use one reserved address and separate local roles.
+    /// TCP stream acceptance is not native DNS response delivery confirmation.
+    pub fn with_dns(
+        limits: Limits,
+        policy: Arc<dyn FlowSelector>,
+        capacity: usize,
+        seed: Seed,
+        dns: udp_dns::Config,
+    ) -> Result<(Self, Channels), Error> {
+        Self::build(limits, policy, capacity, seed, Some(dns), true)
     }
 
     fn build(
@@ -207,19 +220,36 @@ impl Runtime {
         capacity: usize,
         seed: Seed,
         dns: Option<udp_dns::Config>,
+        tcp_dns: bool,
     ) -> Result<(Self, Channels), Error> {
         let mut buffer_capacity = Self::required_buffer_capacity(limits, capacity)?;
         let notify = Arc::new(Notify::new());
+        let dns_endpoint = dns.map(|config| config.endpoint);
         let (dns, udp_dns) = if let Some(config) = dns {
             buffer_capacity += config.required_buffer_capacity().map_err(Error::Dns)?;
-            let (driver, endpoint) =
+            let (mut driver, endpoint) =
                 udp_dns::Driver::new(config, notify.clone()).map_err(Error::Dns)?;
+            if tcp_dns {
+                driver.allow_tcp();
+            }
             (Some(driver), Some(endpoint))
         } else {
             (None, None)
         };
-        let (host, tcp) =
-            HostAdapter::with_selector(limits, policy.clone(), seed).map_err(Error::Host)?;
+        let (host, tcp, tcp_dns) = if tcp_dns {
+            let (host, tcp, dns) = HostAdapter::with_dns(
+                limits,
+                policy.clone(),
+                seed,
+                dns_endpoint.ok_or(Error::InvalidCapacity)?,
+            )
+            .map_err(Error::Host)?;
+            (host, tcp, Some(dns))
+        } else {
+            let (host, tcp) =
+                HostAdapter::with_selector(limits, policy.clone(), seed).map_err(Error::Host)?;
+            (host, tcp, None)
+        };
         let (input, receiver) = mpsc::channel(capacity);
         let (output, packets) = mpsc::channel(capacity);
         let (admission, commands) = AdmissionControl::new();
@@ -258,6 +288,7 @@ impl Runtime {
                 },
                 tcp,
                 udp_dns,
+                tcp_dns,
                 admission,
                 publication,
                 shutdown,
@@ -314,6 +345,7 @@ impl Runtime {
         let output = self.output.clone();
         let accepted = self.host.accept_sender().ok_or(Error::ConsumerClosed)?;
         let dns_consumer = self.dns.as_ref().map(udp_dns::Driver::consumer);
+        let tcp_dns_consumer = self.host.dns_sender();
         let mut commands_open = true;
         loop {
             match self.shutdown.try_recv() {
@@ -382,6 +414,7 @@ impl Runtime {
                 ()=output.closed()=>return Err(Error::EgressClosed),
                 ()=accepted.closed()=>return Err(Error::ConsumerClosed),
                 ()=async {match &dns_consumer {Some(sender)=>sender.closed().await,None=>pending().await}}=>return Err(Error::ConsumerClosed),
+                ()=async {match &tcp_dns_consumer {Some(sender)=>sender.closed().await,None=>pending().await}}=>return Err(Error::ConsumerClosed),
                 permit=output.reserve(),if blocked=>{drop(permit.map_err(|_|Error::EgressClosed)?);},
                 packet=self.input.recv()=>{self.pending=Some(packet.ok_or(Error::IngressClosed)?);},
                 ()=self.wake.0.notified()=>{},

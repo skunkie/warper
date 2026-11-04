@@ -40,6 +40,7 @@ use crate::{
     device::{BYTE_CAPACITY, PacketDevice},
 };
 use warper_core::{
+    BackendId,
     routing::{FlowSelector, Policy, Selection, SelectionError},
     transport::{CapturedTcp, Metadata},
 };
@@ -142,7 +143,7 @@ enum Termination {
 struct FlowLifetime {
     termination: AtomicU8,
     wake: Arc<AtomicWaker>,
-    _selection: Selection,
+    _selection: Option<Selection>,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -230,13 +231,59 @@ impl AcceptedFlow {
     }
 }
 
+/// Original TCP tuple and driver identity, independent of backend selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamMetadata {
+    pub id: u64,
+    pub source: SocketAddr,
+    pub destination: SocketAddr,
+}
+
+pub struct AcceptedDnsFlow {
+    pub metadata: StreamMetadata,
+    pub stream: AcceptedStream,
+}
+
 struct PendingFlow {
     stream: AcceptedStream,
-    permit: OwnedPermit<AcceptedFlow>,
+    acceptance: Acceptance,
+}
+
+enum Acceptance {
+    Backend {
+        permit: OwnedPermit<AcceptedFlow>,
+        backend: BackendId,
+    },
+    Dns(OwnedPermit<AcceptedDnsFlow>),
+}
+impl Acceptance {
+    fn send(self, metadata: StreamMetadata, stream: AcceptedStream) {
+        match self {
+            Self::Backend { permit, backend } => {
+                permit.send(AcceptedFlow {
+                    metadata: Metadata {
+                        id: metadata.id,
+                        source: metadata.source,
+                        destination: metadata.destination,
+                        backend,
+                    },
+                    stream,
+                });
+            }
+            Self::Dns(permit) => {
+                permit.send(AcceptedDnsFlow { metadata, stream });
+            }
+        }
+    }
+}
+
+struct DnsListener {
+    endpoint: SocketAddr,
+    accepted: Sender<AcceptedDnsFlow>,
 }
 
 struct FlowState {
-    metadata: Metadata,
+    metadata: StreamMetadata,
     stream: DuplexStream,
     lifetime: Arc<FlowLifetime>,
     pending: Option<PendingFlow>,
@@ -258,6 +305,7 @@ pub struct HostAdapter {
     sockets: SocketSet<'static>,
     slots: Box<[Slot]>,
     accepted: Option<Sender<AcceptedFlow>>,
+    dns: Option<DnsListener>,
     lifetimes: Arc<Semaphore>,
     wake: Arc<AtomicWaker>,
     policy: Arc<dyn FlowSelector>,
@@ -327,6 +375,7 @@ impl HostAdapter {
                 sockets,
                 slots,
                 accepted: Some(accepted),
+                dns: None,
                 lifetimes: Arc::new(Semaphore::new(limits.flows)),
                 wake: Arc::new(AtomicWaker::new()),
                 policy,
@@ -339,6 +388,27 @@ impl HostAdapter {
             },
             receiver,
         ))
+    }
+
+    /// A local DNS role shares socket/lifetime limits with backend TCP flows.
+    /// It never selects a backend or creates a backend route reference.
+    pub fn with_dns(
+        limits: Limits,
+        policy: Arc<dyn FlowSelector>,
+        seed: Seed,
+        endpoint: SocketAddr,
+    ) -> Result<(Self, Receiver<AcceptedFlow>, Receiver<AcceptedDnsFlow>), AdmissionError> {
+        if endpoint.port() != 53
+            || !IpAddress::from(endpoint.ip()).is_unicast()
+            || endpoint.ip().is_loopback()
+            || matches!(endpoint, SocketAddr::V6(address) if address.scope_id()!=0 || address.flowinfo()!=0)
+        {
+            return Err(AdmissionError::InvalidLimits);
+        }
+        let (mut host, backend) = Self::with_selector(limits, policy, seed)?;
+        let (accepted, dns) = mpsc::channel(limits.accepted);
+        host.dns = Some(DnsListener { endpoint, accepted });
+        Ok((host, backend, dns))
     }
 
     pub fn inject(&mut self, packet: &[u8]) -> Result<u64, AdmissionError> {
@@ -386,10 +456,7 @@ impl HostAdapter {
                 if !matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
                     && let Some(pending) = flow.pending.take()
                 {
-                    pending.permit.send(AcceptedFlow {
-                        metadata: flow.metadata,
-                        stream: pending.stream,
-                    });
+                    pending.acceptance.send(flow.metadata, pending.stream);
                     self.statistics.accepted = self.statistics.accepted.saturating_add(1);
                 }
                 bridge(flow, socket, cx, now)
@@ -534,6 +601,7 @@ impl HostAdapter {
     pub fn cancel(&mut self) {
         self.cancelled = true;
         self.accepted = None;
+        self.dns = None;
         self.cancel_owned_flows();
     }
     fn cancel_owned_flows(&mut self) {
@@ -553,6 +621,10 @@ impl HostAdapter {
         self.accepted.clone()
     }
 
+    pub(crate) fn dns_sender(&self) -> Option<Sender<AcceptedDnsFlow>> {
+        self.dns.as_ref().map(|dns| dns.accepted.clone())
+    }
+
     fn admit(&mut self, packet: &[u8]) -> Result<u64, AdmissionError> {
         if self.cancelled {
             return Err(AdmissionError::Cancelled);
@@ -562,6 +634,18 @@ impl HostAdapter {
             return Err(AdmissionError::PacketTooLarge);
         }
         let (source, destination, syn) = tcp_metadata(packet)?;
+        let local_dns = self
+            .dns
+            .as_ref()
+            .is_some_and(|dns| dns.endpoint.ip() == destination.ip());
+        if local_dns
+            && self
+                .dns
+                .as_ref()
+                .is_none_or(|dns| dns.endpoint != destination)
+        {
+            return Err(AdmissionError::UnsupportedProtocol);
+        }
         if let Some(flow) = self
             .slots
             .iter()
@@ -578,9 +662,11 @@ impl HostAdapter {
             return Err(AdmissionError::UnknownFlow);
         }
         if self.quiescing {
-            self.policy
-                .lookup(destination.ip())
-                .map_err(selection_error)?;
+            if !local_dns {
+                self.policy
+                    .lookup(destination.ip())
+                    .map_err(selection_error)?;
+            }
             // No listener is created. The live interface can return a TCP RST
             // while route ownership and existing streams are still retained.
             self.device
@@ -595,16 +681,19 @@ impl HostAdapter {
         {
             return Err(AdmissionError::InvalidTime);
         }
-        let selection = self
-            .policy
-            .select_flow(destination.ip())
-            .map_err(selection_error)?;
-        let backend = selection.backend();
-        let metadata = Metadata {
+        let selection = if local_dns {
+            None
+        } else {
+            Some(
+                self.policy
+                    .select_flow(destination.ip())
+                    .map_err(selection_error)?,
+            )
+        };
+        let metadata = StreamMetadata {
             id: self.next_id,
             source,
             destination,
-            backend,
         };
         let slot = self
             .slots
@@ -618,16 +707,28 @@ impl HostAdapter {
             .clone()
             .try_acquire_owned()
             .map_err(|_| AdmissionError::ResourceLimit)?;
-        let permit = self
-            .accepted
-            .as_ref()
-            .ok_or(AdmissionError::Cancelled)?
-            .clone()
-            .try_reserve_owned()
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => AdmissionError::AcceptQueueFull,
-                mpsc::error::TrySendError::Closed(_) => AdmissionError::ConsumerClosed,
-            })?;
+        let acceptance = if let Some(selection) = &selection {
+            Acceptance::Backend {
+                permit: self
+                    .accepted
+                    .as_ref()
+                    .ok_or(AdmissionError::Cancelled)?
+                    .clone()
+                    .try_reserve_owned()
+                    .map_err(accept_error)?,
+                backend: selection.backend(),
+            }
+        } else {
+            Acceptance::Dns(
+                self.dns
+                    .as_ref()
+                    .ok_or(AdmissionError::Cancelled)?
+                    .accepted
+                    .clone()
+                    .try_reserve_owned()
+                    .map_err(accept_error)?,
+            )
+        };
         let next_id = self
             .next_id
             .checked_add(1)
@@ -656,7 +757,7 @@ impl HostAdapter {
                     inner: application,
                     lifetime,
                 },
-                permit,
+                acceptance,
             }),
             created: self.now,
             progress: self.now,
@@ -794,6 +895,13 @@ fn tcp_metadata(bytes: &[u8]) -> Result<(SocketAddr, SocketAddr, bool), Admissio
         SocketAddr::new(destination.into(), representation.dst_port),
         syn,
     ))
+}
+
+fn accept_error<T>(error: mpsc::error::TrySendError<T>) -> AdmissionError {
+    match error {
+        mpsc::error::TrySendError::Full(_) => AdmissionError::AcceptQueueFull,
+        mpsc::error::TrySendError::Closed(_) => AdmissionError::ConsumerClosed,
+    }
 }
 
 fn selection_error(error: SelectionError) -> AdmissionError {
