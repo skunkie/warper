@@ -215,6 +215,20 @@ Positive UDP route/output integration, virtual TCP DNS, global
 transient metadata admission and daemon/resolver wiring remain incomplete;
 service preflight continues to reject DNS configurations.
 
+Routed UDP output now retains a committed response reference alongside its
+original native delivery receipt. Correlation, TTL aging, bounded encoding and
+route authorization precede queue admission; preparation failures preserve the
+datagram for a small error reply. Cancelled observation and busy metadata keep
+ownership for resumed completion, while uncertain delivery closes admission
+and retains cleanup state. Local tests cover delayed completion, original TTL
+expiry, first-flow protection and preservation of primary/closure failures.
+Evidence belongs under `target/evidence/phase-2/routed-udp-output/`. The extended
+native fixture sends a positive zero-TTL UDP answer after capture publication,
+connects before completion observation and repeats 20 routed replies. Those
+native additions remain unverified until their exact-commit CI passes. This
+does not implement upstream discovery scheduling, virtual TCP DNS or complete
+daemon/resolver integration; DNS remains disabled in service preflight.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

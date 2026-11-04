@@ -1182,6 +1182,26 @@ The whole-coordinator timing includes this extra UDP scope; its cycle latency
 samples still measure only route commit/retirement. Native results remain
 unverified until the exact-revision disposable CI artifacts pass.
 
+The routed-output scope receives its first UDP query before admitting native
+publication, checks no answer is available while the worker is gated, and
+submits the zero-TTL answer only after joined committed capture. It cancels
+output observation, receives the real kernel reply and opens the first TUN TCP
+flow while the pending output reference still protects the address. Resumed
+observation finalizes retention. The framed TCP fixture remains a separate
+controlled kernel peer; it is not virtual TCP DNS dispatch.
+
+The `routed_udp_output` row repeats 20 positive replies at concurrency one.
+Each uses a fresh kernel UDP socket and re-verifies existing native capture,
+then joins native output and metadata before checking released admission and
+fixed routing reservation. Latency includes socket/query preparation, capture
+verification, output completion and client receive. Record total DNS payload
+bytes, elapsed/process CPU, peak RSS and p50/p95/p99. Final coordinator checks
+still require zero adapter drops/lost receipts. Replies come from fixture data,
+so this establishes route/output composition, not selected upstream discovery
+or complete DNS modes. If the fixture fails with accepted output, it cancels
+producers, joins packet I/O and discards queued frames before releasing the
+pending route reference; the primary error and cleanup failures are preserved.
+
 Run the packet-aging workload in release mode:
 
 ```sh

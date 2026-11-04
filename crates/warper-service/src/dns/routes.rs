@@ -415,3 +415,5 @@ impl FlowSelector for LiveRoutes {
 mod output_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod udp_output_tests;

@@ -4,6 +4,7 @@
 
 //! Bounded DNS protocol adapters. These do not publish answers or routes.
 
+pub mod output;
 mod packet;
 mod query;
 pub mod routes;

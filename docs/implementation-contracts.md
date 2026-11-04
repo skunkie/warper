@@ -3298,6 +3298,35 @@ forced cancellation or runtime loss prevents a late native write.
 Endpoint consumer loss is a supervised runtime failure. Shutdown still retains
 and joins DNS writers, runtime and native packet pump before releasing routes.
 
+### Routed UDP reply ownership
+
+`warper_service::dns::output::UdpOutput` consumes one validated routed reply,
+its pending route reservation and the original virtual datagram. The caller
+must have completed address/service discovery and reserved the complete
+reachable endpoint set for that reply. Before submission, correlate the reply
+ID and canonical question against the incoming query envelope, age wire TTLs
+from the original upstream observation, enforce UDP size, and authorize the
+complete committed route set. Preparation/submission failures start no I/O.
+Preparation/authorization leaves the caller's original datagram available for
+a bounded SERVFAIL/TC response. Take it only when native submission begins;
+cancellation/expiry/closed output at that point cannot admit a fallback reply.
+
+After submission, retain the output guard and original native receipt in the
+same owner. Cancelled/dropped observation resumes that same operation. Native
+success changes to metadata completion without awaiting again or replaying
+payload. Retry busy metadata admission; observer expiry cannot erase delivered
+bytes or pending coverage. Finalize with the larger of configured grace and
+the largest advertised remaining TTL, measured from successful completion
+observation. Known pre-write cancellation/expiry destroys the completed I/O
+ownership before releasing its output reference. Uncertain delivery or a
+non-retryable metadata failure closes routing admission, preserves the primary
+error alongside closure errors and retains the guard for supervised cleanup.
+The caller retains/joins this owner; it spawns no background task.
+
+This is route/output composition. Upstream discovery, coordinator scheduling,
+global transient admission, virtual TCP and daemon/resolver wiring still need
+their complete production integration and native acceptance.
+
 ### DNS response TTL aging
 
 Discovery retains the original response's observation timestamp, separately

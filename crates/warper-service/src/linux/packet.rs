@@ -105,6 +105,11 @@ impl Pump {
         )
         .await
     }
+    /// Discard queued frames only after packet I/O is joined and reply producers
+    /// are quiescent. Tracked frames report uncertainty, never fake delivery.
+    pub fn discard_pending_output(&mut self) -> usize {
+        self.output.discard_pending()
+    }
 }
 impl fmt::Debug for Pump {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -186,6 +186,33 @@ impl Packet {
     pub fn is_response(&self) -> bool {
         self.message.message_type == MessageType::Response
     }
+    pub(super) fn limit_bytes(&self) -> usize {
+        self.limits.wire_bytes
+    }
+
+    /// Check correlation without decoding the incoming query's records again.
+    /// Its complete packet must already have passed request validation. The
+    /// query may be larger than the response (for example, EDNS padding).
+    pub(super) fn correlate_request(&self, bytes: &[u8]) -> Result<(), Error> {
+        let (header, question) = envelope(
+            bytes,
+            Limits {
+                wire_bytes: MAX_WIRE_BYTES,
+                records: self.limits.records,
+            },
+        )?;
+        if !self.is_response()
+            || header.message_type != MessageType::Query
+            || header.id != self.id()
+            || question != self.question
+        {
+            return Err(Error::MismatchedResponse);
+        }
+        if header.truncation || header.counts.answers != 0 || header.counts.authorities != 0 {
+            return Err(Error::Malformed);
+        }
+        Ok(())
+    }
 
     /// Apply once before output, using time since this packet was received.
     /// Round elapsed time up so encoded cache TTLs never exceed their original
