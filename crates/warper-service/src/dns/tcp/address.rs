@@ -41,6 +41,7 @@ impl std::error::Error for DiscoveryError {}
 pub struct AddressResolution {
     pub backend: BackendId,
     pub response: Packet,
+    pub response_received_at: Instant,
     pub answer: AddressAnswer,
 }
 
@@ -83,8 +84,9 @@ impl TcpTransport {
         )
         .await
         .map_err(DiscoveryError::Exchange)?;
+        let response_received_at = Instant::now();
         let mut progress = lookup
-            .advance(&first, Instant::now())
+            .advance(&first, response_received_at)
             .map_err(DiscoveryError::Answer)?;
         loop {
             match progress {
@@ -92,6 +94,7 @@ impl TcpTransport {
                     return Ok(AddressResolution {
                         backend: self.backend(),
                         response: first,
+                        response_received_at,
                         answer,
                     });
                 }

@@ -4,7 +4,7 @@
 
 //! Keep third-party DNS types and errors inside the protocol adapter.
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use hickory_proto::{
     ProtoError,
@@ -185,6 +185,51 @@ impl Packet {
 
     pub fn is_response(&self) -> bool {
         self.message.message_type == MessageType::Response
+    }
+
+    /// Apply once before output, using time since this packet was received.
+    /// Round elapsed time up so encoded cache TTLs never exceed their original
+    /// expiry. Returns the largest remaining record TTL: output completion must
+    /// retain coverage for at least this duration and the configured grace.
+    /// This allocates nothing and never grants route/output permission.
+    pub fn age_response(&mut self, elapsed: Duration) -> Result<Duration, Error> {
+        if !self.is_response()
+            || self.message.signature.is_some()
+            || self
+                .message
+                .additionals
+                .iter()
+                .any(|record| matches!(u16::from(record.record_type()), 24 | 250))
+            || self
+                .message
+                .answers
+                .iter()
+                .chain(&self.message.authorities)
+                .any(|record| u16::from(record.record_type()) == 250)
+        {
+            return Err(Error::UnsupportedOperation);
+        }
+        let seconds = elapsed
+            .as_secs()
+            .saturating_add(u64::from(elapsed.subsec_nanos() != 0));
+        let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
+        let mut maximum = 0;
+        for record in self
+            .message
+            .answers
+            .iter_mut()
+            .chain(&mut self.message.authorities)
+            .chain(&mut self.message.additionals)
+        {
+            let ttl = if record.ttl & 0x8000_0000 == 0 {
+                record.ttl
+            } else {
+                0
+            };
+            record.ttl = ttl.saturating_sub(seconds);
+            maximum = maximum.max(record.ttl);
+        }
+        Ok(Duration::from_secs(u64::from(maximum)))
     }
 
     /// Encoding is for transport and later gated response handoff. It does not

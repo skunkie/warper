@@ -207,6 +207,46 @@ async fn exhausted_parent_budget_stops_before_dependency_dial() {
     peer.await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn address_reply_retains_original_observation_for_output_aging() {
+    let (_backend, transport, mut peers) = fixture(2);
+    let second = peers.pop().unwrap();
+    let first = peers.pop().unwrap();
+    let peer = tokio::spawn(async move {
+        respond(
+            first,
+            "start.test",
+            reply("start.test", Some("end.test"), 0),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        respond(second, "end.test", reply("end.test", None, 0)).await;
+    });
+    let (_owner, context) = request();
+    let start = Instant::now();
+    let mut result = transport
+        .discover_addresses(&query(), context, &QueryBudget::new(2).unwrap(), bounds())
+        .await
+        .unwrap();
+    assert_eq!(result.response_received_at, start);
+    assert_eq!(Instant::now() - start, Duration::from_millis(750));
+    result
+        .response
+        .age_response(Instant::now() - result.response_received_at)
+        .unwrap();
+    let mut expected = reply("start.test", Some("end.test"), 0);
+    let ttl_offset = wire("start.test").len() + 6;
+    expected[ttl_offset..ttl_offset + 4].copy_from_slice(&1_u32.to_be_bytes());
+    assert_eq!(
+        result.response.encode().unwrap(),
+        Packet::response(&expected, &query(), limits())
+            .unwrap()
+            .encode()
+            .unwrap()
+    );
+    peer.await.unwrap();
+}
+
 #[tokio::test]
 async fn negative_answers_are_final_and_setup_failure_never_changes_backend() {
     for code in [2, 3, 5] {

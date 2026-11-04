@@ -101,6 +101,7 @@ impl fmt::Debug for ServiceEndpoint {
 pub struct ServiceResolution {
     pub backend: BackendId,
     pub response: Arc<Packet>,
+    pub response_received_at: Instant,
     pub paths: Vec<EndpointPath>,
     pub endpoints: Vec<ServiceEndpoint>,
 }
@@ -184,9 +185,10 @@ impl TcpTransport {
             .await
             .map_err(ServiceDiscoveryError::Exchange)?,
         );
+        let response_received_at = Instant::now();
         let observed = Observed {
             packet: first.clone(),
-            received_at: Instant::now(),
+            received_at: response_received_at,
         };
         discovery.save(observed.clone())?;
         let root = discovery.path(None, query.question(), DependencyKind::Question, None)?;
@@ -241,6 +243,7 @@ impl TcpTransport {
         Ok(ServiceResolution {
             backend: self.backend(),
             response: first,
+            response_received_at,
             paths: discovery.paths,
             endpoints: discovery.endpoints,
         })

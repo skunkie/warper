@@ -425,6 +425,65 @@ async fn alias_fallback_resolves_final_owner_even_when_service_target_has_addres
     assert_eq!(fixture.finish(transport).await.len(), 2);
 }
 
+#[tokio::test(start_paused = true)]
+async fn service_reply_retains_original_observation_and_releases_shared_packet_ownership() {
+    let mut bytes = wire("start.example.test", 65, true);
+    service(
+        &mut bytes,
+        "start.example.test",
+        1,
+        "target.example.test",
+        10,
+        &[192, 0, 2, 1],
+    );
+    let Reply::Packet(dependency, _) = answer("target.example.test", 1, 0, &[192, 0, 2, 2]) else {
+        unreachable!()
+    };
+    let (fixture, transport) = fixture(vec![
+        ("start.example.test", 65, ready(bytes)),
+        (
+            "target.example.test",
+            1,
+            Reply::Packet(dependency, Duration::from_millis(250)),
+        ),
+    ]);
+    let (_owner, request) = context();
+    let start = Instant::now();
+    let mut result = transport
+        .discover_service_bindings(
+            &query(),
+            request,
+            &QueryBudget::new(2).unwrap(),
+            &policy(),
+            bounds(false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.response_received_at, start);
+    assert_eq!(Instant::now() - start, Duration::from_millis(250));
+    Arc::get_mut(&mut result.response)
+        .expect("discovery must release internal observations")
+        .age_response(Instant::now() - result.response_received_at)
+        .unwrap();
+    let mut expected = wire("start.example.test", 65, true);
+    service(
+        &mut expected,
+        "start.example.test",
+        1,
+        "target.example.test",
+        9,
+        &[192, 0, 2, 1],
+    );
+    assert_eq!(
+        result.response.encode().unwrap(),
+        Packet::response(&expected, &query(), packet_limits())
+            .unwrap()
+            .encode()
+            .unwrap()
+    );
+    assert_eq!(fixture.finish(transport).await.len(), 2);
+}
+
 #[tokio::test]
 async fn all_alias_alternatives_are_covered_and_unavailable_root_never_becomes_a_query() {
     let mut bytes = wire("start.example.test", 65, true);

@@ -3255,6 +3255,33 @@ retained leases before native cleanup. These are ownership transitions;
 actual listener/writer integration, TTL aging and native output gates remain
 required before daemon DNS can be enabled.
 
+### DNS response TTL aging
+
+Discovery retains the original response's observation timestamp, separately
+from dependency observations. Immediately before gated output encoding, age
+the owned response by the elapsed time since that observation. Subtract the
+ceiling of elapsed seconds from each Answer, Authority and ordinary Additional
+record TTL, saturating at zero. A high-bit TTL becomes zero, as for discovery
+expiry. This conservative rounding cannot advertise a cache lifetime beyond
+the original expiry. Zero remains zero; route grace never changes a wire TTL.
+EDNS flags/extended RCODE and record data (including RRSIG Original TTL) are
+not TTL counters. Preserve them and existing header flags without asserting
+new authority or authentication. Reject signed-message mutation (TSIG/SIG(0)).
+These boundaries follow [RFC 2181 section 8](https://www.rfc-editor.org/rfc/rfc2181.html#section-8),
+[RFC 6891 section 6.1.3](https://www.rfc-editor.org/rfc/rfc6891.html#section-6.1.3)
+and [RFC 4035 section 5.3](https://www.rfc-editor.org/rfc/rfc4035.html#section-5.3).
+
+Aging mutates existing bounded packet storage without copying a decoded
+message. The caller needs exclusive packet ownership; service discovery's
+shared observations are released on return. Aging returns the largest remaining
+ordinary record TTL. For successful delivery, finalize the output guard with
+the maximum of that duration and configured route grace. This conservatively
+retains all response routes through the advertised cache lifetimes, including
+time spent encoding/writing and delayed completion observation. Pending output
+references protect them until that finalization. This may retain some routes
+longer than their individual dependency TTLs; it never renews DNS cache data.
+Aging alone does not prove the native listener/output gate.
+
 ### Serialized Linux DNS route coordinator
 
 The service's Linux DNS route coordinator owns one original TUN owner and at

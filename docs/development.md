@@ -1161,6 +1161,19 @@ and peak RSS include fixture work. This is native transaction composition,
 not a sustained forwarding or full DNS-mode benchmark. Only run through the
 existing disposable `control_acceptance.py` namespace/VM harness.
 
+Run the packet-aging workload in release mode:
+
+```sh
+cargo test --locked -p warper-service --release --lib \
+  dns::packet::tests::response_aging_workload -- --ignored --exact --nocapture
+```
+
+It compares 5,000 four-record serializations with and without aging
+in one process at concurrency one. Decode happens before the per-operation
+timer; total time includes decode and assertions. Record encoded bytes,
+latency percentiles, process CPU and peak RSS with the run environment. This
+is packet preparation only, with no sockets, network throughput or drop claim.
+
 The control fixture also exercises the fixed root-owned `/etc/warper` managed
 slot in its private `/etc` mount: generation fencing, ordinary owner/foreign
 read denial, reopened state, pending-token separation from the network journal

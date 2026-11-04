@@ -91,6 +91,208 @@ fn compressed_answers_and_valid_negatives_remain_distinct() {
 }
 
 #[test]
+fn response_aging_rounds_down_remaining_ttls_in_every_record_section() {
+    use std::time::Duration;
+
+    struct Case {
+        id: &'static str,
+        elapsed: Duration,
+        expected: u32,
+    }
+    for case in [
+        Case {
+            id: "same_observation",
+            elapsed: Duration::ZERO,
+            expected: 3,
+        },
+        Case {
+            id: "fraction",
+            elapsed: Duration::from_nanos(1),
+            expected: 2,
+        },
+        Case {
+            id: "whole_second",
+            elapsed: Duration::from_secs(1),
+            expected: 2,
+        },
+        Case {
+            id: "past_second",
+            elapsed: Duration::from_millis(1001),
+            expected: 1,
+        },
+        Case {
+            id: "expired",
+            elapsed: Duration::from_secs(3),
+            expected: 0,
+        },
+        Case {
+            id: "huge_delay",
+            elapsed: Duration::MAX,
+            expected: 0,
+        },
+    ] {
+        let query = Packet::request(&request_wire(), limits()).unwrap();
+        let mut bytes = response_wire();
+        for ttl in [3, 0, 0x8000_0000] {
+            answer(&mut bytes, 1, ttl, &[192, 0, 2, 7]);
+        }
+        let mut packet = Packet::response(&bytes, &query, limits()).unwrap();
+        packet.message.authorities = packet.message.answers.clone();
+        packet.message.additionals = packet.message.answers.clone();
+        assert_eq!(
+            packet.age_response(case.elapsed).unwrap(),
+            Duration::from_secs(u64::from(case.expected)),
+            "{}",
+            case.id
+        );
+        let encoded = packet.encode().unwrap();
+        let decoded = Packet::response(&encoded, &query, limits()).unwrap();
+        for section in [
+            &decoded.message.answers,
+            &decoded.message.authorities,
+            &decoded.message.additionals,
+        ] {
+            assert_eq!(
+                section.iter().map(|record| record.ttl).collect::<Vec<_>>(),
+                [case.expected, 0, 0],
+                "{}",
+                case.id
+            );
+        }
+        packet.age_response(Duration::MAX).unwrap();
+        assert!(
+            packet.message.answers.iter().all(|record| record.ttl == 0),
+            "{}",
+            case.id
+        );
+    }
+}
+
+#[test]
+fn response_aging_preserves_edns_headers_and_rrsig_signed_data() {
+    let query = Packet::request(&request_wire(), limits()).unwrap();
+    let mut bytes = response_wire();
+    bytes[2] |= 4; // Existing AA and AD claims are preserved, never synthesized.
+    bytes[3] |= 0x20;
+    answer(&mut bytes, 1, 30, &[192, 0, 2, 7]);
+    // Synthetic RRSIG: type A, algorithm 8, three labels, original TTL 300,
+    // expiration/inception/key tag zero, root signer and one signature byte.
+    let mut signature = vec![0, 1, 8, 3];
+    signature.extend_from_slice(&300_u32.to_be_bytes());
+    signature.extend_from_slice(&[0; 10]);
+    signature.extend_from_slice(&[0, 7]);
+    answer(&mut bytes, 46, 30, &signature);
+    bytes[11] = 1;
+    bytes.extend_from_slice(&[0, 0, 41, 4, 208, 1, 0, 128, 0, 0, 0]);
+    let mut packet = Packet::response(&bytes, &query, limits()).unwrap();
+    let metadata = packet.message.metadata;
+    let edns = packet.message.edns.clone();
+    let signed_data = packet.message.answers[1].data.clone();
+    packet
+        .age_response(std::time::Duration::from_millis(250))
+        .unwrap();
+    let decoded = Packet::response(&packet.encode().unwrap(), &query, limits()).unwrap();
+    assert_eq!(decoded.message.metadata, metadata);
+    assert_eq!(decoded.message.edns, edns);
+    assert_eq!(decoded.message.answers[1].data, signed_data);
+    assert_eq!(decoded.message.answers[0].ttl, 29);
+    assert_eq!(decoded.message.answers[1].ttl, 29);
+}
+
+#[test]
+fn response_aging_refuses_queries_and_transaction_signatures_before_mutation() {
+    use hickory_proto::rr::{
+        DNSClass, Record,
+        rdata::{TSIG, tsig::TsigAlgorithm},
+    };
+    use std::time::Duration;
+
+    let mut query = Packet::request(&request_wire(), limits()).unwrap();
+    assert!(matches!(
+        query.age_response(Duration::ZERO),
+        Err(Error::UnsupportedOperation)
+    ));
+    let mut bytes = response_wire();
+    answer(&mut bytes, 1, 30, &[192, 0, 2, 7]);
+    let mut packet = Packet::response(&bytes, &query, limits()).unwrap();
+    let mut signature = Record::from_rdata(
+        hickory_proto::rr::Name::from_ascii("sample-key.test.").unwrap(),
+        0,
+        TSIG::new(
+            TsigAlgorithm::HmacSha256,
+            0,
+            300,
+            vec![7; 32],
+            query.id(),
+            None,
+            Vec::new(),
+        ),
+    );
+    signature.dns_class = DNSClass::ANY;
+    packet.message.signature = Some(Box::new(signature));
+    let encoded = packet.encode().unwrap();
+    assert!(matches!(
+        packet.age_response(Duration::from_secs(1)),
+        Err(Error::UnsupportedOperation)
+    ));
+    assert_eq!(packet.encode().unwrap(), encoded);
+    let mut parsed = Packet::response(&encoded, &query, limits()).unwrap();
+    assert!(matches!(
+        parsed.age_response(Duration::from_secs(1)),
+        Err(Error::UnsupportedOperation)
+    ));
+    assert_eq!(parsed.encode().unwrap(), encoded);
+
+    // A SIG(0) transaction signature may remain an ordinary Additional RR.
+    bytes[11] = 1;
+    bytes.extend_from_slice(&[0xc0, 0x0c, 0, 24, 0, 255, 0, 0, 0, 0, 0, 20]);
+    bytes.extend_from_slice(&[0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
+    let mut packet = Packet::response(&bytes, &query, limits()).unwrap();
+    let encoded = packet.encode().unwrap();
+    assert!(matches!(
+        packet.age_response(Duration::from_secs(1)),
+        Err(Error::UnsupportedOperation)
+    ));
+    assert_eq!(packet.encode().unwrap(), encoded);
+}
+
+#[test]
+#[ignore = "controlled packet-processing workload; run explicitly in release mode"]
+fn response_aging_workload() {
+    let query = Packet::request(&request_wire(), limits()).unwrap();
+    let mut bytes = response_wire();
+    for last in 1..=4 {
+        answer(&mut bytes, 1, 5, &[192, 0, 2, last]);
+    }
+    for aging in [false, true] {
+        let mut latencies = Vec::with_capacity(5000);
+        let mut encoded_bytes = 0;
+        let whole = std::time::Instant::now();
+        for _ in 0..5000 {
+            let mut packet = Packet::response(&bytes, &query, limits()).unwrap();
+            let start = std::time::Instant::now();
+            if aging {
+                packet
+                    .age_response(std::time::Duration::from_millis(1250))
+                    .unwrap();
+            }
+            let encoded = packet.encode().unwrap();
+            latencies.push(start.elapsed().as_nanos());
+            encoded_bytes += encoded.len();
+            assert_eq!(packet.message.answers[0].ttl, if aging { 3 } else { 5 });
+        }
+        latencies.sort_unstable();
+        println!(
+            "response_aging aging={aging} iterations=5000 records=4 concurrency=1 encoded_bytes={encoded_bytes} whole_ns={} p50_ns={} p95_ns={} p99_ns={}; serialization latency includes optional aging, whole time includes decoding; no sockets or packet-drop measurement",
+            whole.elapsed().as_nanos(),
+            latencies[2499],
+            latencies[4749],
+            latencies[4949]
+        );
+    }
+}
+
+#[test]
 fn response_correlation_checks_id_name_type_class_and_direction() {
     let request = Packet::request(&request_wire(), limits()).unwrap();
     struct Case {

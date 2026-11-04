@@ -455,6 +455,15 @@ Do not evict an active committed route to admit a new one. DNS/route queue exhau
 
 DNS answers retain their original or normally aged TTLs. Zero-TTL answers are never cached for reuse, and `dns_route_grace_ms` never raises a wire/cache TTL. For each exposed address contribution, retain its route until at least `handoff_time + max(remaining_dependency_ttl_ms, dns_route_grace_ms)`, then also honor active-flow references. Use the minimum remaining TTL along that contribution's alias/service/address path; a hint uses its containing service record's path. A response reference pins all required routes while output is queued; before handoff, recheck/renew coverage atomically, then exchange that reference for the timed lease without a gap. Concurrent answers may extend retention, while failed/cancelled responses add no new grace lease. A connection arriving only after all lease/grace/flow references expire remains outside the coverage guarantee.
 
+Response preparation conservatively rounds elapsed time up to whole seconds
+and subtracts it from record TTLs, saturating at zero. It ages Answer, Authority
+and ordinary Additional records, preserves EDNS flags and signed record data,
+and refuses TSIG/SIG(0) message mutation. Dependency discovery retains the first
+response's observation time; later lookups never reset that clock. Successful
+output must retain all response routes for at least the largest advertised
+remaining record TTL and configured grace, measured from completion. Pending
+references protect coverage while the bounded write is in progress.
+
 Count each actual upstream attempt against `max_dns_dependency_queries`, including same-server retries. Coalesce duplicate dependencies; reject loops, exhausted budgets, or an incomplete endpoint set with SERVFAIL. Never drop unprocessed records merely to fit the budget and then forward their addresses. Positive-cache entries remain subject to DNS TTL even while routing ownership is retained. Charge transient buffers to the data-plane budget and retained DNS buffers to the DNS-state budget as defined below.
 
 Charge an attempt when opening its upstream transport, including failed setup.

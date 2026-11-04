@@ -27,7 +27,7 @@ Linux x86-64 only. Phase 2's production DNS/route transaction gate is next.
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
 | 1: Headless Linux service slice | Complete for the verified Linux slice | [Closure audit](phase-1-acceptance.md): actual application TCP/FIN through selected SOCKS5/TUN, failed-start restoration, detached clients, explicit Down, authorization, bounded ownership, recovery, equivalent diagnostics and installed systemd lifecycle. Full native matrix and all privileged gates pass at `687b293` in [CI 41597810149](https://github.com/skunkie/warper/actions/runs/41597810149). Inspected evidence is under `target/evidence/phase-1/lifecycle-tracing/`. Linux ARM64 privileged acceptance and native macOS networking are not claimed. |
-| 2: Linux DNS and routing | In progress | Core bounded DNS names, longest-domain selection and bounded packet adapters are implemented. Selected/direct TCP and direct UDP DNS include shared request admission, query budgets and original deadlines; protected UDP lifecycle has native evidence. Listener integration, native service-binding endpoint gates, response handoff, route leases, retained-state admission, resolved integration and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
+| 2: Linux DNS and routing | In progress | Bounded DNS transports/discovery, retained route/lease ownership, output guards and native route coordination are implemented with scoped evidence. Production UDP/TCP listener and daemon supervision, transient buffer accounting, native capacity alignment, output-time coverage, resolved split/global modes, backend hostname resolution and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
 | 5: Tauri desktop and release | Not started | GUI/control lifecycle, native packaging, UX-01–UX-05, production-mode exclusion tests and public signing/notarization remain required |
@@ -43,9 +43,10 @@ The packet adapter's native matrix and disposable Linux regression manifests
 are retained under its `ci-41607466058/` directory. These establish scoped
 protocol compatibility and existing Linux lifecycle regressions, not native
 DNS/route acceptance. Service preflight still rejects DNS configurations.
-The next integration gate is bounded listener ownership;
-endpoint validation, leases, route publication and resolved integration remain
-required before domain discovery can be enabled.
+The next integration gate is bounded listener ownership and daemon composition
+of endpoint validation, leases, native publication and output. Resolver
+integration and complete native acceptance remain required before domain
+discovery can be enabled.
 The route query distinguishes TCP/UDP tuples. ADR 0025's source/device-bound UDP
 mechanism passes in [CI 41611452768](https://github.com/skunkie/warper/actions/runs/41611452768)
 at `4cdce8e`, with real datagram boundaries and a competing TUN /32 in the private
@@ -177,11 +178,20 @@ session usability; post-intent failure closes admission and retains cleanup
 authority. Its native fixture includes protected/special-address rejection,
 queued-worker cancellation, zero-TTL framed output followed by a selected TUN
 TCP flow, deferred retirement, partial commit rollback and post-intent
-cancellation observed through the protected journal. Evidence belongs under
-`target/evidence/phase-2/route-coordinator/`; those native cases remain unverified
-until the exact-commit disposable CI artifacts pass. Daemon scheduling of this
-coordinator, listeners, global transient admission, capacity alignment, TTL
-aging and resolver integration remain required before enabling DNS.
+cancellation observed through the protected journal. These native cases pass
+at `91dda57` in [CI 41778191654](https://github.com/skunkie/warper/actions/runs/41778191654).
+Inspected evidence is under `target/evidence/phase-2/route-coordinator/`;
+all four isolated manifests report preserved host state and installed-unit
+acceptance reports no errors. Daemon scheduling of this coordinator, listeners,
+global transient admission, capacity alignment, output-time coverage and
+resolver integration remain required before enabling DNS.
+
+The packet adapter supports allocation-free, conservative TTL aging before
+output, and address/service discovery retains the original response timestamp.
+Controlled-clock tests cover dependency delays, fractional/expired/zero TTLs,
+EDNS/header and RRSIG data preservation, and signed-message rejection. Evidence
+belongs under `target/evidence/phase-2/ttl-aging/`. Listener integration must
+still account for output delay and complete route coverage before delivery.
 
 ## Phase 0 Exit Evidence
 

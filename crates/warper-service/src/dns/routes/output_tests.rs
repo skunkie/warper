@@ -171,3 +171,77 @@ async fn partial_frame_deadline_destroys_io_before_releasing_the_pending_referen
     controller.begin_retirement(route).unwrap();
     controller.finish_retirement(route).unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn advertised_aged_ttl_retains_coverage_after_slow_output_and_original_expiry() {
+    let controller = create(&[]);
+    let origin = Instant::now();
+    let response = controller
+        .reserve(
+            RoutingMode::Mixed,
+            key(7),
+            &[Contribution {
+                address: address(),
+                expires_at: Duration::from_secs(5),
+            }],
+            origin + Duration::from_secs(10),
+        )
+        .unwrap();
+    let route = controller.response_route(&response, 0).unwrap();
+    controller.confirm_publication(route).unwrap();
+    let (query, mut wire, limits) = wire_response();
+    let ttl_offset = wire.len() - 10;
+    wire[ttl_offset..ttl_offset + 4].copy_from_slice(&5_u32.to_be_bytes());
+    let mut packet = Packet::response(&wire, &query, limits).unwrap();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let advertised = packet.age_response(Instant::now() - origin).unwrap();
+    assert_eq!(advertised, Duration::from_secs(3));
+    let wire = packet.encode().unwrap();
+    let mut output = controller.begin_output(response).unwrap();
+    let (mut stream, mut client) = tokio::io::duplex(1);
+    let (written, received) = tokio::time::timeout_at(origin + Duration::from_secs(10), async {
+        tokio::join!(
+            async {
+                stream.write_u16(wire.len() as u16).await?;
+                stream.write_all(&wire).await
+            },
+            async {
+                let length = client.read_u16().await?;
+                // The one-byte stream stalls body output beyond original TTL
+                // expiry. The client starts caching only after the full frame.
+                tokio::time::advance(Duration::from_secs(4)).await;
+                let mut wire = vec![0; usize::from(length)];
+                client.read_exact(&mut wire).await?;
+                Ok::<_, std::io::Error>(wire)
+            }
+        )
+    })
+    .await
+    .unwrap();
+    written.unwrap();
+    assert_eq!(received.unwrap(), wire);
+    drop(stream);
+    drop(client);
+    controller.advance().unwrap();
+    assert_eq!(
+        controller.begin_retirement(route),
+        Err(Error::Ledger(lease::Error::Referenced))
+    );
+    let completed_at = Instant::now();
+    controller
+        .complete_output(&mut output, advertised.max(Duration::from_secs(1)))
+        .unwrap();
+    assert_eq!(
+        controller.next_expiry().unwrap(),
+        Some(completed_at + advertised)
+    );
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let connection = controller.selector().select_flow(address()).unwrap();
+    assert_eq!(connection.backend(), BackendId(7));
+    drop(connection);
+    tokio::time::advance(Duration::from_secs(2)).await;
+    controller.advance().unwrap();
+    assert_eq!(controller.stats().unwrap().leases, 0);
+    controller.begin_retirement(route).unwrap();
+    controller.finish_retirement(route).unwrap();
+}
