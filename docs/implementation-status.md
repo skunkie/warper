@@ -205,8 +205,13 @@ propagates runtime/operation/supervisor cancellation and surfaces uncertain
 delivery or observer loss. Controlled tests cover queue pressure, malformed
 packets, consumer loss, blocked I/O and cancellation without replay. Evidence
 belongs under `target/evidence/phase-2/virtual-udp/`. The new kernel UDP fixture
-uses negative answers; its native scope remains unverified until exact-commit
-CI passes. Positive UDP route/output integration, virtual TCP DNS, global
+uses negative answers. Its empty/normal/maximum-size datagram and native
+receipt scope passes at `e028399` in [CI 41784315958](https://github.com/skunkie/warper/actions/runs/41784315958).
+All five exact-revision native manifests were inspected; isolated host state
+was preserved, packet drops/lost receipts were zero and request admission
+returned to zero after each exchange. Raw metrics and manifests are under
+`virtual-udp/ci-41784315958/` in that evidence package.
+Positive UDP route/output integration, virtual TCP DNS, global
 transient metadata admission and daemon/resolver wiring remain incomplete;
 service preflight continues to reject DNS configurations.
 
