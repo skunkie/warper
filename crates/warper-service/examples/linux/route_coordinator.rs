@@ -367,6 +367,9 @@ async fn run(
         drop(pending_udp.take());
         routed_udp_workload(controller.clone(),&mut manager,&mut dns,&service_owner,&mut pending_udp,peer).await?;
         let response=reserve(&controller,&[ipv4(70)])?;
+        let renewed_route=controller.response_route(&response,0)?;
+        if renewed_route==route {return Err("automatic retirement reused the stale route generation".into());}
+        let route=renewed_route;
         manager.begin_commit(response,request(&service_owner))?;
         let response=match manager.wait(request(&service_owner)).await? {Completion::Committed(response)=>response,Completion::Retired=>return Err("framed DNS renewal returned retirement".into())};
         dns_reply(&controller,response).await?;
