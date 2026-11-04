@@ -357,11 +357,28 @@ queue admission, preserves both phases across observation cancellation and
 keeps failed, unsubmitted input available for a bounded SERVFAIL/TC response.
 Controlled tests cover pre-admission rejection, retained commits, TTL aging
 across queue delay and known commit rejection without positive output. The
-native workload now uses this service-owned composition rather than joining
-commit receipts in fixture code; that new path remains unverified until its
-exact-commit gate passes. Evidence belongs under
+native workload uses this service-owned composition rather than joining
+commit receipts in fixture code. It passes at `7c781ab` in
+[CI 41927309816](https://github.com/skunkie/warper/actions/runs/41927309816),
+including the full native build matrix and all five inspected Linux manifests.
+The four probe results preserve host state without timeout or nonzero exit;
+the installed-unit result has no errors for its idle-service scope. Evidence
+belongs under
 `target/evidence/phase-2/queued-udp/`. Daemon listeners/supervision, global
 transient admission, virtual TCP delivery and resolved integration remain open.
+
+The native driver now supports a supervisor-retained manager with an owned
+async mutex guard, alongside the existing borrowed form. Acquisition never
+waits; invalid construction leaves manager access available, and duplicate
+access fails while the driver owns it. Maintenance can be enabled on either
+form without moving ownership on error. The native fixture exercises invalid
+and duplicate access, cancelled observation with an accepted command,
+unconsumed-result admission, real route commit, and manager handoff followed
+by joined retirement. The supervisor keeps the manager outside all driver
+futures so daemon state can retain it without borrowing another field. This
+new native scenario remains unverified until its exact-commit gate passes.
+Evidence belongs under `target/evidence/phase-2/owned-driver/`. This ownership
+boundary does not yet wire DNS into the daemon or enable DNS configurations.
 
 ## Phase 0 Exit Evidence
 

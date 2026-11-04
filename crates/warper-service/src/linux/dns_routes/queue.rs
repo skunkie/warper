@@ -5,9 +5,9 @@
 //! Count-bounded native commits and optional expiry-driven route maintenance.
 
 use super::{Completion, Error as NativeError, Failure, Manager};
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, ops::DerefMut, sync::Arc, time::Duration};
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
+    sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
     time::Instant,
 };
 use warper_core::{
@@ -135,11 +135,11 @@ impl Receipt {
     }
 }
 
-/// The manager remains borrowed across every interrupted observation. The
-/// service must retain this driver and its manager through accepted native join.
+/// Exclusive manager access survives interrupted observation. The supervisor
+/// retains the driver and its manager through accepted native join.
 #[must_use = "retain the driver and join accepted commits before native cleanup"]
-pub struct Driver<'a> {
-    manager: &'a mut Manager,
+pub struct Driver<M> {
+    manager: M,
     inbox: mpsc::Receiver<Command>,
     admission: Arc<Semaphore>,
     active: Option<Active>,
@@ -184,28 +184,11 @@ impl Maintenance {
         }
     }
 }
-impl<'a> Driver<'a> {
+impl<'a> Driver<&'a mut Manager> {
     pub fn new(manager: &'a mut Manager, limit: usize) -> Result<(Mailbox, Self), Error> {
-        if manager.has_pending() {
-            return Err(Error::Operation(NativeError::Busy));
-        }
-        if manager.failure().is_some() {
-            return Err(Error::Operation(NativeError::Failed));
-        }
+        validate_manager(manager)?;
         let (mailbox, inbox) = channel(limit)?;
-        let driver = Self {
-            manager,
-            inbox,
-            admission: mailbox.admission.clone(),
-            active: None,
-            failure: None,
-            join_error: None,
-            closure_pending: false,
-            maintenance: None,
-            retiring: false,
-            prefer_command: false,
-        };
-        Ok((mailbox, driver))
+        Ok(Self::build(manager, mailbox, inbox))
     }
     /// Session cancellation belongs to maintenance operations; an interrupted
     /// `run` observation does not cancel their original deadline or native work.
@@ -215,25 +198,62 @@ impl<'a> Driver<'a> {
         timeout: Duration,
         cancellation: watch::Receiver<bool>,
     ) -> Result<(Mailbox, Self), Error> {
+        let (mailbox, mut driver) = Self::new(manager, limit)?;
+        driver.enable_maintenance(timeout, cancellation)?;
+        Ok((mailbox, driver))
+    }
+}
+
+impl Driver<OwnedMutexGuard<Manager>> {
+    /// Acquire exclusive access without a waiter. The supervisor's Arc retains
+    /// native ownership independently of this guard and every run future.
+    pub fn owned(manager: &Arc<Mutex<Manager>>, limit: usize) -> Result<(Mailbox, Self), Error> {
+        let guard = manager
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| Error::Operation(NativeError::Busy))?;
+        validate_manager(&guard)?;
+        let (mailbox, inbox) = channel(limit)?;
+        Ok(Self::build(guard, mailbox, inbox))
+    }
+}
+
+impl<M: DerefMut<Target = Manager>> Driver<M> {
+    pub fn enable_maintenance(
+        &mut self,
+        timeout: Duration,
+        cancellation: watch::Receiver<bool>,
+    ) -> Result<(), Error> {
         if timeout.is_zero()
             || timeout > Duration::from_secs(30)
             || Instant::now().checked_add(timeout).is_none()
         {
             return Err(Error::InvalidLimit);
         }
-        let changes = manager
+        if self.admission.is_closed() {
+            return Err(Error::Closed);
+        }
+        if self.maintenance.is_some()
+            || self.manager.has_pending()
+            || self.active.is_some()
+            || !self.inbox.is_empty()
+        {
+            return Err(Error::Operation(NativeError::Busy));
+        }
+        let changes = self
+            .manager
             .controller
             .changes()
             .map_err(|error| Error::Operation(NativeError::Metadata(error)))?;
-        let (mailbox, mut driver) = Self::new(manager, limit)?;
-        driver.maintenance = Some(Maintenance {
+        self.maintenance = Some(Maintenance {
             changes,
             timeout,
             cancellation,
             operation: None,
         });
-        Ok((mailbox, driver))
+        Ok(())
     }
+
     pub async fn run(&mut self, observer: Request) -> Result<(), Error> {
         loop {
             super::check_wait(&observer).map_err(native_error)?;
@@ -318,7 +338,7 @@ impl<'a> Driver<'a> {
                                 let Some(maintenance) = &mut self.maintenance else {
                                     return Ok(tokio::select! {
                                         command = self.inbox.recv() => Ok(command),
-                                        error = capture_change(self.manager) => Err(error),
+                                        error = capture_change(&mut self.manager) => Err(error),
                                     });
                                 };
                                 let expiry = match self.manager.controller.next_expiry() {
@@ -331,7 +351,7 @@ impl<'a> Driver<'a> {
                                 };
                                 return tokio::select! {
                                     command = self.inbox.recv() => Ok(Ok(command)),
-                                    error = capture_change(self.manager) => Ok(Err(error)),
+                                    error = capture_change(&mut self.manager) => Ok(Err(error)),
                                     result = maintenance.wait(expiry) => {
                                         Ok(result.map(|()| None))
                                     }
@@ -413,6 +433,22 @@ impl<'a> Driver<'a> {
         self.join_error
     }
 
+    fn build(manager: M, mailbox: Mailbox, inbox: mpsc::Receiver<Command>) -> (Mailbox, Self) {
+        let driver = Self {
+            manager,
+            inbox,
+            admission: mailbox.admission.clone(),
+            active: None,
+            failure: None,
+            join_error: None,
+            closure_pending: false,
+            maintenance: None,
+            retiring: false,
+            prefer_command: false,
+        };
+        (mailbox, driver)
+    }
+
     fn fail(&mut self, primary: NativeError) {
         self.close();
         self.failure = Some(match self.manager.failure() {
@@ -442,6 +478,16 @@ impl<'a> Driver<'a> {
             active.finish(Err(primary));
         }
     }
+}
+
+fn validate_manager(manager: &Manager) -> Result<(), Error> {
+    if manager.has_pending() {
+        return Err(Error::Operation(NativeError::Busy));
+    }
+    if manager.failure().is_some() {
+        return Err(Error::Operation(NativeError::Failed));
+    }
+    Ok(())
 }
 
 async fn capture_change(manager: &mut Manager) -> NativeError {

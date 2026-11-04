@@ -6,6 +6,7 @@
 
 use super::{Failure, capture_change, ip, join_native, owned_packet_port, preserve};
 mod idle_capture;
+mod owned_driver;
 mod selected_dns;
 use std::{
     future::{Future, poll_fn},
@@ -168,7 +169,7 @@ async fn run(
     {
         return Err("coordinator accepted another selector or lost the original owner".into());
     }
-    let mut manager = Manager::new(
+    let manager = Manager::new(
         controller.clone(),
         channels.publication.clone(),
         &mut native,
@@ -177,6 +178,8 @@ async fn run(
         &exclusions,
     )?;
     let reserved = manager.reserved_bytes();
+    let native_manager = Arc::new(tokio::sync::Mutex::new(manager));
+    let mut manager_guard = None;
     let mut pump = Pump::new(
         port.clone(),
         channels.ingress.clone(),
@@ -221,7 +224,21 @@ async fn run(
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let outcome = async {
+        timeout(Duration::from_secs(2), async {
+            while !channels.publication.is_published() {
+                tokio::task::yield_now().await;
+            }
+        }).await?;
         selected_peer=Some(selected_dns::Peer::new(context.clone(),capture_index,&service_owner).await?);
+        let custody = owned_driver::exercise(&native_manager, &controller, &service_owner).await;
+        manager_guard = Some(native_manager.clone().try_lock_owned()
+            .map_err(|_| "owned DNS driver did not return manager access")?);
+        let manager = manager_guard.as_mut().ok_or("native manager access missing")?;
+        custody?;
+        sweep(manager, &service_owner).await?;
+        if !ip(&["route", "show", "exact", "203.0.113.168/32"])?.is_empty() {
+            return Err("owned driver handoff did not permit joined route retirement".into());
+        }
         let peer=selected_peer.as_ref().ok_or("selected DNS peer lost")?;
         let response = reserve(&controller, &[ipv4(71), ipv4(72)])?;
         if manager.begin_commit(response, request(&service_owner)) != Err(Error::ExcludedEndpoint) {
@@ -230,7 +247,7 @@ async fn run(
         if !ip(&["route", "show", "exact", "203.0.113.71/32"])?.is_empty() {
             return Err("whole-response preflight allowed a partial native mutation".into());
         }
-        sweep(&mut manager, &service_owner).await?;
+        sweep(manager, &service_owner).await?;
         if controller.stats()?.routes != 0 {
             return Err("rejected answer leaked address ownership".into());
         }
@@ -238,7 +255,7 @@ async fn run(
         if manager.begin_commit(response, request(&service_owner)) != Err(Error::InvalidAddress) {
             return Err("coordinator accepted an unsupported capture address".into());
         }
-        sweep(&mut manager, &service_owner).await?;
+        sweep(manager, &service_owner).await?;
         if controller.stats()?.routes != 0 {
             return Err("unsupported answer leaked unpublished address ownership".into());
         }
@@ -365,7 +382,7 @@ async fn run(
         .await??;
         pending_udp.as_mut().ok_or("UDP completion ownership lost")?.wait(request(&service_owner)).await?;
         drop(pending_udp.take());
-        routed_udp_workload(controller.clone(),&mut manager,&mut dns,&service_owner,&mut pending_udp,peer).await?;
+        routed_udp_workload(controller.clone(),manager,&mut dns,&service_owner,&mut pending_udp,peer).await?;
         let response=reserve(&controller,&[ipv4(70)])?;
         let renewed_route=controller.response_route(&response,0)?;
         if renewed_route==route {return Err("automatic retirement reused the stale route generation".into());}
@@ -402,7 +419,7 @@ async fn run(
                     .into(),
             );
         }
-        sweep(&mut manager, &service_owner).await?;
+        sweep(manager, &service_owner).await?;
 
         for index in 0..20 {
             let response = reserve(&controller, &[ipv4(80 + index)])?;
@@ -412,7 +429,7 @@ async fn run(
                 Completion::Committed(mut response) => controller.cancel(&mut response)?,
                 Completion::Retired => return Err("wrong managed completion".into()),
             }
-            sweep(&mut manager, &service_owner).await?;
+            sweep(manager, &service_owner).await?;
             latency.push(before.elapsed().as_nanos());
             if controller.stats()?.routes != 0 || manager.reserved_bytes() != reserved {
                 return Err("managed rollback grew or leaked route metadata".into());
@@ -428,13 +445,13 @@ async fn run(
         {
             return Err("a pre-mutation candidate conflict invalidated unrelated routing".into());
         }
-        sweep(&mut manager, &service_owner).await?;
+        sweep(manager, &service_owner).await?;
         if foreign_before != ip(&["-j", "route", "show", "exact", "203.0.113.75/32"])? {
             return Err("managed rollback changed a foreign key".into());
         }
 
         if idle_capture {
-            idle_capture::exercise(&controller, &mut manager, &service_owner).await?;
+            idle_capture::exercise(&controller, manager, &service_owner).await?;
         } else {
         // Observe protected committed intent, then cancel through the real
         // operation's cancellation path. No production pause hook is needed.
@@ -479,7 +496,7 @@ async fn run(
                 Ok(false)
             }));
             started.await?;
-            let (result,interrupted)=queued_commit(&mut manager,response,operation,request(&service_owner),interrupted).await?;
+            let (result,interrupted)=queued_commit(manager,response,operation,request(&service_owner),interrupted).await?;
             watcher_stop.store(true, Ordering::Release);
             let observed = finish_watcher(&mut watcher)?;
             if manager.failure().is_some() {
@@ -503,7 +520,7 @@ async fn run(
                     return Err(format!("unexpected intent observation result: {result:?}").into());
                 }
             }
-            sweep(&mut manager, &service_owner).await?;
+            sweep(manager, &service_owner).await?;
         }
         if !saw_intent {
             return Err("fixture did not exercise post-intent native cancellation".into());
@@ -512,6 +529,13 @@ async fn run(
         Ok::<_, Failure>(())
     }
     .await;
+    let mut manager = match manager_guard.take() {
+        Some(manager) => manager,
+        None => match native_manager.clone().try_lock_owned() {
+            Ok(manager) => manager,
+            Err(_) => return preserve(outcome, vec!["native manager access remains owned".into()]),
+        },
+    };
     let elapsed = started.elapsed().as_nanos();
     let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000

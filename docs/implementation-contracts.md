@@ -3349,8 +3349,20 @@ native work is still owned; completed results retain admission until consumed
 or dropped. Submission never waits or creates an unbounded waiter queue.
 An original request accompanies every command, including queued time.
 
-The driver borrows the unique native manager and retains the active reply
-sender while awaiting its existing operation. Dropped/cancelled observation
+The driver retains exclusive access to the unique native manager and keeps the
+active reply sender while awaiting its existing operation. `Driver::new`
+borrows that manager; `Driver::owned` takes an owned guard from a supervisor's
+`Arc<tokio::sync::Mutex<Manager>>` using immediate `try_lock_owned` admission.
+It never creates a lock waiter. The owned driver can live in retained service
+state without a borrow of another service field. The private async mutex is
+only an exclusive actor-ownership gate; it is not a broad application lock.
+The supervisor keeps its Arc and configuration/runtime lease independently of
+the driver and all observation futures. Failed construction or driver loss
+does not discard the manager or an accepted native task. Recovery after driver
+loss still requires closing DNS admission, joining retained native work and
+handling lost command receipts; it does not permit replay or automatic success.
+`enable_maintenance` applies to either form, rejects invalid/duplicate/active
+ownership and leaves the driver retained on error. Dropped/cancelled observation
 resumes that same driver/manager state. Receipt waits likewise retain their
 receiver on observer cancellation or expiry. Successful native completion
 returns the original committed reservation; it performs no packet output.
