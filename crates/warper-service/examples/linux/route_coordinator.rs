@@ -5,9 +5,11 @@
 //! Real coordinator transactions, reply gating and retained native ownership.
 
 use super::{Failure, capture_change, ip, join_native, owned_packet_port, preserve};
+mod selected_dns;
 use std::{
     future::{Future, poll_fn},
     net::{IpAddr, Ipv4Addr},
+    num::NonZeroU32,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -32,11 +34,13 @@ use warper_core::{
     BackendId,
     dns::{Name, lease},
     routing::{Policy, SelectionError},
-    transport::{Error as TransportError, Request},
+    transport::{Backend, Error as TransportError, Request},
 };
 use warper_service::{
     dns::output::{RoutedReply, UdpOutput},
+    dns::prepare::{Prepared, Resolver},
     dns::{Limits as PacketLimits, Packet, routes::Controller},
+    dns::{QueryBudget, ServiceDiscoveryLimits},
     linux::{
         context::Context,
         dns_routes::{Completion, Error, Limits, Manager},
@@ -68,7 +72,9 @@ pub(super) async fn exercise(
 }
 
 async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Failure> {
-    let (owner, port) = owned_packet_port(context).await?;
+    let (owner, port) = owned_packet_port(context.clone()).await?;
+    let capture_index = NonZeroU32::new(owner.index().ok_or("coordinator capture index missing")?)
+        .ok_or("coordinator capture index zero")?;
     let mut native = Some(owner);
     let tun_name = native
         .as_ref()
@@ -175,6 +181,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
     let mut latency = Vec::with_capacity(20);
     let mut saw_intent = false;
     let mut pending_udp: Option<UdpOutput> = None;
+    let mut selected_peer = None;
     // Fixture-owned DNS capture only. Production route publication still
     // requires both DNS transports and daemon lifecycle integration.
     ip(&[
@@ -204,6 +211,8 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let outcome = async {
+        selected_peer=Some(selected_dns::Peer::new(context.clone(),capture_index,&service_owner).await?);
+        let peer=selected_peer.as_ref().ok_or("selected DNS peer lost")?;
         let response = reserve(&controller, &[ipv4(71), ipv4(72)])?;
         if manager.begin_commit(response, request(&service_owner)) != Err(Error::ExcludedEndpoint) {
             return Err("coordinator did not reject the entire excluded answer".into());
@@ -225,10 +234,9 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         }
 
         let udp_operation=request(&service_owner);
-        let (udp_client,udp_datagram,udp_query,udp_reply,udp_received_at)=routed_udp_query(&mut dns).await?;
-        let response = reserve_until(&controller, &[ipv4(70)],udp_operation.deadline)?;
-        let route = controller.response_route(&response, 0)?;
-        manager.begin_commit(response, udp_operation.clone())?;
+        let (udp_client,udp_datagram,udp_query,mut udp_reply)=routed_udp_query(&mut dns,peer,&controller,udp_operation.clone()).await?;
+        let route = controller.response_route(&udp_reply.reservation, 0)?;
+        manager.begin_commit(udp_reply.reservation, udp_operation.clone())?;
         let ready = gate.start();
         ready.await?;
         let (observer, cancellation) = watch::channel(false);
@@ -272,7 +280,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             );
         }
         gate.release().await?;
-        let response = match manager.wait(request(&service_owner)).await? {
+        udp_reply.reservation = match manager.wait(request(&service_owner)).await? {
             Completion::Committed(response) => response,
             Completion::Retired => return Err("commit returned retirement".into()),
         };
@@ -280,7 +288,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             return Err("coordinator exposed a response before committed publication".into());
         }
         let mut udp_datagram=Some(udp_datagram);
-        pending_udp=Some(UdpOutput::begin(controller.clone(),&mut udp_datagram,RoutedReply {packet:udp_reply,received_at:udp_received_at,reservation:response,grace:Duration::from_secs(1)},udp_operation)?);
+        pending_udp=Some(UdpOutput::begin(controller.clone(),&mut udp_datagram,udp_reply,udp_operation)?);
         let (cancelled,_)=watch::channel(true);
         if pending_udp.as_mut().ok_or("UDP output ownership lost")?.wait(request(&cancelled)).await!=Err(warper_service::dns::output::Error::WaitCancelled) {
             return Err("UDP output observation cancellation lost pending delivery".into());
@@ -308,6 +316,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             {
                 return Err("coordinated flow lost its original selection".into());
             }
+            let mut upstream=peer.backend.open_tcp(accepted.metadata.destination,request(&service_owner)).await?;
             let client = async {
                 application.write_all(b"coordinated flow").await?;
                 let mut response = [0; 16];
@@ -323,6 +332,9 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
                 if bytes != *b"coordinated flow" {
                     return Err("coordinated TCP request differs".into());
                 }
+                upstream.write_all(&bytes).await?;
+                upstream.read_exact(&mut bytes).await?;
+                if bytes!=*b"coordinated flow" {return Err("selected SOCKS TCP response differs".into());}
                 accepted.stream.write_all(&bytes).await?;
                 Ok::<_, Failure>(())
             };
@@ -332,6 +344,8 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             if accepted.stream.read(&mut byte).await? != 0 {
                 return Err("coordinated TCP FIN differs".into());
             }
+            upstream.shutdown().await?;
+            if upstream.read(&mut byte).await?!=0 {return Err("selected SOCKS TCP FIN differs".into());}
             accepted.stream.shutdown().await?;
             if application.read(&mut byte).await? != 0 {
                 return Err("coordinated kernel FIN differs".into());
@@ -341,7 +355,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         .await??;
         pending_udp.as_mut().ok_or("UDP completion ownership lost")?.wait(request(&service_owner)).await?;
         drop(pending_udp.take());
-        routed_udp_workload(controller.clone(),&mut manager,&mut dns,&service_owner,&mut pending_udp).await?;
+        routed_udp_workload(controller.clone(),&mut manager,&mut dns,&service_owner,&mut pending_udp,peer).await?;
         let response=reserve(&controller,&[ipv4(70)])?;
         manager.begin_commit(response,request(&service_owner))?;
         let response=match manager.wait(request(&service_owner)).await? {Completion::Committed(response)=>response,Completion::Retired=>return Err("framed DNS renewal returned retirement".into())};
@@ -491,6 +505,20 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         + i128::from(after.tv_nsec)
         - i128::from(cpu.tv_nsec);
     let mut cleanup = Vec::new();
+    if let Some(peer) = selected_peer.take() {
+        match peer.close().await {
+            Ok((21, 1, bytes)) => {
+                println!(
+                    "selected_socks dns_queries=21 tcp_flows=1 stream_bytes={bytes}; one serial controlled loopback SOCKS/DNS/echo peer, protected production connector, includes handshakes and DNS framing"
+                );
+            }
+            Ok(_) if outcome.is_err() => {}
+            Ok(_) => cleanup.push(
+                "selected SOCKS peer did not observe every DNS and application exchange".into(),
+            ),
+            Err(error) => cleanup.push(error),
+        }
+    }
     let mut stopped_pump = None;
     let mut report = None;
     if let Err(error) = gate.release().await {
@@ -682,7 +710,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         latency[9], latency[18], latency[19], report.ingress_drops, report.discarded_output
     );
     println!(
-        "PASS native coordinator retains cancelled waits, commits before routed zero-TTL UDP and framed output, protects first TUN TCP before UDP completion observation, preserves foreign state and closes post-intent failure with joined cleanup"
+        "PASS native coordinator retains cancelled waits, discovers 21 DNS answers through selected SOCKS before route commit and zero-TTL UDP output, protects first TUN TCP through selected SOCKS before UDP completion observation, preserves foreign state and closes post-intent failure with joined cleanup"
     );
     Ok(())
 }
@@ -693,7 +721,10 @@ fn ipv4(last: u8) -> Ipv4Addr {
 
 async fn routed_udp_query(
     endpoint: &mut udp_dns::Endpoint,
-) -> Result<(UdpSocket, udp_dns::Datagram, Packet, Packet, Instant), Failure> {
+    peer: &selected_dns::Peer,
+    controller: &Controller,
+    operation: Request,
+) -> Result<(UdpSocket, udp_dns::Datagram, Packet, RoutedReply), Failure> {
     timeout(Duration::from_secs(2), async {
         let limits = PacketLimits::new(512, 8)?;
         let mut bytes = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
@@ -714,11 +745,38 @@ async fn routed_udp_query(
         if incoming.id() != query.id() || incoming.question() != query.question() {
             return Err("routed UDP request correlation changed".into());
         }
-        bytes[2..4].copy_from_slice(&[0x81, 0x80]);
-        bytes[7] = 1;
-        bytes.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 203, 0, 113, 70]);
-        let reply = Packet::response(&bytes, &query, limits)?;
-        Ok::<_, Failure>((client, datagram, query, reply, Instant::now()))
+        let resolver = Resolver::new(
+            &peer.transport,
+            &peer.domains,
+            controller,
+            RoutingMode::Dynamic,
+            ServiceDiscoveryLimits {
+                alias_hops: 4,
+                addresses: 4,
+                ipv6: false,
+                work_items: 16,
+            },
+        )?;
+        let prepared = resolver
+            .prepare(&incoming, operation, &QueryBudget::new(4)?)
+            .await?;
+        let Prepared::Upstream {
+            packet,
+            received_at,
+            udp_payload_limit,
+            reservation: Some(reservation),
+        } = prepared
+        else {
+            return Err("selected discovery did not reserve its full positive answer".into());
+        };
+        let reply = RoutedReply {
+            packet: *packet,
+            received_at,
+            udp_payload_limit,
+            reservation,
+            grace: Duration::from_secs(1),
+        };
+        Ok::<_, Failure>((client, datagram, query, reply))
     })
     .await?
 }
@@ -729,6 +787,7 @@ async fn routed_udp_workload(
     endpoint: &mut udp_dns::Endpoint,
     owner: &watch::Sender<bool>,
     pending: &mut Option<UdpOutput>,
+    peer: &selected_dns::Peer,
 ) -> Result<(), Failure> {
     let mut latencies = Vec::with_capacity(20);
     let mut transferred = 0;
@@ -738,11 +797,11 @@ async fn routed_udp_workload(
     for _ in 0..20 {
         let before = Instant::now();
         let operation = request(owner);
-        let (client, datagram, query, packet, received_at) = routed_udp_query(endpoint).await?;
+        let (client, datagram, query, mut reply) =
+            routed_udp_query(endpoint, peer, &controller, operation.clone()).await?;
         transferred += datagram.payload().len();
-        let response = reserve_until(&controller, &[ipv4(70)], operation.deadline)?;
-        manager.begin_commit(response, operation.clone())?;
-        let response = match manager.wait(request(owner)).await? {
+        manager.begin_commit(reply.reservation, operation.clone())?;
+        reply.reservation = match manager.wait(request(owner)).await? {
             Completion::Committed(response) => response,
             Completion::Retired => return Err("routed UDP workload returned retirement".into()),
         };
@@ -750,12 +809,7 @@ async fn routed_udp_workload(
         *pending = Some(UdpOutput::begin(
             controller.clone(),
             &mut datagram,
-            RoutedReply {
-                packet,
-                received_at,
-                reservation: response,
-                grace: Duration::from_secs(1),
-            },
+            reply,
             operation,
         )?);
         pending
@@ -792,7 +846,7 @@ async fn routed_udp_workload(
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("routed UDP RSS unavailable")?;
     println!(
-        "routed_udp_output requests=20 concurrency=1 dns_payload_bytes={transferred} reserved_route_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; fresh kernel UDP socket per query, existing capture reverified, fixture positive answer, no upstream resolution",
+        "routed_udp_output requests=20 concurrency=1 dns_payload_bytes={transferred} reserved_route_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; fresh kernel UDP socket per query, real selected SOCKS DNS discovery, existing capture reverified",
         latencies[9], latencies[18], latencies[19]
     );
     Ok(())

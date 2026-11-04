@@ -3354,6 +3354,10 @@ reachable endpoint set for that reply. Before submission, correlate the reply
 ID and canonical question against the incoming query envelope, age wire TTLs
 from the original upstream observation, enforce UDP size, and authorize the
 complete committed route set. Preparation/submission failures start no I/O.
+The routed reply carries the UDP payload limit derived from its validated
+original query. Validate it against the virtual endpoint ceiling and enforce
+it during encoding, including the 512-byte default without EDNS. An oversized
+positive reply leaves the datagram available for a record-free TC reply.
 Preparation/authorization leaves the caller's original datagram available for
 a bounded SERVFAIL/TC response. Take it only when native submission begins;
 cancellation/expiry/closed output at that point cannot admit a fallback reply.

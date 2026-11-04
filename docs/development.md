@@ -1193,12 +1193,26 @@ controlled kernel peer; it is not virtual TCP DNS dispatch.
 The `routed_udp_output` row repeats 20 positive replies at concurrency one.
 Each uses a fresh kernel UDP socket and re-verifies existing native capture,
 then joins native output and metadata before checking released admission and
-fixed routing reservation. Latency includes socket/query preparation, capture
-verification, output completion and client receive. Record total DNS payload
+fixed routing reservation. Each query now runs production selected-backend
+preparation against a controlled real SOCKS5/DNS peer over the verified
+physical connector. The original deadline and dependency budget cover
+discovery and route reservation; no locally constructed answer bypasses
+preparation. The first discovered application connection also traverses the
+selected SOCKS5 backend and checks both FIN directions before observing UDP
+completion. The peer joins on success and failure, verifies the expected 21
+DNS queries and one application flow, and bounds each exchange and total
+connection admission.
+
+Latency includes socket/query preparation, selected DNS exchange, capture
+verification, output completion and client receive. Record virtual DNS payload
 bytes, elapsed/process CPU, peak RSS and p50/p95/p99. Final coordinator checks
-still require zero adapter drops/lost receipts. Replies come from fixture data,
-so this establishes route/output composition, not selected upstream discovery
-or complete DNS modes. If the fixture fails with accepted output, it cancels
+still require zero adapter drops/lost receipts. The `selected_socks` row adds
+the peer's actual stream bytes, including handshakes, DNS framing and application
+payload. The peer and service run in one process on a disposable namespace's
+loopback; these are controlled composition measurements, not separate-host
+performance. The peer uses invented DNS/echo data. This does not implement
+virtual TCP DNS, daemon scheduling or complete resolved DNS modes. If the
+fixture fails with accepted output, it cancels
 producers, joins packet I/O and discards queued frames before releasing the
 pending route reference; the primary error and cleanup failures are preserved.
 

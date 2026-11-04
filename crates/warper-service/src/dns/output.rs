@@ -17,6 +17,7 @@ use super::{
 pub struct RoutedReply {
     pub packet: Packet,
     pub received_at: Instant,
+    pub udp_payload_limit: usize,
     pub reservation: lease::Response,
     pub grace: Duration,
 }
@@ -85,6 +86,9 @@ impl UdpOutput {
         mut reply: RoutedReply,
         operation: Request,
     ) -> Result<Self, Error> {
+        if !(12..=udp_dns::MAX_PAYLOAD).contains(&reply.udp_payload_limit) {
+            return Err(Error::Packet(PacketError::InvalidLimits));
+        }
         reply
             .packet
             .correlate_request(datagram.as_ref().ok_or(Error::AlreadyJoined)?.payload())
@@ -105,7 +109,7 @@ impl UdpOutput {
         }
         let wire = reply
             .packet
-            .encode_limited(udp_dns::MAX_PAYLOAD.min(reply.packet.limit_bytes()))
+            .encode_limited(reply.udp_payload_limit.min(reply.packet.limit_bytes()))
             .map_err(Error::Packet)?;
         let output = controller
             .begin_output(reply.reservation)

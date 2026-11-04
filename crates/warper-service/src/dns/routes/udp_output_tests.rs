@@ -35,6 +35,9 @@ fn query() -> Vec<u8> {
     bytes
 }
 fn packet(ttl: u32, id: u16, large: bool) -> Packet {
+    packet_with_padding(ttl, id, if large { 1300 } else { 0 })
+}
+fn packet_with_padding(ttl: u32, id: u16, padding: usize) -> Packet {
     let limits = Limits::new(4096, 8).unwrap();
     let mut bytes = query();
     bytes[..2].copy_from_slice(&id.to_be_bytes());
@@ -44,11 +47,11 @@ fn packet(ttl: u32, id: u16, large: bool) -> Packet {
     bytes.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1]);
     bytes.extend_from_slice(&ttl.to_be_bytes());
     bytes.extend_from_slice(&[0, 4, 203, 0, 113, 7]);
-    if large {
+    if padding != 0 {
         bytes[11] = 1;
         bytes.extend_from_slice(&[0xc0, 0x0c, 0xff, 0, 0, 1, 0, 0, 0, 0]);
-        bytes.extend_from_slice(&1300_u16.to_be_bytes());
-        bytes.resize(bytes.len() + 1300, 7);
+        bytes.extend_from_slice(&(padding as u16).to_be_bytes());
+        bytes.resize(bytes.len() + padding, 7);
     }
     Packet::response(&bytes, &request, limits).unwrap()
 }
@@ -150,6 +153,7 @@ impl Fixture {
         RoutedReply {
             packet: packet(ttl, 17, false),
             received_at: self.origin,
+            udp_payload_limit: 512,
             reservation: self.reservation.take().unwrap(),
             grace: Duration::from_secs(1),
         }
@@ -229,7 +233,7 @@ async fn routed_udp_delivery_retains_aged_ttl_after_late_observation_and_origina
 
 #[tokio::test]
 async fn invalid_or_uncommitted_udp_replies_never_start_native_output() {
-    for case in 0..7 {
+    for case in 0..10 {
         let mut fixture = Fixture::new(case != 3).await;
         let mut reply = fixture.reply(0);
         let mut operation = request(&fixture.owner);
@@ -255,9 +259,21 @@ async fn invalid_or_uncommitted_udp_replies_never_start_native_output() {
                 operation.deadline = Instant::now();
                 OutputError::Submission(udp_dns::Error::RequestExpired)
             }
-            _ => {
+            6 => {
                 reply.packet = packet(0, 17, true);
                 OutputError::Packet(crate::dns::Error::ResourceLimit)
+            }
+            7 => {
+                reply.packet = packet_with_padding(0, 17, 600);
+                OutputError::Packet(crate::dns::Error::ResourceLimit)
+            }
+            8 => {
+                reply.udp_payload_limit = 0;
+                OutputError::Packet(crate::dns::Error::InvalidLimits)
+            }
+            _ => {
+                reply.udp_payload_limit = udp_dns::MAX_PAYLOAD + 1;
+                OutputError::Packet(crate::dns::Error::InvalidLimits)
             }
         };
         let result = fixture.begin(reply, operation);
@@ -272,9 +288,14 @@ async fn invalid_or_uncommitted_udp_replies_never_start_native_output() {
         drop(result);
         let retained_for_failure = !matches!(expected, OutputError::Submission(_));
         if retained_for_failure {
+            let truncated = expected == OutputError::Packet(crate::dns::Error::ResourceLimit);
             let wire = Packet::request(&query(), Limits::new(512, 8).unwrap())
                 .unwrap()
-                .local_reply(crate::dns::LocalReply::ServFail)
+                .local_reply(if truncated {
+                    crate::dns::LocalReply::Truncated
+                } else {
+                    crate::dns::LocalReply::ServFail
+                })
                 .unwrap();
             let mut receipt = fixture
                 .datagram
@@ -287,9 +308,13 @@ async fn invalid_or_uncommitted_udp_replies_never_start_native_output() {
                 &native[28..],
                 &Packet::request(&query(), Limits::new(512, 8).unwrap()).unwrap(),
                 Limits::new(512, 8).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(decoded.response_code(), 2);
+            );
+            if truncated {
+                assert!(matches!(decoded, Err(crate::dns::Error::Truncated)));
+                assert_eq!(&native[34..38], &[0, 0, 0, 0]);
+            } else {
+                assert_eq!(decoded.unwrap().response_code(), 2);
+            }
             native.complete(Ok(())).unwrap();
             receipt.wait(request(&fixture.owner)).await.unwrap();
         }

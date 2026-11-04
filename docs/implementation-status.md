@@ -259,6 +259,20 @@ uncommitted and cannot authorize output. Evidence belongs under
 `target/evidence/phase-2/query-preparation/`. Native coordinator composition,
 serialized scheduling and complete daemon/resolver integration remain open.
 
+The native coordinator fixture now uses selected-backend preparation against
+a real controlled SOCKS5/DNS peer through the protected physical connector.
+It reserves the discovered zero-TTL address, joins native publication before
+UDP output and forwards the first discovered kernel TCP flow through the same
+SOCKS5 backend while output ownership remains pending. The 20-query workload
+also performs actual selected DNS exchanges. The joined peer verifies 21 DNS
+queries, one application flow and transferred stream bytes. These additions
+await exact-commit disposable CI; local compilation/unit checks do not verify
+native composition. Evidence belongs under
+`target/evidence/phase-2/selected-dns-route/`. Routed UDP encoding also enforces
+the original query's negotiated payload limit and preserves the datagram for
+explicit TC on overflow. Daemon scheduling, global transient admission,
+virtual TCP DNS and resolver modes remain incomplete.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)
