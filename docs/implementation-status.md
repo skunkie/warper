@@ -326,6 +326,19 @@ wakeup assertion remains unverified until exact-commit CI passes. Evidence
 belongs under `target/evidence/phase-2/idle-capture/`; daemon DNS, global
 transient admission, virtual TCP DNS and resolver integration remain open.
 
+Server-side DNS TCP framing now owns one stream and retains partial prefix,
+body and write offsets across interrupted observation. The original operation
+deadline remains fixed; terminal I/O, malformed frames and original-operation
+failure forbid reuse. Controlled duplex tests cover pipelined requests, clean
+and partial EOF, invalid lengths, dropped/expired observations, partial output
+without replay, cancelled original owners and zero-length writes. The native
+loopback framing fixture uses this adapter for a real query/reply and clean
+EOF, retaining its response guard until the controlled peer consumes the reply.
+Evidence belongs under `target/evidence/phase-2/tcp-framing/`. Stream acceptance
+is not a virtual TCP delivery receipt: the virtual TCP DNS role and native
+output barrier remain incomplete, as do daemon/resolver integration and global
+transient admission.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

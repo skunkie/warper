@@ -3313,6 +3313,32 @@ forced cancellation or runtime loss prevents a late native write.
 Endpoint consumer loss is a supervised runtime failure. Shutdown still retains
 and joins DNS writers, runtime and native packet pump before releasing routes.
 
+### Server-side DNS TCP framing
+
+`dns::connection::Connection` owns one stream and permits one framed read or
+write at a time. The service begins each operation with its original deadline
+and cancellation owner, then observes it using separately bounded waits.
+Partial two-byte prefixes, payload reads and writes retain their exact offsets
+across dropped, cancelled or expired observations. Resuming observation never
+restarts the frame or renews the operation deadline. Completed operations allow
+the next frame on that same stream; pipelined input remains in the stream until
+the service begins the next read.
+
+Frame lengths must be at least a DNS header and within the configured packet
+limit before payload allocation or decoding. Clean EOF between frames ends the
+connection; EOF within a prefix or body, malformed input, I/O failure and an
+expired/cancelled original operation make it terminal. Terminal connections
+cannot accept new operations or reinterpret remaining bytes as another frame.
+Excess/invalid operation submission leaves the existing operation unchanged.
+The adapter starts no task and owns no routing permission.
+
+Write completion means only that the owned stream accepted the full framed
+message. It does not establish native delivery or authorize release of a
+positive response's route guard. Virtual TCP DNS still requires a separately
+joined native output barrier and the supervisor must retain routing ownership
+through that barrier or uncertain-output cleanup. Stream flush is not such a
+barrier.
+
 ### Routed UDP reply ownership
 
 `linux::dns_routes::queue` supplies a count-bounded commit mailbox and a

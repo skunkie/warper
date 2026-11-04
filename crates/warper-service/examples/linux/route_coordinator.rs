@@ -35,7 +35,7 @@ use warper_core::{
     BackendId,
     dns::{Name, lease},
     routing::{Policy, SelectionError},
-    transport::{Backend, Error as TransportError, Request},
+    transport::{Backend, Request},
 };
 use warper_service::{
     dns::output::{RoutedReply, UdpOutput},
@@ -1113,6 +1113,7 @@ async fn wait_flows(
     .await?
 }
 async fn dns_reply(controller: &Controller, response: lease::Response) -> Result<(), Failure> {
+    use warper_service::dns::connection::{Completion as StreamCompletion, Connection};
     let limits = PacketLimits::new(512, 8)?;
     let mut bytes = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
     bytes.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
@@ -1121,45 +1122,61 @@ async fn dns_reply(controller: &Controller, response: lease::Response) -> Result
     bytes[2..4].copy_from_slice(&[0x81, 0x80]);
     bytes[7] = 1;
     bytes.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 203, 0, 113, 70]);
-    let wire = Packet::response(&bytes, &query, limits)?.encode()?;
+    let reply = Packet::response(&bytes, &query, limits)?;
+    let wire = reply.encode()?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let endpoint = listener.local_addr()?;
-    let (mut client, (mut server, _)) = timeout(Duration::from_secs(2), async {
+    let (mut client, (server, _)) = timeout(Duration::from_secs(2), async {
         tokio::try_join!(TcpStream::connect(endpoint), listener.accept())
     })
     .await??;
     let mut output = controller.begin_output(response)?;
-    let (owner, cancellation) = watch::channel(false);
-    Request {
-        deadline: Instant::now() + Duration::from_secs(2),
-        cancellation,
-    }
-    .run(async {
-        server
-            .write_all(&(wire.len() as u16).to_be_bytes())
-            .await
-            .map_err(|error| TransportError::Io(error.kind()))?;
-        server
-            .write_all(&wire)
-            .await
-            .map_err(|error| TransportError::Io(error.kind()))
+    let (owner, _) = watch::channel(false);
+    timeout(Duration::from_secs(2), async {
+        let mut server = Connection::new(server, limits);
+        let encoded = query.encode()?;
+        client
+            .write_all(&(encoded.len() as u16).to_be_bytes())
+            .await?;
+        client.write_all(&encoded).await?;
+        server.begin_read(request(&owner))?;
+        let StreamCompletion::Query(incoming) = server.wait(request(&owner)).await? else {
+            return Err("framed DNS server did not receive a query".into());
+        };
+        if incoming.question() != query.question() || incoming.id() != query.id() {
+            return Err("framed DNS query correlation changed".into());
+        }
+        server.begin_reply(&reply, request(&owner))?;
+        if !matches!(
+            server.wait(request(&owner)).await?,
+            StreamCompletion::Written
+        ) {
+            return Err("framed DNS reply did not complete stream acceptance".into());
+        }
+        let length = client.read_u16().await?;
+        let mut received = vec![0; usize::from(length)];
+        client.read_exact(&mut received).await?;
+        Packet::response(&received, &query, limits)?;
+        if received != wire
+            || u32::from_be_bytes(received[received.len() - 10..received.len() - 6].try_into()?)
+                != 0
+        {
+            return Err("coordinated zero-TTL frame differs".into());
+        }
+        // This controlled loopback peer has consumed the complete response.
+        // Virtual TCP DNS still needs its own native packet delivery barrier.
+        controller.complete_output(&mut output, Duration::from_secs(1))?;
+        client.shutdown().await?;
+        server.begin_read(request(&owner))?;
+        if !matches!(server.wait(request(&owner)).await?, StreamCompletion::End) {
+            return Err("framed DNS server lost clean EOF".into());
+        }
+        Ok::<_, Failure>(())
     })
-    .await?;
-    controller.complete_output(&mut output, Duration::from_secs(1))?;
-    let length = client.read_u16().await?;
-    let mut received = vec![0; usize::from(length)];
-    client.read_exact(&mut received).await?;
-    Packet::response(&received, &query, limits)?;
-    if received != wire
-        || u32::from_be_bytes(received[received.len() - 10..received.len() - 6].try_into()?) != 0
-    {
-        return Err("coordinated zero-TTL frame differs".into());
-    }
-    drop(owner);
-    server.shutdown().await?;
-    client.shutdown().await?;
+    .await??;
     Ok(())
 }
+
 fn finish_watcher(
     watcher: &mut Option<std::thread::JoinHandle<Result<bool, Failure>>>,
 ) -> Result<bool, Failure> {
