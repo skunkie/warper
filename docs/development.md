@@ -1191,6 +1191,17 @@ observation finalizes retention. The framed TCP fixture remains a separate
 controlled kernel peer; it is not virtual TCP DNS dispatch.
 
 The `routed_udp_output` row repeats 20 positive replies at concurrency one.
+Its producer submits prepared reservations through a two-slot commit mailbox
+while a borrowed native driver runs concurrently. An interrupted initial
+observation resumes the same driver, and each joined receipt releases its
+mailbox admission before output. Producer and driver are both joined; a driver
+failure cancels the producer's original requests without cancelling cleanup
+observation. The post-intent cancellation scope also uses the mailbox, with
+one slot, and checks matching receipt/driver failures and preserved cleanup
+errors. These native additions remain unverified until their exact-commit CI.
+The Linux native CI matrix also runs the example's nonprivileged unit tests;
+locally use `cargo test --locked -p warper-service --example linux_network_probe`.
+These ownership/error tests remain separate from the privileged namespace gate.
 Each uses a fresh kernel UDP socket and re-verifies existing native capture,
 then joins native output and metadata before checking released admission and
 fixed routing reservation. Each query now runs production selected-backend

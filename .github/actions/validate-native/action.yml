@@ -26,6 +26,17 @@ runs:
       env:
         NATIVE_TARGET: ${{ inputs.target }}
       run: cargo build --locked --release --workspace --target "$NATIVE_TARGET"
+    - name: Test Linux native-probe ownership helpers when the service exists
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        NATIVE_TARGET: ${{ inputs.target }}
+      run: |
+        if [[ -f crates/warper-service/Cargo.toml ]]; then
+          cargo test --locked --target "$NATIVE_TARGET" -p warper-service --example linux_network_probe
+        else
+          echo "Native-probe unit tests not run: no service package exists at this stage."
+        fi
     - name: Exercise CLI entry points when the CLI package exists
       shell: bash
       env:

@@ -1339,7 +1339,7 @@ mod linux {
         use super::*;
         #[test]
         fn cleanup_diagnostics_preserve_the_primary_and_secondary_failures() {
-            let error = preserve(
+            let error = preserve::<()>(
                 Err("initial probe failure".into()),
                 vec!["cleanup failure".into()],
             )

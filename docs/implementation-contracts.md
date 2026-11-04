@@ -3309,6 +3309,33 @@ and joins DNS writers, runtime and native packet pump before releasing routes.
 
 ### Routed UDP reply ownership
 
+`linux::dns_routes::queue` supplies a count-bounded commit mailbox and a
+caller-driven native driver with 1–64 retained request slots. One shared
+admission permit spans each accepted
+command and its result receipt. Dropping a receipt cannot free admission while
+native work is still owned; completed results retain admission until consumed
+or dropped. Submission never waits or creates an unbounded waiter queue.
+An original request accompanies every command, including queued time.
+
+The driver borrows the unique native manager and retains the active reply
+sender while awaiting its existing operation. Dropped/cancelled observation
+resumes that same driver/manager state. Receipt waits likewise retain their
+receiver on observer cancellation or expiry. Successful native completion
+returns the original committed reservation; it performs no packet output.
+Abandoned results release their reservation without replaying work. Known
+pre-mutation request rejections can finish one command; manager failures close
+mailbox admission and surface failure for session cleanup.
+The driver's `failure()` retains the primary and closure errors; `join_error()`
+retains an additional error encountered while joining failed work. Busy closure
+keeps the active owner for resumed observation rather than releasing its guard.
+
+The caller retains the driver, joins accepted work, joins DNS output/flow
+owners, then releases the native manager for cleanup. Closing the driver
+prevents new submission and drains accepted commands. The mailbox starts no
+task. Maintenance scheduling, native change observation and global transient
+byte admission remain separate incomplete integration gates; the mailbox's
+request count does not stand in for their budgets.
+
 `dns::prepare::Resolver` composes selected-backend A/AAAA and HTTPS/SVCB
 discovery with one whole-response route reservation. It checks the original
 domain's winning backend, unsigned synthesis eligibility and open routing

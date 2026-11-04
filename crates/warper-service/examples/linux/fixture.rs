@@ -105,18 +105,59 @@ impl std::error::Error for CombinedFailure {
         Some(&*self.primary)
     }
 }
-pub(crate) fn preserve(
-    primary: Result<(), Failure>,
+pub(crate) fn preserve<T>(
+    primary: Result<T, Failure>,
     mut cleanup: Vec<Failure>,
-) -> Result<(), Failure> {
+) -> Result<T, Failure> {
     let primary = match primary {
         Err(error) => error,
-        Ok(()) if cleanup.is_empty() => return Ok(()),
-        Ok(()) => cleanup.remove(0),
+        Ok(value) if cleanup.is_empty() => return Ok(value),
+        Ok(value) => {
+            drop(value);
+            cleanup.remove(0)
+        }
     };
     if cleanup.is_empty() {
         Err(primary)
     } else {
         Err(Box::new(CombinedFailure { primary, cleanup }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Debug)]
+    struct Guard(Arc<AtomicUsize>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn owned_results_drop_when_cleanup_fails_and_survive_success() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let retained = preserve(Ok(Guard(drops.clone())), vec![]).unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(retained);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        let failure = preserve(
+            Ok(Guard(drops.clone())),
+            vec![Box::new(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))],
+        )
+        .unwrap_err();
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            failure.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 }

@@ -28,6 +28,8 @@ use warper_core::transport::Request;
 const MAX_ADDRESSES: usize = 65536;
 const MAX_EXCLUSIONS: usize = 2 * super::egress::MAX_ENDPOINTS;
 
+pub mod queue;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub addresses_per_response: usize,

@@ -427,13 +427,8 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         for index in 0..32 {
             let response = reserve(&controller, &[ipv4(170 + index)])?;
             let (cancel, cancellation) = watch::channel(false);
-            manager.begin_commit(
-                response,
-                Request {
-                    deadline: Instant::now() + Duration::from_secs(10),
-                    cancellation,
-                },
-            )?;
+            let (interrupt, interrupted)=watch::channel(false);
+            let operation=Request {deadline:Instant::now()+Duration::from_secs(10),cancellation};
             let (ready, started) = oneshot::channel();
             watcher_stop.store(false, Ordering::Release);
             let stopped = watcher_stop.clone();
@@ -453,6 +448,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
                         Ok(Some(snapshot))
                             if snapshot.payload().get(96) == Some(&(tun::Stage::Routing as u8)) =>
                         {
+                            interrupt.send_replace(true);
                             cancel.send_replace(true);
                             return Ok(true);
                         }
@@ -469,11 +465,11 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
                 Ok(false)
             }));
             started.await?;
-            let result = manager.wait(request(&service_owner)).await;
+            let (result,interrupted)=queued_commit(&mut manager,response,operation,request(&service_owner),interrupted).await?;
             watcher_stop.store(true, Ordering::Release);
             let observed = finish_watcher(&mut watcher)?;
             if manager.failure().is_some() {
-                if !observed || result.is_ok() || !controller.is_closed()? || manager.has_pending()
+                if !observed || !interrupted || result.is_ok() || !controller.is_closed()? || manager.has_pending()
                 {
                     return Err("post-intent failure was not closed and joined".into());
                 }
@@ -481,7 +477,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
                 break;
             }
             match result {
-                Ok(Completion::Committed(mut response)) => controller.cancel(&mut response)?,
+                Ok(mut response) => controller.cancel(&mut response)?,
                 Err(
                     Error::RequestCancelled
                     | Error::Native(tun::Error::Capture(tun::NativeFailure {
@@ -721,6 +717,70 @@ fn ipv4(last: u8) -> Ipv4Addr {
     Ipv4Addr::new(203, 0, 113, last)
 }
 
+async fn queued_commit(
+    manager: &mut Manager,
+    response: lease::Response,
+    operation: Request,
+    observer: Request,
+    interrupted: watch::Receiver<bool>,
+) -> Result<(Result<lease::Response, Error>, bool), Failure> {
+    use warper_service::linux::dns_routes::queue::{Driver, Error as QueueError};
+    let (mailbox, mut driver) = Driver::new(manager, 1)?;
+    let mut receipt = mailbox.submit(response, operation)?;
+    drop(mailbox);
+    let initial = driver
+        .run(Request {
+            deadline: observer.deadline,
+            cancellation: interrupted,
+        })
+        .await;
+    let interrupted = initial == Err(QueueError::WaitCancelled);
+    let initial_error = match initial {
+        Ok(()) | Err(QueueError::WaitCancelled) => None,
+        Err(error) => Some(error),
+    };
+    let (result, driven) = tokio::join!(receipt.wait(observer.clone()), driver.run(observer));
+    let mut cleanup = Vec::new();
+    if let Some(error) = initial_error {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    if let Some(failure) = driver.failure() {
+        for error in failure.cleanup.into_iter().flatten() {
+            cleanup.push(Box::new(error) as Failure);
+        }
+    }
+    if let Some(error) = driver.join_error() {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    let result = match (result, driven) {
+        (Ok(response), Ok(())) => Ok(Ok(response)),
+        (Err(QueueError::Operation(error)), Ok(())) => Ok(Err(error)),
+        (Err(QueueError::Operation(error)), Err(QueueError::Operation(driven)))
+            if error == driven =>
+        {
+            Ok(Err(error))
+        }
+        (Err(error), Err(driven)) => {
+            cleanup.push(Box::new(driven) as Failure);
+            Err(Box::new(error) as Failure)
+        }
+        (Err(error), Ok(())) => Err(Box::new(error) as Failure),
+        (Ok(response), Err(error)) => {
+            drop(response);
+            Err(Box::new(error) as Failure)
+        }
+    };
+    if !cleanup.is_empty()
+        && let Ok(Err(error)) = &result
+    {
+        return Err(Box::new(super::CombinedFailure {
+            primary: Box::new(*error),
+            cleanup,
+        }));
+    }
+    preserve(result.map(|result| (result, interrupted)), cleanup)
+}
+
 async fn routed_udp_query(
     endpoint: &mut udp_dns::Endpoint,
     peer: &selected_dns::Peer,
@@ -796,46 +856,80 @@ async fn routed_udp_workload(
     let reserved = controller.reserved_bytes()?;
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
-    for _ in 0..20 {
-        let before = Instant::now();
-        let operation = request(owner);
-        let (client, datagram, query, mut reply) =
-            routed_udp_query(endpoint, peer, &controller, operation.clone()).await?;
-        transferred += datagram.payload().len();
-        manager.begin_commit(reply.reservation, operation.clone())?;
-        reply.reservation = match manager.wait(request(owner)).await? {
-            Completion::Committed(response) => response,
-            Completion::Retired => return Err("routed UDP workload returned retirement".into()),
-        };
-        let mut datagram = Some(datagram);
-        *pending = Some(UdpOutput::begin(
-            controller.clone(),
-            &mut datagram,
-            reply,
-            operation,
-        )?);
-        pending
-            .as_mut()
-            .ok_or("routed UDP workload lost output")?
-            .wait(request(owner))
-            .await?;
-        let mut wire = [0; 512];
-        let length = timeout(Duration::from_secs(2), client.recv(&mut wire)).await??;
-        if Packet::response(&wire[..length], &query, PacketLimits::new(512, 8)?)?.response_code()
-            != 0
-        {
-            return Err("routed UDP workload lost its positive answer".into());
-        }
-        transferred += length;
-        drop(pending.take());
-        if endpoint.retained_requests() != 0
-            || controller.stats()?.responses != 0
-            || controller.reserved_bytes()? != reserved
-        {
-            return Err("routed UDP workload leaked output ownership".into());
-        }
-        latencies.push(before.elapsed().as_nanos());
+    let (mailbox, mut driver) = warper_service::linux::dns_routes::queue::Driver::new(manager, 2)?;
+    let (cancelled, _) = watch::channel(true);
+    if driver.run(request(&cancelled)).await
+        != Err(warper_service::linux::dns_routes::queue::Error::WaitCancelled)
+    {
+        return Err("cancelled mailbox observation did not retain its driver".into());
     }
+    let (query_owner, _) = watch::channel(false);
+    let workload = async {
+        let mailbox = mailbox;
+        for _ in 0..20 {
+            let before = Instant::now();
+            let operation = request(&query_owner);
+            let (client, datagram, query, mut reply) =
+                routed_udp_query(endpoint, peer, &controller, operation.clone()).await?;
+            transferred += datagram.payload().len();
+            let mut receipt = mailbox.submit(reply.reservation, operation.clone())?;
+            reply.reservation = receipt.wait(request(&query_owner)).await?;
+            if mailbox.active() != 0 {
+                return Err("joined commit receipt retained mailbox admission".into());
+            }
+            let mut datagram = Some(datagram);
+            *pending = Some(UdpOutput::begin(
+                controller.clone(),
+                &mut datagram,
+                reply,
+                operation,
+            )?);
+            pending
+                .as_mut()
+                .ok_or("routed UDP workload lost output")?
+                .wait(request(owner))
+                .await?;
+            let mut wire = [0; 512];
+            let length = timeout(Duration::from_secs(2), client.recv(&mut wire)).await??;
+            if Packet::response(&wire[..length], &query, PacketLimits::new(512, 8)?)?
+                .response_code()
+                != 0
+            {
+                return Err("routed UDP workload lost its positive answer".into());
+            }
+            transferred += length;
+            drop(pending.take());
+            if endpoint.retained_requests() != 0
+                || controller.stats()?.responses != 0
+                || controller.reserved_bytes()? != reserved
+            {
+                return Err("routed UDP workload leaked output ownership".into());
+            }
+            latencies.push(before.elapsed().as_nanos());
+        }
+        Ok::<_, Failure>(())
+    };
+    let driven = async {
+        let result = driver.run(request(owner)).await;
+        if result.is_err() {
+            query_owner.send_replace(true);
+        }
+        result
+    };
+    let (workload, driven) = tokio::join!(workload, driven);
+    let mut cleanup = Vec::new();
+    if let Err(error) = driven {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    if let Some(error) = driver.join_error() {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    if let Some(failure) = driver.failure() {
+        for error in failure.cleanup.into_iter().flatten() {
+            cleanup.push(Box::new(error) as Failure);
+        }
+    }
+    preserve(workload, cleanup)?;
     let elapsed = started.elapsed().as_nanos();
     let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000

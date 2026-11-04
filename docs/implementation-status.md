@@ -256,8 +256,8 @@ expiry and rejects static/shared-IP conflicts and unsupported endpoint
 families. Local AAAA NODATA/BADVERS bypass upstream work; valid empty endpoint
 sets allocate no routes. Controlled tests prove reservations remain
 uncommitted and cannot authorize output. Evidence belongs under
-`target/evidence/phase-2/query-preparation/`. Native coordinator composition,
-serialized scheduling and complete daemon/resolver integration remain open.
+`target/evidence/phase-2/query-preparation/`. Daemon scheduling and complete
+daemon/resolver integration remain open.
 
 The native coordinator fixture now uses selected-backend preparation against
 a real controlled SOCKS5/DNS peer through the protected physical connector.
@@ -265,13 +265,31 @@ It reserves the discovered zero-TTL address, joins native publication before
 UDP output and forwards the first discovered kernel TCP flow through the same
 SOCKS5 backend while output ownership remains pending. The 20-query workload
 also performs actual selected DNS exchanges. The joined peer verifies 21 DNS
-queries, one application flow and transferred stream bytes. These additions
-await exact-commit disposable CI; local compilation/unit checks do not verify
-native composition. Evidence belongs under
-`target/evidence/phase-2/selected-dns-route/`. Routed UDP encoding also enforces
+queries, one application flow and 2,598 transferred stream bytes. This native
+Linux composition passes in
+[CI 41863209173](https://github.com/skunkie/warper/actions/runs/41863209173)
+at `5342b82`: all five Linux manifests were inspected with preserved host state,
+zero packet drops and joined cleanup. The overall run remains unsuccessful
+because the macOS job never acquired a runner under hosted capacity constraints;
+its exact-commit check is unverified. Raw manifests and metrics belong under
+`target/evidence/phase-2/native-deadline/ci-41863209173/`.
+Routed UDP encoding also enforces
 the original query's negotiated payload limit and preserves the datagram for
 explicit TC on overflow. Daemon scheduling, global transient admission,
 virtual TCP DNS and resolver modes remain incomplete.
+
+Native commit scheduling now has a count-bounded mailbox with admission held
+through accepted work and result consumption. Receipt and driver observation
+can resume after cancellation without replacing the native operation. Closing
+admission drains accepted commands; fatal manager failures retain primary and
+cleanup errors and reject queued work before mutation. Controlled mailbox
+tests cover capacity, abandoned/completed receipts, interrupted waits, closed
+owners and original request rejection. The native fixture routes its positive
+workload and post-intent failure through the driver; this composition awaits
+exact-commit CI. Evidence belongs under
+`target/evidence/phase-2/commit-mailbox/`. Timer/retirement scheduling, native
+change observation, global transient byte admission and daemon DNS remain
+incomplete.
 
 ## Phase 0 Exit Evidence
 
