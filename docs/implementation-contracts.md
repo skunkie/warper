@@ -3221,9 +3221,15 @@ uncertain operation. The service route manager must serialize native intent,
 ACK/ownership reconciliation and these transitions; daemon DNS remains disabled
 until that integration and NET-10–NET-12 native gates pass.
 
-The owner arms one timer from `next_expiry()` and one coalesced owned `Changes::wait()`
-notification. Ordinary renewals skip expiry scans until that timestamp is due;
-releasing a response checks only its own lease slots. Extending a lease can
+The owner arms one timer from `next_expiry()` and one coalesced owned
+`Changes::wait()` notification. Successful output completion/handoff, explicit
+response cancellation, explicit flow release and the first admission closure
+also notify this owner. An idle
+coordinator must recheck timers and retirement eligibility after these state
+changes, even when no guard is dropped. Repeated closure is idempotent and all
+notifications share the same single coalesced permit.
+Ordinary renewals skip expiry scans until that timestamp is due; releasing a
+response checks only its own lease slots. Extending a lease can
 leave one early wake, which recomputes the timestamp without adding records.
 `mark_uncertain` withdraws metadata publication readiness while retaining all
 references, until the service proves the same owned route committed again or

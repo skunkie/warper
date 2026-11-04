@@ -285,11 +285,22 @@ admission drains accepted commands; fatal manager failures retain primary and
 cleanup errors and reject queued work before mutation. Controlled mailbox
 tests cover capacity, abandoned/completed receipts, interrupted waits, closed
 owners and original request rejection. The native fixture routes its positive
-workload and post-intent failure through the driver; this composition awaits
-exact-commit CI. Evidence belongs under
+workload and post-intent failure through the driver. This Linux composition
+passes in [CI 41872208892](https://github.com/skunkie/warper/actions/runs/41872208892)
+at `456dd9b`; all five native manifests preserve host state with zero reported
+drops and joined interrupted/failing work. Its macOS job was cancelled, so the
+exact-commit macOS check remains unverified. Evidence belongs under
 `target/evidence/phase-2/commit-mailbox/`. Timer/retirement scheduling, native
 change observation, global transient byte admission and daemon DNS remain
 incomplete.
+
+Explicit ledger handoff/output completion, response cancellation, flow release
+and first closure now wake the coalesced expiry observer. Controlled tests
+verify new grace deadlines, newly retireable routes, retained pending ownership
+on closure and idempotent repeated closure without extra notifications. This
+fixes the notification prerequisite for an idle maintenance loop; it does not
+implement that loop. Evidence belongs under
+`target/evidence/phase-2/expiry-notifications/`.
 
 ## Phase 0 Exit Evidence
 

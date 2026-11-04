@@ -551,6 +551,84 @@ async fn cross_thread_drops_wake_one_owner_and_reclaim_all_their_exact_reference
 }
 
 #[test]
+fn explicit_reference_transitions_wake_the_expiry_owner() {
+    #[derive(Clone, Copy, Debug)]
+    enum Action {
+        Handoff,
+        CompleteOutput,
+        Cancel,
+        ReleaseFlow,
+        Close,
+    }
+    fn changed(changes: &mut Changes) -> bool {
+        let mut wait = std::pin::pin!(changes.wait());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        std::future::Future::poll(wait.as_mut(), &mut context).is_ready()
+    }
+    for action in [
+        Action::Handoff,
+        Action::CompleteOutput,
+        Action::Cancel,
+        Action::ReleaseFlow,
+        Action::Close,
+    ] {
+        let mut ledger = Ledger::new(limits()).unwrap();
+        let mut response = reserve(&mut ledger, question("sample", 1), &[endpoint(1, 0)]);
+        let route = publish(&mut ledger, &response)[0];
+        let mut changes = ledger.changes().unwrap();
+        let mut flow = if matches!(action, Action::ReleaseFlow) {
+            let flow = ledger.acquire_flow(Duration::ZERO, route).unwrap();
+            ledger
+                .handoff(Duration::ZERO, &mut response, Duration::ZERO)
+                .unwrap();
+            let _initial_notification = changed(&mut changes);
+            Some(flow)
+        } else {
+            None
+        };
+        assert!(
+            !changed(&mut changes),
+            "{action:?}: no stale notification before transition"
+        );
+        match action {
+            Action::Handoff => ledger
+                .handoff(Duration::ZERO, &mut response, seconds(1))
+                .unwrap(),
+            Action::CompleteOutput => {
+                let mut output = ledger.begin_output(Duration::ZERO, response).unwrap();
+                ledger
+                    .complete_output(Duration::ZERO, &mut output, seconds(1))
+                    .unwrap();
+            }
+            Action::Cancel => ledger.cancel(&mut response).unwrap(),
+            Action::ReleaseFlow => ledger.release_flow(flow.as_mut().unwrap()).unwrap(),
+            Action::Close => ledger.close(),
+        }
+        assert!(
+            changed(&mut changes),
+            "{action:?}: sleeping expiry owner must recheck state"
+        );
+        assert!(
+            !changed(&mut changes),
+            "{action:?}: notification remains coalesced"
+        );
+        if matches!(action, Action::Close) {
+            assert_eq!(
+                ledger.stats().responses,
+                1,
+                "closure must preserve pending ownership"
+            );
+            ledger.close();
+            assert!(!changed(&mut changes), "repeated closure is idempotent");
+        } else if matches!(action, Action::Handoff | Action::CompleteOutput) {
+            assert_eq!(ledger.next_expiry(), Some(seconds(1)), "{action:?}");
+        } else {
+            assert_eq!(ledger.retirement_candidate(), Some(route), "{action:?}");
+        }
+    }
+}
+
+#[test]
 fn repeated_expiry_and_hash_index_compaction_do_not_grow_or_lose_protected_keys() {
     let mut ledger = Ledger::new(Limits {
         lease_entries: 4,

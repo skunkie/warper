@@ -432,7 +432,10 @@ impl Ledger {
     }
 
     pub fn close(&mut self) {
-        self.closed = true;
+        if !self.closed {
+            self.closed = true;
+            self.control.notify.notify_one();
+        }
     }
 
     /// The service first withdraws DNS and destroys/joins output and flow
@@ -541,6 +544,7 @@ impl Ledger {
         self.release_response(handle.slot)?;
         handle.id = 0;
         self.reclaim_leases()?;
+        self.control.notify.notify_one();
         Ok(())
     }
 
@@ -548,7 +552,9 @@ impl Ledger {
         self.response(response)?;
         self.release_response(response.0.slot)?;
         response.0.id = 0;
-        self.reclaim_leases()
+        self.reclaim_leases()?;
+        self.control.notify.notify_one();
+        Ok(())
     }
 
     pub fn acquire_flow(&mut self, now: Duration, route: Route) -> Result<Flow, Error> {
@@ -601,6 +607,7 @@ impl Ledger {
         }
         self.release_flow_slot(slot)?;
         flow.0.id = 0;
+        self.control.notify.notify_one();
         Ok(())
     }
 
