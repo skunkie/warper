@@ -7,6 +7,7 @@
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 use tokio::{sync::watch, time::Instant};
 use warper_core::transport::Request;
+use warper_stack::runtime::delivery::{Failure as DeliveryFailure, Packet as OutputPacket};
 use warper_stack::runtime::{self, Egress, Ingress};
 
 use super::tun::{BUFFER_BYTES, PacketError, PacketPort};
@@ -19,6 +20,7 @@ pub enum Error {
     CancellationOwnerLost,
     Input(runtime::Error),
     OutputClosed,
+    DeliveryOwnerLost,
     Native(PacketError),
 }
 impl fmt::Display for Error {
@@ -32,6 +34,9 @@ impl fmt::Display for Error {
             }
             Self::Input(error) => error.fmt(formatter),
             Self::OutputClosed => formatter.write_str("NativeIo: host packet output closed"),
+            Self::DeliveryOwnerLost => {
+                formatter.write_str("WorkerFailed: packet delivery observer disappeared")
+            }
             Self::Native(error) => error.fmt(formatter),
         }
     }
@@ -46,6 +51,7 @@ pub struct Report {
     pub sent_packets: u64,
     pub sent_bytes: u64,
     pub discarded_output: u64,
+    pub lost_delivery_receipts: u64,
     /// Bucket zero is below one microsecond; each following bound doubles.
     /// The final bucket includes all remaining durations.
     pub write_waits: [u64; 32],
@@ -131,10 +137,10 @@ impl PacketIo for PacketPort {
     }
 }
 trait PacketOutput: Send {
-    fn recv(&mut self) -> impl Future<Output = Option<Vec<u8>>> + Send;
+    fn recv(&mut self) -> impl Future<Output = Option<OutputPacket>> + Send;
 }
 impl PacketOutput for Egress {
-    async fn recv(&mut self) -> Option<Vec<u8>> {
+    async fn recv(&mut self) -> Option<OutputPacket> {
         self.recv().await
     }
 }
@@ -187,6 +193,7 @@ async fn drive(
     input_report.sent_packets = output_report.sent_packets;
     input_report.sent_bytes = output_report.sent_bytes;
     input_report.discarded_output = output_report.discarded_output;
+    input_report.lost_delivery_receipts = output_report.lost_delivery_receipts;
     input_report.write_waits = output_report.write_waits;
     match cause {
         Some(cause) => Err(Failure {
@@ -266,21 +273,66 @@ async fn write(
             packet = output.recv() => packet.ok_or(Error::OutputClosed)?,
         };
         let before = Instant::now();
-        let request = Request {
+        let tracked = packet.request().is_some();
+        let mut endpoint_cancellation = packet.cancellation().cloned();
+        let mut request = packet.request().cloned().unwrap_or_else(|| Request {
             deadline: before + write_timeout,
             cancellation: cancellation.clone(),
+        });
+        request.deadline = request.deadline.min(before + write_timeout);
+        let result = if endpoint_cancellation
+            .as_ref()
+            .is_some_and(|token| *token.borrow() || token.has_changed().is_err())
+            || *request.cancellation.borrow()
+            || request.cancellation.has_changed().is_err()
+        {
+            Err(PacketError::Cancelled)
+        } else if Instant::now() >= request.deadline {
+            Err(PacketError::Deadline)
+        } else {
+            tokio::select! {biased;
+                _=cancelled(&mut cancellation)=>Err(PacketError::Cancelled),
+                ()=async {match &mut endpoint_cancellation {Some(token)=>{let _cancelled_or_closed=token.wait_for(|cancelled|*cancelled).await;},None=>std::future::pending().await}}=>Err(PacketError::Cancelled),
+                result=port.send(&packet,request)=>result,
+            }
         };
-        match port.send(&packet, request).await {
+        let length = packet.len();
+        let receipt_lost = packet
+            .complete(match result {
+                Ok(()) => Ok(()),
+                Err(PacketError::Cancelled) => Err(DeliveryFailure::Cancelled),
+                Err(PacketError::Deadline) => Err(DeliveryFailure::Deadline),
+                Err(_) => Err(DeliveryFailure::Uncertain),
+            })
+            .is_err();
+        if receipt_lost {
+            report.lost_delivery_receipts = report.lost_delivery_receipts.saturating_add(1);
+        }
+        match result {
             Ok(()) => {
                 report.sent_packets = report.sent_packets.saturating_add(1);
-                report.sent_bytes = report.sent_bytes.saturating_add(packet.len() as u64);
+                report.sent_bytes = report.sent_bytes.saturating_add(length as u64);
                 let micros = before.elapsed().as_micros();
                 let bucket = (128 - micros.leading_zeros()).min(31) as usize;
                 report.write_waits[bucket] = report.write_waits[bucket].saturating_add(1);
+                if receipt_lost {
+                    return Err(Error::DeliveryOwnerLost);
+                }
             }
             Err(PacketError::Cancelled) => {
                 report.discarded_output = report.discarded_output.saturating_add(1);
-                return Ok(());
+                if receipt_lost {
+                    return Err(Error::DeliveryOwnerLost);
+                }
+                if !tracked || *cancellation.borrow() || cancellation.has_changed().is_err() {
+                    return Ok(());
+                }
+            }
+            Err(PacketError::Deadline) if tracked => {
+                report.discarded_output = report.discarded_output.saturating_add(1);
+                if receipt_lost {
+                    return Err(Error::DeliveryOwnerLost);
+                }
             }
             Err(error) => return Err(Error::Native(error)),
         }

@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
     sync::{oneshot, watch},
     task::JoinHandle,
     time::{Instant, timeout},
@@ -44,7 +44,11 @@ use warper_service::{
     },
     native::Workers,
 };
-use warper_stack::{Seed, host::Limits as HostLimits, runtime::Runtime};
+use warper_stack::{
+    Seed,
+    host::Limits as HostLimits,
+    runtime::{Runtime, udp_dns},
+};
 
 pub(super) async fn exercise(
     context: Arc<Context>,
@@ -65,6 +69,11 @@ pub(super) async fn exercise(
 async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Failure> {
     let (owner, port) = owned_packet_port(context).await?;
     let mut native = Some(owner);
+    let tun_name = native
+        .as_ref()
+        .and_then(tun::Owner::name)
+        .ok_or("coordinator TUN name unavailable")?
+        .to_owned();
     let port = Arc::new(port);
     let controller = Arc::new(Controller::new(
         Arc::new(Policy::new(&[], 8)?),
@@ -78,18 +87,30 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         },
         Instant::now(),
     )?);
-    let (runtime, mut channels) = Runtime::with_selector(
+    let (runtime, mut channels) = Runtime::with_udp_dns(
         HostLimits::default(),
         controller.selector(),
         8,
         Seed::generate()?,
+        udp_dns::Config {
+            endpoint: "203.0.113.53:53".parse()?,
+            requests: 2,
+        },
     )?;
+    let mut dns = channels
+        .udp_dns
+        .take()
+        .ok_or("virtual DNS endpoint unavailable")?;
     let workers = Arc::new(Workers::new(1)?);
     let limit = Limits {
         addresses_per_response: 4,
         bytes: 64 * 1024,
     };
-    let exclusions = [IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V4(ipv4(72))];
+    let exclusions = [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V4(ipv4(72)),
+        IpAddr::V4(ipv4(53)),
+    ];
     if !matches!(
         Manager::new(
             controller.clone(),
@@ -152,6 +173,17 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
     let watcher_stop = Arc::new(AtomicBool::new(false));
     let mut latency = Vec::with_capacity(20);
     let mut saw_intent = false;
+    // Fixture-owned DNS capture only. Production route publication still
+    // requires both DNS transports and daemon lifecycle integration.
+    ip(&[
+        "route",
+        "add",
+        "203.0.113.53/32",
+        "dev",
+        &tun_name,
+        "metric",
+        "3",
+    ])?;
     ip(&[
         "route",
         "add",
@@ -241,6 +273,7 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             return Err("coordinator exposed a response before committed publication".into());
         }
         dns_reply(&controller, response).await?;
+        udp_dns_reply(&mut dns).await?;
         timeout(Duration::from_secs(2), async {
             let (mut application, mut accepted) = tokio::try_join!(
                 async { Ok::<_, Failure>(TcpStream::connect((ipv4(70), 8443)).await?) },
@@ -503,6 +536,17 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
             cleanup.push(error);
         }
     }
+    if let Err(error) = ip(&[
+        "route",
+        "del",
+        "203.0.113.53/32",
+        "dev",
+        &tun_name,
+        "metric",
+        "3",
+    ]) {
+        cleanup.push(error);
+    }
     stop.send_replace(true);
     let mut stopped_pump = None;
     let mut report = None;
@@ -557,7 +601,11 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
     }
     preserve(outcome, cleanup)?;
     let report = report.ok_or("coordinator packet report missing")?;
-    if report.ingress_drops != 0 || report.discarded_output != 0 {
+    if report.ingress_drops != 0
+        || report.discarded_output != 0
+        || report.lost_delivery_receipts != 0
+        || dns.retained_requests() != 0
+    {
         return Err("managed flow dropped packet ownership".into());
     }
     latency.sort_unstable();
@@ -567,11 +615,11 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("coordinator RSS unavailable")?;
     println!(
-        "route_coordinator cycles=20 app_bytes=32 observer_cancellations=1 deferred_retirements=1 post_intent_failure={saw_intent} reserved_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} ingress_drops={} discarded_output={} {peak}",
+        "route_coordinator cycles=20 app_bytes=32 udp_dns_requests=20 observer_cancellations=1 deferred_retirements=1 post_intent_failure={saw_intent} reserved_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} ingress_drops={} discarded_output={} {peak}",
         latency[9], latency[18], latency[19], report.ingress_drops, report.discarded_output
     );
     println!(
-        "PASS native coordinator retains cancelled waits, commits before zero-TTL framed output and TUN TCP, preserves foreign state and closes post-intent failure with joined cleanup"
+        "PASS native coordinator retains cancelled waits, commits before zero-TTL framed output and TUN TCP, verifies virtual UDP negative reply receipts, preserves foreign state and closes post-intent failure with joined cleanup"
     );
     Ok(())
 }
@@ -579,6 +627,81 @@ async fn run(context: Arc<Context>, lease: Arc<RuntimeLease>) -> Result<(), Fail
 fn ipv4(last: u8) -> Ipv4Addr {
     Ipv4Addr::new(203, 0, 113, last)
 }
+
+async fn udp_dns_reply(endpoint: &mut udp_dns::Endpoint) -> Result<(), Failure> {
+    timeout(Duration::from_secs(2), async {
+        let limits = PacketLimits::new(udp_dns::MAX_PAYLOAD, 8)?;
+        let mut query_bytes = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        query_bytes.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
+        query_bytes.extend_from_slice(&[0, 1, 0, 1]);
+        let client = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+        client.connect(endpoint.local_addr()).await?;
+        if client.send(&[]).await?!=0 {return Err("empty UDP send changed its boundary".into());}
+        let empty=endpoint.requests.recv().await.ok_or("empty virtual UDP input lost")?;
+        if !empty.payload().is_empty() {return Err("empty UDP input gained payload".into());}
+        let (owner,_)=watch::channel(false);
+        let mut operation=request(&owner); operation.deadline=Instant::now()+Duration::from_secs(2);
+        let mut delivery=empty.respond(&[],operation)?;
+        delivery.wait(request(&owner)).await?;
+        if client.recv(&mut [0]).await?!=0 || endpoint.retained_requests()!=0 {return Err("empty UDP output changed its boundary or retained admission".into());}
+        let mut latencies = Vec::with_capacity(20);
+        let mut transferred = 0;
+        let started = Instant::now();
+        let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        for id in 0_u16..20 {
+            let before = Instant::now();
+            let mut bytes = query_bytes.clone();
+            bytes[..2].copy_from_slice(&id.to_be_bytes());
+            if id%2!=0 {
+                // Alternate normal and maximum-size DNS packets with an EDNS
+                // Padding option. No IP fragmentation is needed at this MTU.
+                let padding=udp_dns::MAX_PAYLOAD-bytes.len()-15;
+                bytes[11]=1;
+                bytes.extend_from_slice(&[0,0,41,4,208,0,0,0,0]);
+                bytes.extend_from_slice(&((padding+4) as u16).to_be_bytes());
+                bytes.extend_from_slice(&12_u16.to_be_bytes());
+                bytes.extend_from_slice(&(padding as u16).to_be_bytes());
+                bytes.resize(udp_dns::MAX_PAYLOAD,0);
+            }
+            let query = Packet::request(&bytes, limits)?;
+            if client.send(&bytes).await? != bytes.len() {
+                return Err("native DNS query write was incomplete".into());
+            }
+            transferred += bytes.len();
+            let datagram = endpoint.requests.recv().await.ok_or("virtual DNS receiver stopped")?;
+            let received = Packet::request(datagram.payload(), limits)?;
+            if received.id() != query.id() || received.question() != query.question()
+                || datagram.destination() != endpoint.local_addr()
+            { return Err("virtual DNS query lost original correlation".into()); }
+            // SERVFAIL exposes no address. Positive UDP route/output ownership
+            // remains a separate production listener integration gate.
+            bytes[2..4].copy_from_slice(&[0x81, 0x82]);
+            let wire = Packet::response(&bytes, &query, limits)?.encode()?;
+            let (owner, _) = watch::channel(false);
+            let mut operation = request(&owner);
+            operation.deadline = Instant::now() + Duration::from_secs(2);
+            let mut delivery = datagram.respond(&wire, operation)?;
+            delivery.wait(request(&owner)).await?;
+            let mut reply = [0; udp_dns::MAX_PAYLOAD+1];
+            let length = client.recv(&mut reply).await?;
+            if reply[..length] != wire { return Err("virtual DNS reply differs after native delivery".into()); }
+            Packet::response(&reply[..length], &query, limits)?;
+            transferred += length;
+            if endpoint.retained_requests() != 0 { return Err("native DNS receipt leaked admission".into()); }
+            latencies.push(before.elapsed().as_nanos());
+        }
+        let elapsed = started.elapsed().as_nanos();
+        let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
+        let cpu_ns = (i128::from(after.tv_sec)-i128::from(cpu.tv_sec))*1_000_000_000
+            +i128::from(after.tv_nsec)-i128::from(cpu.tv_nsec);
+        latencies.sort_unstable();
+        let memory = std::fs::read_to_string("/proc/self/status")?;
+        let peak = memory.lines().find(|line|line.starts_with("VmHWM:")).ok_or("virtual DNS RSS unavailable")?;
+        println!("virtual_udp_dns requests=20 empty_round_trips=1 datagrams=42 dns_payload_bytes={transferred} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one connected kernel UDP socket, alternating normal/1232-byte fixture SERVFAIL, no backend resolution",latencies[9],latencies[18],latencies[19]);
+        Ok::<_, Failure>(())
+    }).await?
+}
+
 fn request(owner: &watch::Sender<bool>) -> Request {
     Request {
         deadline: Instant::now() + Duration::from_secs(10),

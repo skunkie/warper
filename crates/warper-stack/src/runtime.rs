@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Wake-driven host TCP owner. Kernel I/O and flow relays belong to the service.
+//! Wake-driven host packet owner. Kernel I/O and flow relays belong to the service.
 
 use crate::{
     Seed,
@@ -24,7 +24,9 @@ use tokio::{
 use warper_core::routing::{FlowSelector, Policy};
 
 mod admission;
+pub mod delivery;
 mod publication;
+pub mod udp_dns;
 pub use admission::{AdmissionControl, Quiescence, Snapshot as AdmissionSnapshot};
 pub use publication::Publication;
 
@@ -48,6 +50,7 @@ pub enum Error {
     WaitDeadline,
     AlreadyJoined,
     Host(AdmissionError),
+    Dns(udp_dns::Error),
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -67,6 +70,7 @@ pub struct Report {
     pub discarded_ingress: u64,
     pub retained_streams: usize,
     pub tcp: Statistics,
+    pub udp_dns: udp_dns::Statistics,
 }
 #[derive(Debug)]
 pub struct Failure {
@@ -102,16 +106,17 @@ pub struct Channels {
     pub ingress: Ingress,
     pub packets: Egress,
     pub tcp: mpsc::Receiver<AcceptedFlow>,
+    pub udp_dns: Option<udp_dns::Endpoint>,
     pub admission: AdmissionControl,
     pub publication: Publication,
     pub shutdown: oneshot::Sender<()>,
 }
 pub struct Egress {
-    receiver: mpsc::Receiver<Vec<u8>>,
+    receiver: mpsc::Receiver<delivery::Packet>,
     stopped: Arc<AtomicBool>,
 }
 impl Egress {
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+    pub async fn recv(&mut self) -> Option<delivery::Packet> {
         if self.stopped.load(Ordering::Acquire) {
             self.discard();
             return None;
@@ -142,7 +147,7 @@ impl Egress {
     }
 }
 
-struct ApplicationWake(Notify);
+struct ApplicationWake(Arc<Notify>);
 impl Wake for ApplicationWake {
     fn wake(self: Arc<Self>) {
         self.0.notify_one();
@@ -156,7 +161,9 @@ pub struct Runtime {
     host: HostAdapter,
     input: mpsc::Receiver<Vec<u8>>,
     pending: Option<Vec<u8>>,
-    output: mpsc::Sender<Vec<u8>>,
+    output: mpsc::Sender<delivery::Packet>,
+    dns: Option<udp_dns::Driver>,
+    dns_turn: bool,
     commands: mpsc::Receiver<admission::Command>,
     shutdown: oneshot::Receiver<()>,
     wake: Arc<ApplicationWake>,
@@ -181,7 +188,36 @@ impl Runtime {
         capacity: usize,
         seed: Seed,
     ) -> Result<(Self, Channels), Error> {
-        let buffer_capacity = Self::required_buffer_capacity(limits, capacity)?;
+        Self::build(limits, policy, capacity, seed, None)
+    }
+
+    pub fn with_udp_dns(
+        limits: Limits,
+        policy: Arc<dyn FlowSelector>,
+        capacity: usize,
+        seed: Seed,
+        dns: udp_dns::Config,
+    ) -> Result<(Self, Channels), Error> {
+        Self::build(limits, policy, capacity, seed, Some(dns))
+    }
+
+    fn build(
+        limits: Limits,
+        policy: Arc<dyn FlowSelector>,
+        capacity: usize,
+        seed: Seed,
+        dns: Option<udp_dns::Config>,
+    ) -> Result<(Self, Channels), Error> {
+        let mut buffer_capacity = Self::required_buffer_capacity(limits, capacity)?;
+        let notify = Arc::new(Notify::new());
+        let (dns, udp_dns) = if let Some(config) = dns {
+            buffer_capacity += config.required_buffer_capacity().map_err(Error::Dns)?;
+            let (driver, endpoint) =
+                udp_dns::Driver::new(config, notify.clone()).map_err(Error::Dns)?;
+            (Some(driver), Some(endpoint))
+        } else {
+            (None, None)
+        };
         let (host, tcp) =
             HostAdapter::with_selector(limits, policy.clone(), seed).map_err(Error::Host)?;
         let (input, receiver) = mpsc::channel(capacity);
@@ -204,9 +240,11 @@ impl Runtime {
                 input: receiver,
                 pending: None,
                 output,
+                dns,
+                dns_turn: true,
                 commands,
                 shutdown: stopping,
-                wake: Arc::new(ApplicationWake(Notify::new())),
+                wake: Arc::new(ApplicationWake(notify)),
                 stopped: stopped.clone(),
                 quiescent,
                 buffer_capacity,
@@ -219,6 +257,7 @@ impl Runtime {
                     stopped,
                 },
                 tcp,
+                udp_dns,
                 admission,
                 publication,
                 shutdown,
@@ -252,6 +291,10 @@ impl Runtime {
             self.report.discarded_ingress += 1;
         }
         self.report.tcp = *self.host.statistics();
+        if let Some(dns) = &mut self.dns {
+            dns.cancel();
+            self.report.udp_dns = dns.statistics;
+        }
         self.host.cancel();
         self.report.retained_streams = self.host.retained_flows();
         self.stopped.store(true, Ordering::Release);
@@ -270,6 +313,7 @@ impl Runtime {
         let waker = Waker::from(self.wake.clone());
         let output = self.output.clone();
         let accepted = self.host.accept_sender().ok_or(Error::ConsumerClosed)?;
+        let dns_consumer = self.dns.as_ref().map(udp_dns::Driver::consumer);
         let mut commands_open = true;
         loop {
             match self.shutdown.try_recv() {
@@ -292,7 +336,15 @@ impl Runtime {
             // Advance timers before admitting input that may have waited through
             // an arbitrarily long idle period.
             if let Some(packet) = self.pending.take() {
-                match self.host.inject(&packet) {
+                let admitted = match &mut self.dns {
+                    Some(dns) => match dns.inject(&packet) {
+                        Ok(true) => Ok(()),
+                        Ok(false) => self.host.inject(&packet).map(|_| ()),
+                        Err(error) => Err(error),
+                    },
+                    None => self.host.inject(&packet).map(|_| ()),
+                };
+                match admitted {
                     Ok(_) => {
                         self.report.admitted_packets =
                             self.report.admitted_packets.saturating_add(1)
@@ -329,6 +381,7 @@ impl Runtime {
                 },
                 ()=output.closed()=>return Err(Error::EgressClosed),
                 ()=accepted.closed()=>return Err(Error::ConsumerClosed),
+                ()=async {match &dns_consumer {Some(sender)=>sender.closed().await,None=>pending().await}}=>return Err(Error::ConsumerClosed),
                 permit=output.reserve(),if blocked=>{drop(permit.map_err(|_|Error::EgressClosed)?);},
                 packet=self.input.recv()=>{self.pending=Some(packet.ok_or(Error::IngressClosed)?);},
                 ()=self.wake.0.notified()=>{},
@@ -339,6 +392,13 @@ impl Runtime {
         }
     }
     fn apply_admission(&mut self, command: admission::Command) -> Result<(), Error> {
+        if let Some(dns) = &mut self.dns {
+            if command.cancel_flows {
+                dns.cancel();
+            } else {
+                dns.quiesce();
+            }
+        }
         if command.cancel_flows {
             self.host.cancel_flows().map_err(Error::Host)?;
             if self.pending.take().is_some() {
@@ -365,13 +425,28 @@ impl Runtime {
             let Ok(permit) = self.output.try_reserve() else {
                 break;
             };
-            let Some(packet) = self.host.take_packet() else {
+            self.dns_turn = !self.dns_turn;
+            let packet = if self.dns_turn {
+                self.dns
+                    .as_mut()
+                    .and_then(udp_dns::Driver::take_reply)
+                    .or_else(|| self.host.take_packet().map(delivery::Packet::untracked))
+            } else {
+                self.host
+                    .take_packet()
+                    .map(delivery::Packet::untracked)
+                    .or_else(|| self.dns.as_mut().and_then(udp_dns::Driver::take_reply))
+            };
+            let Some(packet) = packet else {
                 break;
             };
             permit.send(packet);
             self.report.emitted_packets = self.report.emitted_packets.saturating_add(1);
         }
-        if self.output.capacity() > 0 && self.host.has_packet() {
+        if self.output.capacity() > 0
+            && (self.host.has_packet()
+                || self.dns.as_ref().is_some_and(udp_dns::Driver::has_replies))
+        {
             self.wake.0.notify_one();
         }
     }
@@ -379,6 +454,9 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
+        if let Some(dns) = &mut self.dns {
+            dns.cancel();
+        }
         self.host.cancel();
     }
 }

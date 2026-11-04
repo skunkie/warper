@@ -44,11 +44,378 @@ impl PacketIo for FakePort {
     }
 }
 impl PacketOutput for mpsc::Receiver<Vec<u8>> {
-    async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.recv().await
+    async fn recv(&mut self) -> Option<OutputPacket> {
+        self.recv().await.map(OutputPacket::untracked)
     }
 }
 type Input = mpsc::Sender<Result<Vec<u8>, PacketError>>;
+
+impl PacketOutput for mpsc::Receiver<OutputPacket> {
+    async fn recv(&mut self) -> Option<OutputPacket> {
+        self.recv().await
+    }
+}
+
+struct Tracked {
+    host: tokio::task::JoinHandle<Result<runtime::Report, runtime::Failure>>,
+    channels: runtime::Channels,
+    endpoint: runtime::udp_dns::Endpoint,
+    packet: Option<OutputPacket>,
+    receipt: Option<runtime::delivery::Receipt>,
+    operation: watch::Sender<bool>,
+}
+impl Tracked {
+    async fn new() -> Self {
+        let policy = Arc::new(warper_core::routing::Policy::new(&[], 1).unwrap());
+        let (runtime, mut channels) = Runtime::with_udp_dns(
+            Limits::default(),
+            policy,
+            2,
+            Seed::generate().unwrap(),
+            runtime::udp_dns::Config {
+                endpoint: "192.0.2.9:53".parse().unwrap(),
+                requests: 1,
+            },
+        )
+        .unwrap();
+        let mut endpoint = channels.udp_dns.take().unwrap();
+        let host = tokio::spawn(runtime.run());
+        // Controlled IPv4/UDP query, checksum b6c1, allowed IPv4 UDP checksum 0.
+        channels
+            .ingress
+            .try_inject(&[
+                0x45, 0, 0, 32, 0, 0, 0x40, 0, 64, 17, 0xb6, 0xc1, 192, 0, 2, 2, 192, 0, 2, 9,
+                0xc3, 0x50, 0, 53, 0, 12, 0, 0, b't', b'e', b's', b't',
+            ])
+            .unwrap();
+        let datagram = endpoint.requests.recv().await.unwrap();
+        let (operation, _) = watch::channel(false);
+        let receipt = datagram
+            .respond(
+                b"reply",
+                Request {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    cancellation: operation.subscribe(),
+                },
+            )
+            .unwrap();
+        let packet = channels.packets.recv().await.unwrap();
+        Self {
+            host,
+            channels,
+            endpoint,
+            packet: Some(packet),
+            receipt: Some(receipt),
+            operation,
+        }
+    }
+    async fn close(self) {
+        assert_eq!(self.endpoint.retained_requests(), 0);
+        self.channels.shutdown.send(()).unwrap();
+        self.host.await.unwrap().unwrap();
+    }
+}
+fn observer(owner: &watch::Sender<bool>) -> Request {
+    Request {
+        deadline: Instant::now() + Duration::from_secs(1),
+        cancellation: owner.subscribe(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn delivery_receipt_waits_for_full_native_write_and_resumes_after_observer_timeout() {
+    let mut fixture = Tracked::new().await;
+    let (port, _incoming, mut sent) = port(None);
+    port.outgoing.send(vec![0]).await.unwrap(); // Hold the native writer pending.
+    let (packets, mut output) = mpsc::channel(1);
+    packets.send(fixture.packet.take().unwrap()).await.unwrap();
+    let (stop, cancellation) = watch::channel(false);
+    let writer = tokio::spawn(async move {
+        let mut report = Report::default();
+        let result = write(
+            port.as_ref(),
+            &mut output,
+            Duration::from_secs(1),
+            cancellation,
+            &mut report,
+        )
+        .await;
+        (result, report)
+    });
+    let (owner, _) = watch::channel(false);
+    let mut wait = observer(&owner);
+    wait.deadline = Instant::now() + Duration::from_millis(10);
+    let timed_out = fixture.receipt.as_mut().unwrap().wait(wait).await;
+    let retained = fixture.endpoint.retained_requests();
+    assert_eq!(sent.recv().await.unwrap(), vec![0]);
+    let written = sent.recv().await.unwrap();
+    let delivered = fixture
+        .receipt
+        .as_mut()
+        .unwrap()
+        .wait(observer(&owner))
+        .await;
+    stop.send_replace(true);
+    let (result, report) = writer.await.unwrap();
+    fixture.close().await;
+    assert_eq!(timed_out, Err(runtime::delivery::Error::WaitDeadline));
+    assert_eq!(retained, 1);
+    assert_eq!(&written[28..], b"reply");
+    delivered.unwrap();
+    result.unwrap();
+    assert_eq!(report.sent_packets, 1);
+    assert_eq!(report.lost_delivery_receipts, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_or_cancelled_tracked_output_is_not_written_or_replayed_and_other_output_continues()
+{
+    for case in 0..4 {
+        let mut fixture = Tracked::new().await;
+        let (owner, _) = watch::channel(false);
+        if case == 1 {
+            tokio::time::advance(Duration::from_secs(2)).await;
+        } else if case == 0 {
+            fixture.operation.send_replace(true);
+        } else if case == 2 {
+            fixture
+                .channels
+                .admission
+                .cancel_flows()
+                .unwrap()
+                .wait(observer(&owner))
+                .await
+                .unwrap();
+        } else {
+            drop(std::mem::replace(
+                &mut fixture.operation,
+                watch::channel(false).0,
+            ));
+        }
+        let (port, _incoming, mut sent) = port(None);
+        let retained_port = port.clone();
+        let (packets, mut output) = mpsc::channel(2);
+        packets.send(fixture.packet.take().unwrap()).await.unwrap();
+        let (stop, cancellation) = watch::channel(false);
+        let writer = tokio::spawn(async move {
+            let mut report = Report::default();
+            let result = write(
+                port.as_ref(),
+                &mut output,
+                Duration::from_secs(1),
+                cancellation,
+                &mut report,
+            )
+            .await;
+            (result, report)
+        });
+        let result = fixture
+            .receipt
+            .as_mut()
+            .unwrap()
+            .wait(observer(&owner))
+            .await;
+        let calls_before = retained_port.send_calls.load(Ordering::Relaxed);
+        packets
+            .send(OutputPacket::untracked(vec![7; 32]))
+            .await
+            .unwrap();
+        let written = sent.recv().await.unwrap();
+        stop.send_replace(true);
+        let (joined, report) = writer.await.unwrap();
+        fixture.close().await;
+        let expected = if case == 1 {
+            runtime::delivery::Failure::Deadline
+        } else {
+            runtime::delivery::Failure::Cancelled
+        };
+        assert_eq!(result, Err(runtime::delivery::Error::Delivery(expected)));
+        assert_eq!(calls_before, 0);
+        assert_eq!(written, vec![7; 32]);
+        joined.unwrap();
+        assert_eq!(report.discarded_output, 1);
+        assert_eq!(report.sent_packets, 1);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn tracked_native_io_joins_cancellation_and_clamps_writer_deadlines() {
+    for case in 0..4 {
+        let mut fixture = Tracked::new().await;
+        let (port, _incoming, mut sent) = port(None);
+        port.outgoing.send(vec![0]).await.unwrap();
+        let retained = port.clone();
+        let (packets, mut output) = mpsc::channel(1);
+        packets.send(fixture.packet.take().unwrap()).await.unwrap();
+        let (stop, cancellation) = watch::channel(false);
+        let budget = if case == 3 {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_secs(1)
+        };
+        let writer = tokio::spawn(async move {
+            let mut report = Report::default();
+            let result = write(
+                port.as_ref(),
+                &mut output,
+                budget,
+                cancellation,
+                &mut report,
+            )
+            .await;
+            (result, report)
+        });
+        for _ in 0..100 {
+            if retained.send_calls.load(Ordering::Relaxed) != 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let calls = retained.send_calls.load(Ordering::Relaxed);
+        let (owner, _) = watch::channel(false);
+        match case {
+            0 => {
+                fixture
+                    .channels
+                    .admission
+                    .cancel_flows()
+                    .unwrap()
+                    .wait(observer(&owner))
+                    .await
+                    .unwrap();
+            }
+            1 => {
+                fixture.operation.send_replace(true);
+            }
+            2 => {
+                stop.send_replace(true);
+            }
+            _ => {} // The writer budget expires before the original request.
+        }
+        let delivery = fixture
+            .receipt
+            .as_mut()
+            .unwrap()
+            .wait(observer(&owner))
+            .await;
+        stop.send_replace(true);
+        let (result, report) = writer.await.unwrap();
+        let initial = sent.recv().await.unwrap();
+        let unexpected = sent.try_recv();
+        fixture.close().await;
+        assert_eq!(
+            calls, 1,
+            "the test must interrupt actual blocked native I/O"
+        );
+        let expected = if case == 3 {
+            runtime::delivery::Failure::Deadline
+        } else {
+            runtime::delivery::Failure::Cancelled
+        };
+        assert_eq!(delivery, Err(runtime::delivery::Error::Delivery(expected)));
+        result.unwrap();
+        assert_eq!(report.discarded_output, 1);
+        assert_eq!(report.sent_packets, 0);
+        assert_eq!(initial, vec![0]);
+        assert!(unexpected.is_err());
+    }
+}
+
+#[tokio::test]
+async fn failed_native_delivery_is_uncertain_and_observer_loss_preserves_the_primary_error() {
+    for failure in [
+        None,
+        Some(PacketError::PartialWrite),
+        Some(PacketError::Io(std::io::ErrorKind::PermissionDenied)),
+    ] {
+        for lost in [false, true] {
+            let mut fixture = Tracked::new().await;
+            let (port, _incoming, _sent) = port(failure);
+            let (packets, mut output) = mpsc::channel(1);
+            packets.send(fixture.packet.take().unwrap()).await.unwrap();
+            let (stop, cancellation) = watch::channel(false);
+            // Losing the receipt must be a surfaced worker failure, including when
+            // the native write itself succeeded. Admission remains with the packet.
+            if lost {
+                drop(fixture.receipt.take());
+            }
+            let writer = tokio::spawn(async move {
+                let mut report = Report::default();
+                let result = write(
+                    port.as_ref(),
+                    &mut output,
+                    Duration::from_secs(1),
+                    cancellation,
+                    &mut report,
+                )
+                .await;
+                (result, report)
+            });
+            let (owner, _) = watch::channel(false);
+            let delivery = if let Some(receipt) = &mut fixture.receipt {
+                Some(receipt.wait(observer(&owner)).await)
+            } else {
+                None
+            };
+            if !lost {
+                stop.send_replace(true);
+            }
+            let (result, report) = writer.await.unwrap();
+            fixture.close().await;
+            let expected = match failure {
+                Some(error) => Err(Error::Native(error)),
+                None if lost => Err(Error::DeliveryOwnerLost),
+                None => Ok(()),
+            };
+            assert_eq!(result, expected);
+            assert_eq!(report.lost_delivery_receipts, u64::from(lost));
+            if !lost {
+                assert_eq!(
+                    delivery,
+                    Some(if failure.is_none() {
+                        Ok(())
+                    } else {
+                        Err(runtime::delivery::Error::Delivery(
+                            runtime::delivery::Failure::Uncertain,
+                        ))
+                    })
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn losing_a_cancelled_reply_observer_is_a_worker_failure_without_native_io() {
+    for expired in [false, true] {
+        let mut fixture = Tracked::new().await;
+        if expired {
+            tokio::time::advance(Duration::from_secs(2)).await;
+        } else {
+            fixture.operation.send_replace(true);
+        }
+        drop(fixture.receipt.take());
+        let (port, _incoming, _sent) = port(None);
+        let (packets, mut output) = mpsc::channel(1);
+        packets.send(fixture.packet.take().unwrap()).await.unwrap();
+        let (_stop, cancellation) = watch::channel(false);
+        let mut report = Report::default();
+        let result = write(
+            port.as_ref(),
+            &mut output,
+            Duration::from_secs(1),
+            cancellation,
+            &mut report,
+        )
+        .await;
+        let calls = port.send_calls.load(Ordering::Relaxed);
+        fixture.close().await;
+        assert_eq!(result, Err(Error::DeliveryOwnerLost));
+        assert_eq!(calls, 0);
+        assert_eq!(report.discarded_output, 1);
+        assert_eq!(report.lost_delivery_receipts, 1);
+    }
+}
 
 fn port(send_error: Option<PacketError>) -> (Arc<FakePort>, Input, mpsc::Receiver<Vec<u8>>) {
     let (input, incoming) = mpsc::channel(4);

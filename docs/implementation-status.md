@@ -192,6 +192,23 @@ Controlled-clock tests cover dependency delays, fractional/expired/zero TTLs,
 EDNS/header and RRSIG data preservation, and signed-message rejection. Evidence
 belongs under `target/evidence/phase-2/ttl-aging/`. Listener integration must
 still account for output delay and complete route coverage before delivery.
+The baseline passes [CI 41779535769](https://github.com/skunkie/warper/actions/runs/41779535769)
+at `1f2a4cd`; all five native manifests were inspected with preserved isolated
+host state and no installed-unit errors. This is component/regression evidence,
+not complete DNS-mode acceptance.
+
+The packet runtime now has a bounded virtual UDP DNS adapter separate from
+backend selection. It preserves peer/datagram metadata and retains admission
+through queued output and cancellation-safe native receipt observation. The
+packet pump acknowledges only full native writes, clamps original deadlines,
+propagates runtime/operation/supervisor cancellation and surfaces uncertain
+delivery or observer loss. Controlled tests cover queue pressure, malformed
+packets, consumer loss, blocked I/O and cancellation without replay. Evidence
+belongs under `target/evidence/phase-2/virtual-udp/`. The new kernel UDP fixture
+uses negative answers; its native scope remains unverified until exact-commit
+CI passes. Positive UDP route/output integration, virtual TCP DNS, global
+transient metadata admission and daemon/resolver wiring remain incomplete;
+service preflight continues to reject DNS configurations.
 
 ## Phase 0 Exit Evidence
 

@@ -3255,6 +3255,49 @@ retained leases before native cleanup. These are ownership transitions;
 actual listener/writer integration, TTL aging and native output gates remain
 required before daemon DNS can be enabled.
 
+### Virtual UDP DNS endpoint and native delivery receipts
+
+The packet runtime may own one explicitly configured virtual DNS endpoint.
+The concrete adapter is `warper_stack::runtime::udp_dns::{Config, Endpoint,
+Datagram}`; `runtime::delivery::{Packet, Receipt}` crosses the native writer
+boundary without protocol-library types or native authority.
+Its address is reserved for local DNS processing; packets for other ports or
+protocols at that address never enter backend selection. UDP datagrams use
+smoltcp's checked IP/UDP parsing and serialization, preserve source/destination
+and datagram boundaries, reject fragments/extensions and malformed checksums,
+and admit at most 1,232 payload bytes. TCP support is a separate required gate;
+an allocated UDP handler alone grants no native DNS-route publication authority.
+
+Bound queued, handling and replying datagrams with one retained admission
+permit per request. The permit survives reply submission, queued native output,
+and cancelled receipt observation until both the output packet and its receipt
+owner are released. Charge two MTU-sized adapter input/output payload
+reservations per admitted request, in addition to existing runtime packet
+queues and service-owned decoded/encoded DNS buffers. Channel/receipt and
+allocator metadata require separate global accounting before daemon integration.
+There is no waiting admission queue or detached endpoint task.
+
+Reply submission consumes the received datagram and preserves its original
+peer. It validates payload size and an original cancellation/deadline request
+before bounded queue admission. A receipt acknowledges only the original
+native packet writer's successful full-packet write, never runtime enqueueing.
+Cancelled receipt waits retain the same accepted operation for resumed join.
+The service retains its DNS output guard through that join and finalizes its
+advertised-TTL/grace retention after delivery. Known pre-write cancellation or
+expiry permits failed-output cancellation; lost/failed/partial native delivery
+is uncertain and requires session cleanup, without payload replay.
+
+The native writer clamps each original deadline by its own write deadline and
+observes both operation and supervisor cancellation. A tracked reply that
+expires/cancels before write is discarded without stopping unrelated packet
+traffic. Native I/O/partial-write failures still terminate the packet pump and
+surface the primary failure. Runtime quiescence rejects new datagrams while
+already admitted work remains owned; forced cancellation drains queued replies.
+Its cancellation signal also travels with extracted/queued native output, so
+forced cancellation or runtime loss prevents a late native write.
+Endpoint consumer loss is a supervised runtime failure. Shutdown still retains
+and joins DNS writers, runtime and native packet pump before releasing routes.
+
 ### DNS response TTL aging
 
 Discovery retains the original response's observation timestamp, separately

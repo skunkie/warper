@@ -180,7 +180,7 @@ mod linux {
                         if packet.len()<40 {return Err("truncated emitted packet".into());}
                         let port=u16::from_be_bytes([packet[22],packet[23]]);
                         let index=usize::from(port.checked_sub(50000).ok_or("unexpected output tuple")?);
-                        peers.get_mut(index).ok_or("unexpected output peer")?.device.inject(packet)?;
+                        peers.get_mut(index).ok_or("unexpected output peer")?.device.inject(packet.into_bytes())?;
                     },
                     ()=tokio::time::sleep(Duration::from_millis(1))=>{},
                 }

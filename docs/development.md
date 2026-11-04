@@ -1161,6 +1161,27 @@ and peak RSS include fixture work. This is native transaction composition,
 not a sustained forwarding or full DNS-mode benchmark. Only run through the
 existing disposable `control_acceptance.py` namespace/VM harness.
 
+The coordinator fixture also allocates the virtual UDP endpoint before adding
+a fixture-owned /32 DNS capture route. One connected kernel UDP socket makes
+20 queries with distinct IDs through the real TUN and runtime, alternating
+normal and 1,232-byte EDNS-padded packets; the controlled handler returns
+SERVFAIL with no addresses. A separate empty datagram round trip checks the
+zero-byte boundary. Each delivery receipt joins the
+native writer before the next query, and retained request admission returns
+to zero. The fixture removes its DNS route separately from production capture.
+This tests native datagrams and writer receipts; it does not establish positive
+UDP answer gating, TCP DNS dispatch, upstream resolution or resolved policy.
+
+The `virtual_udp_dns` row records DNS payload bytes, 42 datagrams, 20 request
+latencies, total elapsed/process CPU and process peak RSS. Timing covers the
+request/controlled handler/native receipt/client receive loop, excluding socket
+and route setup and the separate empty round trip. RSS includes earlier scopes.
+Final coordinator checks require
+zero packet-pump ingress drops, discarded output and lost delivery receipts.
+The whole-coordinator timing includes this extra UDP scope; its cycle latency
+samples still measure only route commit/retirement. Native results remain
+unverified until the exact-revision disposable CI artifacts pass.
+
 Run the packet-aging workload in release mode:
 
 ```sh

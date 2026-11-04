@@ -34,7 +34,7 @@ async fn long_idle_admission_uses_the_wake_clock_and_shutdown_closes_retained_st
     let mut peer = Peer::new(false, 50000);
     channels.ingress.try_inject(&peer.syn()).unwrap();
     let syn_ack = channels.packets.recv().await.unwrap();
-    peer.device.inject(syn_ack).unwrap();
+    peer.device.inject(syn_ack.into_bytes()).unwrap();
     peer.poll(Duration::from_secs(600));
     while let Some(packet) = peer.device.outgoing.pop_front() {
         channels.ingress.try_inject(&packet).unwrap();
@@ -93,10 +93,12 @@ async fn rejected_packet_categories_are_counted_without_accepting_a_flow() {
     channels.ingress.try_inject(&syn).unwrap();
     let task = tokio::spawn(runtime.run());
     // FIFO ingress: the final SYN's reply proves both rejections were processed.
-    tokio::time::timeout(Duration::from_secs(1), channels.packets.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    drop(
+        tokio::time::timeout(Duration::from_secs(1), channels.packets.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+    );
     channels.shutdown.send(()).unwrap();
     let report = task.await.unwrap().unwrap();
     assert_eq!(report.rejected_packets, 2);
@@ -119,6 +121,7 @@ async fn lost_input_output_acceptance_or_shutdown_owners_surface_failures() {
             ingress,
             packets,
             tcp,
+            udp_dns: _,
             admission: _,
             publication,
             shutdown,
@@ -219,7 +222,7 @@ async fn quiescence_waits_retain_work_and_unread_results_until_joined() {
         .await
         .unwrap()
         .unwrap();
-    peer.device.inject(packet).unwrap();
+    peer.device.inject(packet.into_bytes()).unwrap();
     peer.poll(Duration::ZERO);
     assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Closed);
     assert!(matches!(
@@ -271,7 +274,7 @@ async fn dropped_observer_does_not_retract_quiescence_or_terminate_the_runtime()
         .await
         .unwrap()
         .unwrap();
-    peer.device.inject(packet).unwrap();
+    peer.device.inject(packet.into_bytes()).unwrap();
     peer.poll(Duration::ZERO);
     assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Closed);
     let mut receipt = channels.admission.quiesce().unwrap();
@@ -297,7 +300,7 @@ async fn admission_owner_loss_disables_commands_without_spinning_or_stopping_pac
         .await
         .unwrap()
         .unwrap();
-    peer.device.inject(packet).unwrap();
+    peer.device.inject(packet.into_bytes()).unwrap();
     peer.poll(Duration::ZERO);
     assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Established);
     channels.shutdown.send(()).unwrap();
@@ -367,7 +370,7 @@ async fn cancel_idle_flow(ipv6: bool) -> (Duration, u64, usize) {
     let task = tokio::spawn(runtime.run());
     channels.ingress.try_inject(&peer.syn()).unwrap();
     peer.device
-        .inject(channels.packets.recv().await.unwrap())
+        .inject(channels.packets.recv().await.unwrap().into_bytes())
         .unwrap();
     peer.poll(Duration::ZERO);
     while let Some(packet) = peer.device.outgoing.pop_front() {
@@ -432,7 +435,7 @@ async fn cancel_idle_flow(ipv6: bool) -> (Duration, u64, usize) {
     channels.ingress.try_inject(&rejected.syn()).unwrap();
     loop {
         let packet = channels.packets.recv().await.unwrap();
-        rejected.device.inject(packet).unwrap();
+        rejected.device.inject(packet.into_bytes()).unwrap();
         rejected.poll(Duration::ZERO);
         if rejected.tcp().state() == smoltcp::socket::tcp::State::Closed {
             break;
@@ -463,14 +466,18 @@ async fn packet_discard_is_bounded_and_keeps_the_runtime_output_owner_alive() {
             stopped: Arc::new(AtomicBool::new(false)),
         };
         for _ in 0..capacity {
-            sender.try_send(vec![7; MTU]).unwrap();
+            sender
+                .try_send(delivery::Packet::untracked(vec![7; MTU]))
+                .unwrap();
         }
         assert_eq!(packets.discard_pending(), capacity);
         assert_eq!(packets.discard_pending(), 0);
-        sender.try_send(vec![17]).unwrap();
-        assert_eq!(packets.recv().await, Some(vec![17]));
+        sender
+            .try_send(delivery::Packet::untracked(vec![17]))
+            .unwrap();
+        assert_eq!(packets.recv().await.unwrap().into_bytes(), vec![17]);
         drop(sender);
-        assert_eq!(packets.recv().await, None);
+        assert!(packets.recv().await.is_none());
     }
 }
 
@@ -482,7 +489,7 @@ async fn dropped_cancel_observer_cancels_buffered_queued_streams_without_unpubli
     let mut peer = Peer::new(false, 50000);
     channels.ingress.try_inject(&peer.syn()).unwrap();
     peer.device
-        .inject(channels.packets.recv().await.unwrap())
+        .inject(channels.packets.recv().await.unwrap().into_bytes())
         .unwrap();
     peer.poll(Duration::ZERO);
     peer.tcp().send_slice(b"q").unwrap();
@@ -496,7 +503,7 @@ async fn dropped_cancel_observer_cancels_buffered_queued_streams_without_unpubli
         .await
         .unwrap()
         .unwrap();
-    peer.device.inject(packet).unwrap();
+    peer.device.inject(packet.into_bytes()).unwrap();
     peer.poll(Duration::from_millis(10));
     assert_eq!(channels.tcp.len(), 1);
     drop(channels.admission.cancel_flows().unwrap());
@@ -504,7 +511,7 @@ async fn dropped_cancel_observer_cancels_buffered_queued_streams_without_unpubli
         .await
         .unwrap()
         .unwrap();
-    peer.device.inject(reset).unwrap();
+    peer.device.inject(reset.into_bytes()).unwrap();
     peer.poll(Duration::from_millis(10));
     assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Closed);
     assert_eq!(channels.publication.retained_flows(), 1);
@@ -590,7 +597,7 @@ async fn forced_cancellation_releases_staged_and_queued_input_before_acknowledgi
     channels.ingress.try_inject(&peer.syn()).unwrap();
     let task = tokio::spawn(runtime.run());
     let packet = channels.packets.recv().await.unwrap();
-    peer.device.inject(packet).unwrap();
+    peer.device.inject(packet.into_bytes()).unwrap();
     peer.poll(Duration::ZERO);
     assert_eq!(peer.tcp().state(), smoltcp::socket::tcp::State::Closed);
     channels.shutdown.send(()).unwrap();
