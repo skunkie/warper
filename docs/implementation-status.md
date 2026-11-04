@@ -395,8 +395,13 @@ to the server framing adapter for 20 queries on one connection and keeps the
 positive output guard until the controlled peer consumes every zero-TTL reply.
 The workload records latency distributions, CPU, peak RSS and transferred DNS
 and framing bytes; it performs no upstream discovery and uses peer consumption
-as its explicit output oracle. That new privileged path remains
-unverified until its exact-commit CI gate passes. Evidence belongs under
+as its explicit output oracle. This privileged path passes at `319ad4b` in
+[CI 41937296667](https://github.com/skunkie/warper/actions/runs/41937296667),
+including Linux x86-64/ARM64 and macOS ARM64 builds/tests. All five Linux
+manifests were inspected: the four probes exit zero without timeout and
+preserve host state; the installed-unit result has no errors for its
+idle-service scope. Both coordinator scenarios complete their 20-query TCP
+workload and both FINs with exact DNS/framing bytes. Evidence belongs under
 `target/evidence/phase-2/local-tcp-dns/`. Production native TCP output
 confirmation, daemon DNS supervision, transient admission and resolved modes
 remain open; daemon DNS preflight remains disabled.
