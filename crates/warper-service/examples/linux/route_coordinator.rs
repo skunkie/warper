@@ -1188,9 +1188,10 @@ async fn dns_reply(
         return Err("virtual TCP DNS lost original tuple metadata".into());
     }
     client.set_nodelay(true)?;
+    let delivery = flow.stream.dns_output()?;
     let mut output = controller.begin_output(response)?;
     let (owner, _) = watch::channel(false);
-    timeout(Duration::from_secs(2), async {
+    timeout(Duration::from_secs(5), async {
         let mut server = Connection::new(&mut flow.stream, limits);
         let encoded = query.encode()?;
         for _ in 0..20 {
@@ -1206,6 +1207,7 @@ async fn dns_reply(
             if incoming.question() != query.question() || incoming.id() != query.id() {
                 return Err("framed DNS query correlation changed".into());
             }
+            delivery.begin(request(&owner))?;
             server.begin_reply(&reply, request(&owner))?;
             if !matches!(
                 server.wait(request(&owner)).await?,
@@ -1213,6 +1215,7 @@ async fn dns_reply(
             ) {
                 return Err("framed DNS reply did not complete stream acceptance".into());
             }
+            let mut receipt = delivery.receipt()?;
             let length = client.read_u16().await?;
             let mut received = vec![0; usize::from(length)];
             client.read_exact(&mut received).await?;
@@ -1223,12 +1226,12 @@ async fn dns_reply(
             {
                 return Err("coordinated zero-TTL frame differs".into());
             }
+            receipt.wait(request(&owner)).await?;
             transferred += encoded.len() + received.len();
             latencies.push(before.elapsed().as_nanos());
         }
-        // Keep one conservative reference for this controlled workload; the
-        // kernel reader consumed every reply before grace starts. Production
-        // still needs its own per-response native packet delivery barrier.
+        // Keep one conservative reference for this controlled workload. Every
+        // framed response is acknowledged before its grace period can start.
         controller.complete_output(&mut output, Duration::from_secs(1))?;
         client.shutdown().await?;
         server.begin_read(request(&owner))?;
@@ -1254,14 +1257,14 @@ async fn dns_reply(
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("local TCP DNS RSS unavailable")?;
     println!(
-        "local_tcp_dns requests=20 concurrency=1 dns_payload_bytes={transferred} framing_bytes=80 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, fixed zero-TTL reply after native route ACK, no upstream discovery, peer consumption is the output oracle, kernel_drops=unmeasured",
+        "local_tcp_dns requests=20 concurrency=1 dns_payload_bytes={transferred} framing_bytes=80 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, fixed zero-TTL reply after native route ACK, no upstream discovery, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
         started.elapsed().as_nanos(),
         latencies[9],
         latencies[18],
         latencies[19]
     );
     println!(
-        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, frames zero-TTL replies after route ACK and joins both FINs; controlled peer consumption is the output oracle"
+        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, frames zero-TTL replies after route ACK, joins peer acknowledgments before grace and joins both FINs"
     );
     Ok(())
 }

@@ -3338,10 +3338,30 @@ after retained application handles drop. Runtime supervision treats loss of
 either DNS consumer as a failure and joins shutdown as for backend consumption.
 
 This is a transport role, not output authorization. `AcceptedStream::flush`
-only flushes its duplex buffer. A production positive TCP DNS response still
-requires joined native delivery confirmation while its route guard remains
-owned. The controlled native fixture instead uses actual kernel-peer receipt
-as its explicit output oracle; it does not grant that oracle to daemon code.
+only flushes its duplex buffer. `AcceptedStream::dns_output` supplies a local
+DNS-only acknowledgment control; backend streams return a typed unsupported
+capability. Begin with the original response request before writing its frame,
+then obtain exactly one receipt after the entire frame enters the stream.
+Another response cannot begin until that receipt joins successfully. Empty
+receipts, overlapping responses and requests beyond 30 seconds are rejected.
+
+The host separately counts accepted duplex bytes, bytes enqueued into the TCP
+socket and bytes acknowledged by the peer. A receipt covers the accepted-byte
+snapshot, including the frame prefix, rather than a duplex flush or an empty
+socket queue before the bridge runs. A live socket's remaining send queue
+determines acknowledgment. Reset/closed and timeout checks precede that
+calculation: resetting a socket clears its queue without delivering its bytes.
+Counters are checked and the control retains fixed metadata, no payload copy.
+
+Dropping or cancelling an observation does not consume the receipt or renew
+the original deadline. Original cancellation/expiry and connection termination
+are terminal; confirmed acknowledgment remains joinable after later closure.
+No task is detached. The caller must retain the positive response's route guard
+until acknowledgment or joined connection/native-output cleanup. This primitive
+does not discard already queued native frames on cancellation, hold a route
+guard itself or enable production daemon DNS. A supervised routed TCP owner and
+queued-frame cancellation remain required. The controlled native fixture joins
+each receipt before starting its conservative workload-wide route grace.
 
 ### Server-side DNS TCP framing
 

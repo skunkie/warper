@@ -46,6 +46,10 @@ use warper_core::{
 };
 
 pub use crate::device::MTU;
+mod dns_output;
+pub use dns_output::{
+    Error as DnsOutputError, OutputControl as DnsOutputControl, Receipt as DnsOutputReceipt,
+};
 
 pub const MAX_FLOW_SLOTS: usize = 16;
 const MAX_CLOCK_MILLIS: u128 = i64::MAX as u128 / 2000;
@@ -145,6 +149,20 @@ struct FlowLifetime {
     wake: Arc<AtomicWaker>,
     _selection: Option<Selection>,
     _permit: OwnedSemaphorePermit,
+    dns_output: Option<Arc<dns_output::Progress>>,
+}
+impl FlowLifetime {
+    fn terminate(&self, reason: Termination) {
+        self.termination.store(reason as u8, Ordering::Release);
+        if let Some(progress) = &self.dns_output {
+            progress.close(match reason {
+                Termination::Reset => DnsOutputError::Reset,
+                Termination::Timeout => DnsOutputError::Deadline,
+                Termination::Cancelled => DnsOutputError::Cancelled,
+                _ => DnsOutputError::Closed,
+            });
+        }
+    }
 }
 
 pub struct AcceptedStream {
@@ -153,6 +171,14 @@ pub struct AcceptedStream {
 }
 
 impl AcceptedStream {
+    pub fn dns_output(&self) -> Result<DnsOutputControl, DnsOutputError> {
+        self.lifetime
+            .dns_output
+            .as_ref()
+            .cloned()
+            .map(DnsOutputControl::new)
+            .ok_or(DnsOutputError::UnsupportedCapability)
+    }
     fn error(&self) -> Option<io::Error> {
         match self.lifetime.termination.load(Ordering::Acquire) {
             0 | 1 => None,
@@ -167,12 +193,17 @@ impl AcceptedStream {
 impl Drop for AcceptedStream {
     fn drop(&mut self) {
         // Do not overwrite a driver's terminal error or normal completion.
-        let _ = self.lifetime.termination.compare_exchange(
+        let changed = self.lifetime.termination.compare_exchange(
             Termination::Running as u8,
             Termination::ApplicationClosed as u8,
             Ordering::AcqRel,
             Ordering::Acquire,
         );
+        if changed.is_ok()
+            && let Some(progress) = &self.lifetime.dns_output
+        {
+            progress.close(DnsOutputError::Closed);
+        }
         self.lifetime.wake.wake();
     }
 }
@@ -199,7 +230,13 @@ impl AsyncWrite for AcceptedStream {
         if let Some(error) = self.error() {
             return Poll::Ready(Err(error));
         }
-        Pin::new(&mut self.inner).poll_write(cx, bytes)
+        if let Some(progress) = self.lifetime.dns_output.clone() {
+            progress.write(bytes.len(), || {
+                Pin::new(&mut self.inner).poll_write(cx, bytes)
+            })
+        } else {
+            Pin::new(&mut self.inner).poll_write(cx, bytes)
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -448,6 +485,15 @@ impl HostAdapter {
                 } else {
                     Termination::Reset
                 })
+            } else if let Some(progress) = &flow.lifetime.dns_output
+                && let Err(error) = progress.acknowledge(socket.send_queue())
+            {
+                progress.close(error);
+                Some(if error == DnsOutputError::Deadline {
+                    Termination::Timeout
+                } else {
+                    Termination::Cancelled
+                })
             } else {
                 if flow.previous_state != socket.state() {
                     flow.previous_state = socket.state();
@@ -470,9 +516,7 @@ impl HostAdapter {
                         source != metadata.source || destination != metadata.destination
                     })
                 });
-                flow.lifetime
-                    .termination
-                    .store(reason as u8, Ordering::Release);
+                flow.lifetime.terminate(reason);
                 socket.abort();
                 match reason {
                     Termination::Timeout => {
@@ -580,9 +624,7 @@ impl HostAdapter {
                 .is_some_and(|flow| flow.pending.is_some())
             {
                 if let Some(flow) = slot.flow.take() {
-                    flow.lifetime
-                        .termination
-                        .store(Termination::Cancelled as u8, Ordering::Release);
+                    flow.lifetime.terminate(Termination::Cancelled);
                     self.statistics.cancelled = self.statistics.cancelled.saturating_add(1);
                 }
                 self.sockets.get_mut::<tcp::Socket>(slot.socket).abort();
@@ -607,9 +649,7 @@ impl HostAdapter {
     fn cancel_owned_flows(&mut self) {
         for slot in &mut self.slots {
             if let Some(flow) = slot.flow.take() {
-                flow.lifetime
-                    .termination
-                    .store(Termination::Cancelled as u8, Ordering::Release);
+                flow.lifetime.terminate(Termination::Cancelled);
                 self.statistics.cancelled = self.statistics.cancelled.saturating_add(1);
             }
             self.sockets.get_mut::<tcp::Socket>(slot.socket).abort();
@@ -747,6 +787,7 @@ impl HostAdapter {
             wake: self.wake.clone(),
             _selection: selection,
             _permit: lifetime_permit,
+            dns_output: local_dns.then(|| dns_output::Progress::new(self.wake.clone())),
         });
         slot.flow = Some(FlowState {
             metadata,
@@ -830,6 +871,12 @@ fn bridge(
             Poll::Ready(Ok(())) => {
                 match socket.send_slice(buffer.filled()) {
                     Ok(count) if count == buffer.filled().len() => {
+                        if let Some(progress) = &flow.lifetime.dns_output
+                            && let Err(error) = progress.enqueued(count)
+                        {
+                            progress.close(error);
+                            return Some(Termination::Cancelled);
+                        }
                         flow.progress = now;
                         cx.waker().wake_by_ref();
                     }

@@ -406,6 +406,16 @@ workload and both FINs with exact DNS/framing bytes. Evidence belongs under
 confirmation, daemon DNS supervision, transient admission and resolved modes
 remain open; daemon DNS preflight remains disabled.
 
+Local TCP DNS now exposes a bounded acknowledgment receipt for one framed
+response at a time. It distinguishes duplex acceptance, socket enqueue and
+peer acknowledgment, rejects reset-cleared queues as delivery and retains the
+original deadline across interrupted observations. The native coordinator uses
+that receipt for each reply before starting route grace; privileged evidence
+for this increment remains pending. The receipt owns no route guard and does
+not cancel already queued native frames. A supervised routed TCP owner,
+queued-frame cancellation, daemon DNS integration, transient admission and
+resolver modes remain open. Production DNS preflight remains disabled.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

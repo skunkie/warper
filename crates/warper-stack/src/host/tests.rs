@@ -57,6 +57,138 @@ fn connected(
 }
 
 #[tokio::test]
+async fn dns_output_receipt_waits_for_peer_ack_and_survives_observation_loss() {
+    use std::future::Future;
+    use tokio::sync::watch;
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+        Limits::default(),
+        policy(endpoint),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    let mut accepted = None;
+    for turn in 0..100 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+        if let Ok(flow) = dns.try_recv() {
+            accepted = Some(flow);
+            break;
+        }
+    }
+    let mut flow = accepted.unwrap();
+    let control = flow.stream.dns_output().unwrap();
+    let (owner, _) = watch::channel(false);
+    let request = || warper_core::transport::Request {
+        deadline: tokio::time::Instant::now() + Duration::from_secs(10),
+        cancellation: owner.subscribe(),
+    };
+    control.begin(request()).unwrap();
+    flow.stream.write_all(b"reply").await.unwrap();
+    let mut receipt = control.receipt().unwrap();
+    assert_eq!(control.begin(request()), Err(DnsOutputError::Busy));
+    {
+        // Bytes in the duplex buffer are not TCP transmission or acknowledgment.
+        let mut waiting = Box::pin(receipt.wait(request()));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    }
+    poll(&mut host, Duration::from_millis(100));
+    {
+        // Nor are packets waiting in the adapter's outgoing queue.
+        let mut waiting = Box::pin(receipt.wait(request()));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    }
+    let (cancelled, _) = watch::channel(true);
+    assert_eq!(
+        receipt
+            .wait(warper_core::transport::Request {
+                deadline: request().deadline,
+                cancellation: cancelled.subscribe()
+            })
+            .await,
+        Err(DnsOutputError::WaitCancelled)
+    );
+    for turn in 101..1000 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+    }
+    receipt.wait(request()).await.unwrap();
+    assert_eq!(
+        receipt.wait(request()).await,
+        Err(DnsOutputError::AlreadyJoined)
+    );
+    let mut bytes = [0; 5];
+    assert_eq!(peer.tcp().recv_slice(&mut bytes).unwrap(), 5);
+    assert_eq!(&bytes, b"reply");
+    control.begin(request()).unwrap();
+    flow.stream.write_all(b"pending reset").await.unwrap();
+    let mut reset = control.receipt().unwrap();
+    poll(&mut host, Duration::from_secs(1));
+    // A reset clears smoltcp's send queue. It must never look like an ACK.
+    peer.tcp().abort();
+    pump(&mut host, &mut peer, Duration::from_millis(1001));
+    assert_eq!(reset.wait(request()).await, Err(DnsOutputError::Reset));
+    host.cancel();
+    drop(flow);
+    assert_eq!(host.retained_flows(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dns_output_original_expiry_is_terminal_even_with_unenqueued_bytes() {
+    use tokio::sync::watch;
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+        Limits::default(),
+        policy(endpoint),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    let mut accepted = None;
+    for turn in 0..100 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+        if let Ok(flow) = dns.try_recv() {
+            accepted = Some(flow);
+            break;
+        }
+    }
+    let mut flow = accepted.unwrap();
+    let control = flow.stream.dns_output().unwrap();
+    let (owner, _) = watch::channel(false);
+    control
+        .begin(warper_core::transport::Request {
+            deadline: tokio::time::Instant::now() + Duration::from_millis(1),
+            cancellation: owner.subscribe(),
+        })
+        .unwrap();
+    flow.stream.write_all(b"pending").await.unwrap();
+    let mut receipt = control.receipt().unwrap();
+    let observer = || warper_core::transport::Request {
+        deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+        cancellation: owner.subscribe(),
+    };
+    assert_eq!(
+        receipt.wait(observer()).await,
+        Err(DnsOutputError::Deadline)
+    );
+    assert_eq!(control.begin(observer()), Err(DnsOutputError::Deadline));
+    host.cancel();
+    drop(flow);
+    assert_eq!(host.retained_flows(), 0);
+}
+
+#[tokio::test]
 async fn local_dns_tcp_preserves_tuple_and_response_after_fin_without_backend_acceptance() {
     for ipv6 in [false, true] {
         let endpoint = if ipv6 {
