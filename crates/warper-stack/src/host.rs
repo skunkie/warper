@@ -149,8 +149,9 @@ struct FlowLifetime {
     termination: AtomicU8,
     wake: Arc<AtomicWaker>,
     _selection: Option<Selection>,
-    _permit: OwnedSemaphorePermit,
     dns_output: Option<Arc<dns_output::Progress>>,
+    // Release flow admission only after its retained output metadata drops.
+    _permit: OwnedSemaphorePermit,
 }
 impl FlowLifetime {
     fn terminate(&self, reason: Termination) {
@@ -177,7 +178,7 @@ impl AcceptedStream {
             .dns_output
             .as_ref()
             .cloned()
-            .map(DnsOutputControl::new)
+            .map(|progress| DnsOutputControl::new(progress, self.lifetime.clone()))
             .ok_or(DnsOutputError::UnsupportedCapability)
     }
     fn error(&self) -> Option<io::Error> {
@@ -819,8 +820,8 @@ impl HostAdapter {
             termination: AtomicU8::new(Termination::Running as u8),
             wake: self.wake.clone(),
             _selection: selection,
-            _permit: lifetime_permit,
             dns_output: local_dns.then(|| dns_output::Progress::new(self.wake.clone())),
+            _permit: lifetime_permit,
         });
         slot.flow = Some(FlowState {
             metadata,

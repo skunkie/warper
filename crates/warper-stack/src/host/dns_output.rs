@@ -167,10 +167,10 @@ impl Progress {
 
 /// Control for the local DNS stream, not a grant to publish positive answers.
 #[derive(Clone)]
-pub struct OutputControl(Arc<Progress>);
+pub struct OutputControl(Arc<Progress>, Arc<super::FlowLifetime>);
 impl OutputControl {
-    pub(super) fn new(progress: Arc<Progress>) -> Self {
-        Self(progress)
+    pub(super) fn new(progress: Arc<Progress>, lifetime: Arc<super::FlowLifetime>) -> Self {
+        Self(progress, lifetime)
     }
     pub fn begin(&self, request: Request) -> Result<(), Error> {
         check(&request)?;
@@ -200,20 +200,22 @@ impl OutputControl {
         }
         state.outstanding = true;
         Ok(Receipt {
-            progress: self.0.clone(),
+            progress: Some(self.0.clone()),
             target: state.accepted,
-            request,
+            request: Some(request),
             joined: false,
+            lifetime: Some(self.1.clone()),
         })
     }
 }
 
 #[must_use = "retain through acknowledgment or joined connection/native cleanup"]
 pub struct Receipt {
-    progress: Arc<Progress>,
+    progress: Option<Arc<Progress>>,
     target: u64,
-    request: Request,
+    request: Option<Request>,
     joined: bool,
+    lifetime: Option<Arc<super::FlowLifetime>>,
 }
 impl Receipt {
     pub async fn wait(&mut self, observer: Request) -> Result<(), Error> {
@@ -227,16 +229,21 @@ impl Receipt {
             Err(_) => Err(Error::InvalidRequest),
             Ok(result) => {
                 self.joined = true;
+                self.progress.take();
+                self.request.take();
+                self.lifetime.take();
                 result
             }
         }
     }
     async fn wait_owned(&self) -> Result<(), Error> {
-        let mut cancellation = self.request.cancellation.clone();
+        let progress = self.progress.as_ref().ok_or(Error::AlreadyJoined)?;
+        let request = self.request.as_ref().ok_or(Error::AlreadyJoined)?;
+        let mut cancellation = request.cancellation.clone();
         loop {
-            let changed = self.progress.changed.notified();
+            let changed = progress.changed.notified();
             {
-                let mut state = self.progress.state.lock().map_err(|_| Error::Poisoned)?;
+                let mut state = progress.state.lock().map_err(|_| Error::Poisoned)?;
                 if state.acknowledged >= self.target {
                     state.outstanding = false;
                     state.request = None;
@@ -246,17 +253,17 @@ impl Receipt {
                     return Err(error);
                 }
             }
-            if let Err(error) = check(&self.request) {
-                self.progress.close(error);
+            if let Err(error) = check(request) {
+                progress.close(error);
                 return Err(error);
             }
             tokio::select! { biased;
                 _ = cancellation.wait_for(|cancelled| *cancelled) => {
-                    self.progress.close(Error::Cancelled);
+                    progress.close(Error::Cancelled);
                     return Err(Error::Cancelled);
                 }
-                () = tokio::time::sleep_until(self.request.deadline) => {
-                    self.progress.close(Error::Deadline);
+                () = tokio::time::sleep_until(request.deadline) => {
+                    progress.close(Error::Deadline);
                     return Err(Error::Deadline);
                 }
                 () = changed => {}
@@ -296,10 +303,23 @@ mod tests {
         }
     }
 
+    fn control(progress: Arc<Progress>) -> OutputControl {
+        let lifetime = Arc::new(super::super::FlowLifetime {
+            termination: std::sync::atomic::AtomicU8::new(super::super::Termination::Running as u8),
+            wake: progress.wake.clone(),
+            _selection: None,
+            dns_output: Some(progress.clone()),
+            _permit: Arc::new(tokio::sync::Semaphore::new(1))
+                .try_acquire_owned()
+                .unwrap(),
+        });
+        OutputControl::new(progress, lifetime)
+    }
+
     #[tokio::test(start_paused = true)]
     async fn observation_timeout_preserves_confirmed_result_after_close() {
         let progress = Progress::new(Arc::new(AtomicWaker::new()));
-        let control = OutputControl::new(progress.clone());
+        let control = control(progress.clone());
         let (owner, _) = watch::channel(false);
         let original = request(&owner, Duration::from_secs(10));
         control.begin(original).unwrap();
@@ -346,7 +366,8 @@ mod tests {
     #[tokio::test]
     async fn original_cancellation_is_terminal_without_a_host_poll() {
         let progress = Progress::new(Arc::new(AtomicWaker::new()));
-        let control = OutputControl::new(progress.clone());
+        let retained = Arc::downgrade(&progress);
+        let control = control(progress.clone());
         let (owner, _) = watch::channel(false);
         let (observer, _) = watch::channel(false);
         control
@@ -368,12 +389,24 @@ mod tests {
             control.begin(request(&observer, Duration::from_secs(1))),
             Err(Error::Cancelled)
         );
+        drop(control);
+        drop(progress);
+        assert!(
+            retained.upgrade().is_none(),
+            "a consumed receipt must not retain heap metadata"
+        );
+        assert_eq!(
+            receipt
+                .wait(request(&observer, Duration::from_secs(1)))
+                .await,
+            Err(Error::AlreadyJoined)
+        );
     }
 
     #[test]
     fn invalid_request_and_counter_bounds_leave_state_unchanged() {
         let progress = Progress::new(Arc::new(AtomicWaker::new()));
-        let control = OutputControl::new(progress.clone());
+        let control = control(progress.clone());
         let (owner, _) = watch::channel(false);
         assert_eq!(
             control.begin(request(&owner, Duration::from_secs(31))),

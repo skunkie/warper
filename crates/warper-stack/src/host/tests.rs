@@ -140,6 +140,8 @@ async fn dns_output_receipt_waits_for_peer_ack_and_survives_observation_loss() {
     assert_eq!(reset.wait(request()).await, Err(DnsOutputError::Reset));
     host.cancel();
     drop(flow);
+    assert_eq!(host.retained_flows(), 1);
+    drop(control);
     assert_eq!(host.retained_flows(), 0);
 }
 
@@ -185,6 +187,8 @@ async fn dns_output_original_expiry_is_terminal_even_with_unenqueued_bytes() {
     assert_eq!(control.begin(observer()), Err(DnsOutputError::Deadline));
     host.cancel();
     drop(flow);
+    assert_eq!(host.retained_flows(), 1);
+    drop(control);
     assert_eq!(host.retained_flows(), 0);
 }
 
@@ -294,8 +298,86 @@ async fn queued_dns_tcp_packets_retain_original_deadlines_and_connection_cancell
             }
             host.cancel();
             drop(flow);
+            drop(control);
             assert_eq!(host.retained_flows(), 0, "{cause}");
         }
+    }
+}
+
+#[tokio::test]
+async fn retained_dns_output_handles_prevent_reusing_flow_admission_until_join_or_drop() {
+    use tokio::sync::watch;
+    use warper_core::transport::Request;
+
+    for join in [false, true] {
+        let endpoint = "192.0.2.9:53".parse().unwrap();
+        let limits = Limits {
+            flows: 1,
+            accepted: 1,
+            ..Limits::default()
+        };
+        let (mut host, _backend, mut dns) =
+            HostAdapter::with_dns(limits, policy(endpoint), Seed::fixture(), endpoint).unwrap();
+        let mut peer = Peer::with_destination(false, 50000, endpoint);
+        let mut accepted = None;
+        for turn in 0..100 {
+            pump(&mut host, &mut peer, Duration::from_millis(turn));
+            if let Ok(flow) = dns.try_recv() {
+                accepted = Some(flow);
+                break;
+            }
+        }
+        let mut flow = accepted.unwrap();
+        let (owner, _) = watch::channel(false);
+        let request = || Request {
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+            cancellation: owner.subscribe(),
+        };
+        let control = flow.stream.dns_output().unwrap();
+        let clone = control.clone();
+        control.begin(request()).unwrap();
+        flow.stream.write_all(b"retained").await.unwrap();
+        let mut receipt = control.receipt().unwrap();
+        drop(flow);
+        poll(&mut host, Duration::from_millis(100));
+        assert_eq!(host.active_flows(), 0);
+        assert_eq!(host.retained_flows(), 1);
+        let mut next = Peer::with_destination(false, 50001, endpoint);
+        assert_eq!(host.inject(&next.syn()), Err(AdmissionError::ResourceLimit));
+        drop(control);
+        assert_eq!(host.retained_flows(), 1);
+        drop(clone);
+        assert_eq!(
+            host.retained_flows(),
+            1,
+            "the receipt must retain admission after every stream/control drops"
+        );
+        let (cancelled, cancellation) = watch::channel(true);
+        assert_eq!(
+            receipt
+                .wait(Request {
+                    deadline: request().deadline,
+                    cancellation
+                })
+                .await,
+            Err(DnsOutputError::WaitCancelled)
+        );
+        drop(cancelled);
+        assert_eq!(host.retained_flows(), 1);
+        if join {
+            assert_eq!(receipt.wait(request()).await, Err(DnsOutputError::Closed));
+            assert_eq!(
+                host.retained_flows(),
+                0,
+                "a consumed result must release its admission even if the receipt remains retained"
+            );
+        }
+        drop(receipt);
+        assert_eq!(host.retained_flows(), 0);
+        let mut fresh = Peer::with_destination(false, 50002, endpoint);
+        host.inject(&fresh.syn()).unwrap();
+        host.cancel();
+        assert_eq!(host.retained_flows(), 0);
     }
 }
 

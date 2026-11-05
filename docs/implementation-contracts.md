@@ -3352,6 +3352,14 @@ socket queue before the bridge runs. A live socket's remaining send queue
 determines acknowledgment. Reset/closed and timeout checks precede that
 calculation: resetting a socket clears its queue without delivering its bytes.
 Counters are checked and the control retains fixed metadata, no payload copy.
+Control clones retain the host flow lifetime permit after stream/slot retirement.
+Each unconsumed receipt also retains that permit, including across cancelled
+observations; a definitive joined result or dropping the receipt releases its
+reference. Only releasing every stream, control and unconsumed receipt permits
+new flow admission. Receipt metadata therefore cannot accumulate outside the
+existing flow count by repeatedly closing streams and retaining their handles.
+Joined receipts clear their request and progress references; retaining an empty
+joined receipt cannot retain heap metadata outside that admission.
 
 Dropping or cancelling an observation does not consume the receipt or renew
 the original deadline. Original cancellation/expiry and connection termination

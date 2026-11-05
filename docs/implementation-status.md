@@ -424,6 +424,18 @@ per-segment receipts or tasks. A supervised routed TCP owner,
 daemon DNS integration, transient admission and
 resolver modes remain open. Production DNS preflight remains disabled.
 
+Queued-output acceptance passes at `301f32f` in
+[CI 41940672012](https://github.com/skunkie/warper/actions/runs/41940672012),
+including the full native build matrix. All five inspected Linux manifests
+pass with preserved host state in the four isolated probes and no errors in
+the installed idle-service scope. Evidence belongs under
+`target/evidence/phase-2/tcp-cancellation/`. Retained TCP output controls and
+unconsumed receipts now keep their original flow admission after stream/slot
+retirement; consuming a receipt releases that reference, while interrupted
+observation preserves it. A regression checks admission refusal and eventual
+reuse for both receipt join and drop. Privileged evidence for this retained
+admission fix remains pending.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)
