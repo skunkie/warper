@@ -65,6 +65,7 @@ pub enum AdmissionError {
     SelectionBusy,
     SelectionUnready,
     SelectionUnavailable,
+    OutputUnavailable,
     UnknownFlow,
     ResourceLimit,
     AcceptQueueFull,
@@ -471,6 +472,7 @@ impl HostAdapter {
             &mut self.device,
             &mut self.sockets,
         );
+        self.constrain_output()?;
         for slot in &mut self.slots {
             let Some(flow) = &mut slot.flow else { continue };
             let socket = self.sockets.get_mut::<tcp::Socket>(slot.socket);
@@ -539,11 +541,42 @@ impl HostAdapter {
             &mut self.device,
             &mut self.sockets,
         );
+        self.constrain_output()?;
         Ok(())
     }
 
     pub fn take_packet(&mut self) -> Option<Vec<u8>> {
+        self.take_output()
+            .map(crate::runtime::delivery::Packet::into_bytes)
+    }
+
+    pub(crate) fn take_output(&mut self) -> Option<crate::runtime::delivery::Packet> {
         self.device.outgoing.pop_front()
+    }
+
+    fn constrain_output(&mut self) -> Result<(), AdmissionError> {
+        for packet in &mut self.device.outgoing {
+            if packet.request().is_some() {
+                continue;
+            }
+            let Ok((source, destination, _)) = tcp_metadata(packet) else {
+                continue;
+            };
+            if let Some(progress) = self
+                .slots
+                .iter()
+                .filter_map(|slot| slot.flow.as_ref())
+                .find(|flow| {
+                    flow.metadata.source == destination && flow.metadata.destination == source
+                })
+                .and_then(|flow| flow.lifetime.dns_output.as_ref())
+            {
+                progress
+                    .constrain(packet)
+                    .map_err(|_| AdmissionError::OutputUnavailable)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn has_packet(&self) -> bool {

@@ -188,6 +188,117 @@ async fn dns_output_original_expiry_is_terminal_even_with_unenqueued_bytes() {
     assert_eq!(host.retained_flows(), 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn queued_dns_tcp_packets_retain_original_deadlines_and_connection_cancellation() {
+    use tokio::sync::watch;
+    use warper_core::transport::Request;
+
+    for ipv6 in [false, true] {
+        for cause in ["drop", "shutdown", "cancel", "expiry"] {
+            let endpoint = if ipv6 {
+                "[2001:db8::9]:53"
+            } else {
+                "192.0.2.9:53"
+            }
+            .parse()
+            .unwrap();
+            let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+                Limits::default(),
+                policy(endpoint),
+                Seed::fixture(),
+                endpoint,
+            )
+            .unwrap();
+            let mut peer = Peer::with_destination(ipv6, 50000, endpoint);
+            let mut accepted = None;
+            for turn in 0..100 {
+                pump(&mut host, &mut peer, Duration::from_millis(turn));
+                if let Ok(flow) = dns.try_recv() {
+                    accepted = Some(flow);
+                    break;
+                }
+            }
+            let mut flow = accepted.unwrap();
+            let (owner, _) = watch::channel(false);
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(1);
+            let control = flow.stream.dns_output().unwrap();
+            control
+                .begin(Request {
+                    deadline,
+                    cancellation: owner.subscribe(),
+                })
+                .unwrap();
+            flow.stream.write_all(b"queued response").await.unwrap();
+            let mut receipt = control.receipt().unwrap();
+            poll(&mut host, Duration::from_millis(100));
+            let mut packets = Vec::new();
+            while let Some(packet) = host.take_output() {
+                if packet.request().is_some() {
+                    packets.push(packet);
+                }
+            }
+            assert!(
+                !packets.is_empty(),
+                "{cause}: response must enter the native output queue"
+            );
+            for packet in &packets {
+                assert_eq!(packet.request().unwrap().deadline, deadline, "{cause}");
+                assert!(!*packet.cancellation().unwrap().borrow(), "{cause}");
+            }
+            let mut flow = Some(flow);
+            let expected = match cause {
+                "drop" => {
+                    drop(flow.take());
+                    DnsOutputError::Closed
+                }
+                "shutdown" => {
+                    host.cancel_flows().unwrap();
+                    drop(flow.take());
+                    DnsOutputError::Cancelled
+                }
+                "cancel" => {
+                    owner.send_replace(true);
+                    DnsOutputError::Cancelled
+                }
+                "expiry" => {
+                    tokio::time::advance(Duration::from_millis(1)).await;
+                    DnsOutputError::Deadline
+                }
+                _ => unreachable!(),
+            };
+            let (observer, _) = watch::channel(false);
+            assert_eq!(
+                receipt
+                    .wait(Request {
+                        deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+                        cancellation: observer.subscribe(),
+                    })
+                    .await,
+                Err(expected),
+                "{cause}"
+            );
+            for packet in packets {
+                assert!(
+                    *packet.cancellation().unwrap().borrow(),
+                    "{cause}: a retained segment must observe connection termination"
+                );
+                if cause == "cancel" {
+                    assert!(*packet.request().unwrap().cancellation.borrow());
+                }
+                if cause == "expiry" {
+                    assert!(tokio::time::Instant::now() >= packet.request().unwrap().deadline);
+                }
+                packet
+                    .complete(Err(crate::runtime::delivery::Failure::Cancelled))
+                    .unwrap();
+            }
+            host.cancel();
+            drop(flow);
+            assert_eq!(host.retained_flows(), 0, "{cause}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn local_dns_tcp_preserves_tuple_and_response_after_fin_without_backend_acceptance() {
     for ipv6 in [false, true] {
@@ -599,7 +710,9 @@ fn expired_flow_discards_delayed_ingress_before_reusing_its_listener_slot() {
     host.inject(&old_peer.syn()).unwrap();
     // Inject transport backpressure without delivering any synthetic output.
     while host.device.outgoing.len() < crate::device::PACKET_CAPACITY {
-        host.device.outgoing.push_back(vec![0; MTU]);
+        host.device
+            .outgoing
+            .push_back(crate::runtime::delivery::Packet::untracked(vec![0; MTU]));
     }
     poll(&mut host, Duration::from_millis(100));
     assert_eq!(host.active_flows(), 0);

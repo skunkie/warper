@@ -81,6 +81,6 @@ impl Peer {
     }
     pub(crate) fn syn(&mut self) -> Vec<u8> {
         self.poll(Duration::ZERO);
-        self.device.outgoing.pop_front().unwrap()
+        self.device.outgoing.pop_front().unwrap().into_bytes()
     }
 }

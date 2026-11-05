@@ -410,10 +410,18 @@ Local TCP DNS now exposes a bounded acknowledgment receipt for one framed
 response at a time. It distinguishes duplex acceptance, socket enqueue and
 peer acknowledgment, rejects reset-cleared queues as delivery and retains the
 original deadline across interrupted observations. The native coordinator uses
-that receipt for each reply before starting route grace; privileged evidence
-for this increment remains pending. The receipt owns no route guard and does
-not cancel already queued native frames. A supervised routed TCP owner,
-queued-frame cancellation, daemon DNS integration, transient admission and
+that receipt for each reply before starting route grace. This path passes at
+`2d0a716` in [CI 41939893894](https://github.com/skunkie/warper/actions/runs/41939893894),
+including the full build matrix and all five inspected Linux manifests. The
+four probes preserve host state with zero exit/no timeout; installed-unit
+acceptance has no errors for its idle-service scope. Both coordinator scenarios
+join acknowledgments for all 20 replies and both FINs. Evidence belongs under
+`target/evidence/phase-2/tcp-acknowledgment/`. The receipt owns no route guard and does
+not itself join native writer cleanup. Queued TCP frames now retain their
+original response deadline and a connection cancellation receiver through
+native egress; terminal connections invalidate retained frames without adding
+per-segment receipts or tasks. A supervised routed TCP owner,
+daemon DNS integration, transient admission and
 resolver modes remain open. Production DNS preflight remains disabled.
 
 ## Phase 0 Exit Evidence

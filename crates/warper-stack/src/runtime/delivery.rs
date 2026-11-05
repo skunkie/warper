@@ -84,6 +84,14 @@ impl Packet {
     pub fn request(&self) -> Option<&Request> {
         self.request.as_ref()
     }
+    /// Attach stream lifetime and original operation checks without allocating
+    /// a per-segment receipt. TCP acknowledgment joins delivery at stream level.
+    pub(crate) fn constrain(&mut self, request: Request, cancellation: watch::Receiver<bool>) {
+        if self.request.is_none() {
+            self.request = Some(request);
+            self.cancellation = Some(cancellation);
+        }
+    }
     pub fn cancellation(&self) -> Option<&watch::Receiver<bool>> {
         self.cancellation.as_ref()
     }

@@ -11,7 +11,10 @@ use std::{
     task::Poll,
     time::Duration,
 };
-use tokio::{sync::Notify, time::Instant};
+use tokio::{
+    sync::{Notify, watch},
+    time::Instant,
+};
 use warper_core::transport::{Error as RequestError, Request};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +52,7 @@ pub(super) struct Progress {
     state: Mutex<State>,
     changed: Notify,
     wake: Arc<AtomicWaker>,
+    cancellation: watch::Sender<bool>,
 }
 impl Progress {
     pub(super) fn new(wake: Arc<AtomicWaker>) -> Arc<Self> {
@@ -64,6 +68,7 @@ impl Progress {
             }),
             changed: Notify::new(),
             wake,
+            cancellation: watch::channel(false).0,
         })
     }
     pub(super) fn write(
@@ -145,7 +150,18 @@ impl Progress {
         }
         // A poisoned state is also terminal and every reader returns Poisoned.
         self.changed.notify_one();
+        self.cancellation.send_replace(true);
         self.wake.wake();
+    }
+    pub(super) fn constrain(
+        &self,
+        packet: &mut crate::runtime::delivery::Packet,
+    ) -> Result<(), Error> {
+        let state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        if let Some(request) = &state.request {
+            packet.constrain(request.clone(), self.cancellation.subscribe());
+        }
+        Ok(())
     }
 }
 

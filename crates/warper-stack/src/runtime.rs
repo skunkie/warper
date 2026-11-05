@@ -463,11 +463,10 @@ impl Runtime {
                 self.dns
                     .as_mut()
                     .and_then(udp_dns::Driver::take_reply)
-                    .or_else(|| self.host.take_packet().map(delivery::Packet::untracked))
+                    .or_else(|| self.host.take_output())
             } else {
                 self.host
-                    .take_packet()
-                    .map(delivery::Packet::untracked)
+                    .take_output()
                     .or_else(|| self.dns.as_mut().and_then(udp_dns::Driver::take_reply))
             };
             let Some(packet) = packet else {

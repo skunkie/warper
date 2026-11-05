@@ -7,7 +7,7 @@
 use super::*;
 use crate::fixture::Peer;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use warper_core::{BackendId, routing::Entry};
 
 fn create(capacity: usize) -> (Runtime, Channels) {
@@ -56,8 +56,33 @@ async fn local_dns_runtime_dispatches_tcp_separately_and_cancels_retained_stream
     assert_eq!(flow.metadata.source, peer.source);
     assert_eq!(flow.metadata.destination, endpoint);
     assert!(channels.tcp.try_recv().is_err());
+    let (owner, _) = tokio::sync::watch::channel(false);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    flow.stream
+        .dns_output()
+        .unwrap()
+        .begin(warper_core::transport::Request {
+            deadline,
+            cancellation: owner.subscribe(),
+        })
+        .unwrap();
+    flow.stream.write_all(b"response").await.unwrap();
+    let packet = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let packet = channels.packets.recv().await.unwrap();
+            if packet.request().is_some() {
+                break packet;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(packet.request().unwrap().deadline, deadline);
+    assert!(!*packet.cancellation().unwrap().borrow());
     channels.shutdown.send(()).unwrap();
     let report = task.await.unwrap().unwrap();
+    assert!(*packet.cancellation().unwrap().borrow());
+    packet.complete(Err(delivery::Failure::Cancelled)).unwrap();
     assert_eq!(report.tcp.accepted, 1);
     assert_eq!(report.udp_dns.received, 0);
     assert_eq!(report.retained_streams, 1);

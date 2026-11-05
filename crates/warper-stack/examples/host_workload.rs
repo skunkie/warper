@@ -5,6 +5,9 @@
 //! Controlled in-process IP/TCP baseline; no TUN or physical-network claim.
 
 #[cfg(target_os = "linux")]
+use warper_stack::runtime;
+
+#[cfg(target_os = "linux")]
 #[path = "../src/device.rs"]
 mod device;
 #[cfg(target_os = "linux")]

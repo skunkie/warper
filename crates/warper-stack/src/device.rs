@@ -10,13 +10,15 @@ use smoltcp::{
 };
 use std::{collections::VecDeque, io};
 
+use crate::runtime::delivery::Packet;
+
 pub const MTU: usize = 1280;
 pub(crate) const PACKET_CAPACITY: usize = 64;
 pub(crate) const BYTE_CAPACITY: usize = 8192;
 
 pub(crate) struct PacketDevice {
     pub(crate) incoming: VecDeque<Vec<u8>>,
-    pub(crate) outgoing: VecDeque<Vec<u8>>,
+    pub(crate) outgoing: VecDeque<Packet>,
     mtu: usize,
 }
 
@@ -73,7 +75,7 @@ impl phy::RxToken for RxPacket {
     }
 }
 
-pub(crate) struct TxPacket<'a>(&'a mut VecDeque<Vec<u8>>, usize);
+pub(crate) struct TxPacket<'a>(&'a mut VecDeque<Packet>, usize);
 
 impl phy::TxToken for TxPacket<'_> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, length: usize, operation: F) -> R {
@@ -81,7 +83,7 @@ impl phy::TxToken for TxPacket<'_> {
         assert!(length <= self.1, "stack exceeded advertised MTU");
         let mut packet = vec![0; length];
         let result = operation(&mut packet);
-        self.0.push_back(packet);
+        self.0.push_back(Packet::untracked(packet));
         result
     }
 }

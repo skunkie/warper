@@ -3358,10 +3358,24 @@ the original deadline. Original cancellation/expiry and connection termination
 are terminal; confirmed acknowledgment remains joinable after later closure.
 No task is detached. The caller must retain the positive response's route guard
 until acknowledgment or joined connection/native-output cleanup. This primitive
-does not discard already queued native frames on cancellation, hold a route
-guard itself or enable production daemon DNS. A supervised routed TCP owner and
-queued-frame cancellation remain required. The controlled native fixture joins
+does not hold a route guard itself or enable production daemon DNS. A supervised
+routed TCP owner remains required. The controlled native fixture joins
 each receipt before starting its conservative workload-wide route grace.
+
+Before retiring a flow, the host attaches the original response request and
+connection cancellation receiver to its queued DNS TCP packets. Metadata stays
+with each packet through the runtime egress queue; no per-segment task, payload
+copy or delivery receipt is added. Existing packet count/MTU limits still apply.
+Native output checks the original deadline and both cancellation owners before
+and during writes. Closing the stream, terminating the flow or a terminal
+receipt cancels retained packets even after the host slot is reused. Dropping
+an observation alone does not cancel output. Segments already acknowledged
+retain their original context rather than acquiring a later response deadline.
+Connection handshake/control packets outside a response use ordinary output.
+`HostAdapter::take_packet` strips delivery metadata for controlled peers; the
+production runtime uses the metadata-preserving output path. Native writer
+failure still requires supervised connection/pump cleanup and route retention;
+packet cancellation alone cannot prove that a prior write was not delivered.
 
 ### Server-side DNS TCP framing
 
