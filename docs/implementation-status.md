@@ -448,8 +448,17 @@ cleanup. Controlled real-stack tests cover interrupted observations, exact
 frame bytes, zero-TTL protection, original cancellation/expiry, reset, rejected
 admission and typed native commit failure. The native coordinator now prepares
 20 actual selected SOCKS replies over one kernel TCP/TUN connection and uses
-this owner for each response. Privileged evidence for this composition remains
-pending. Production request-worker supervision, daemon/resolver integration,
+this owner for each response. This composition passes at `5daee4f` in
+[CI 41959686375](https://github.com/skunkie/warper/actions/runs/41959686375),
+including Linux x86-64/ARM64 and macOS ARM64 builds/tests. All five Linux
+manifests were inspected: four isolated probes exit zero without timeout and
+preserve host state; the installed idle-service result has no errors. Both
+coordinator scenarios complete all 20 TCP replies and both FINs, and the
+controlled SOCKS peer confirms 41 DNS exchanges plus the first application TCP
+flow. Latency distributions, CPU, peak RSS and transferred DNS/framing bytes
+are retained under `target/evidence/phase-2/routed-tcp/`; this is a serial
+controlled workload, not a full daemon or native macOS DNS acceptance claim.
+Production request-worker supervision, daemon/resolver integration,
 global transient admission and full Phase 2 acceptance remain open.
 
 ## Phase 0 Exit Evidence
