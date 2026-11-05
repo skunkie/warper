@@ -73,7 +73,7 @@ impl Peer {
                 } else {
                     tcp += 1;
                 }
-                if dns + tcp > 22 {
+                if dns + tcp > 42 {
                     return Err("selected fixture exceeded its connection budget".into());
                 }
             }

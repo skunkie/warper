@@ -87,6 +87,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         }
     }
 
+    /// Recover the owned stream for supervised shutdown. A partially transferred
+    /// frame is not reusable merely because its framing adapter was consumed.
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn stream(&self) -> &S {
+        &self.stream
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn check_reply(&self, packet: &Packet, operation: &Request) -> Result<(), Error> {
+        self.admit(operation)?;
+        if !packet.is_response() {
+            return Err(Error::InvalidRequest);
+        }
+        if packet.encode().map_err(Error::Packet)?.len() > self.limits.wire_bytes() {
+            return Err(Error::ResourceLimit);
+        }
+        Ok(())
+    }
+
     pub fn begin_read(&mut self, operation: Request) -> Result<(), Error> {
         self.admit(&operation)?;
         self.work = Some(Work::Read {

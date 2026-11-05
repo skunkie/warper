@@ -11,6 +11,8 @@ pub mod prepare;
 mod query;
 pub mod routes;
 mod tcp;
+#[cfg(target_os = "linux")]
+pub mod tcp_output;
 mod udp;
 
 pub use packet::{

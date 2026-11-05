@@ -3387,6 +3387,25 @@ packet cancellation alone cannot prove that a prior write was not delivered.
 
 ### Server-side DNS TCP framing
 
+On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
+`Connection<AcceptedStream>`, the validated query, a prepared positive reply and
+its uncommitted reservation, and the supervised native commit mailbox. It
+validates correlation, framing size, timestamps and retention before submission.
+The owner retains the connection and response data across interrupted waits.
+Only after native commit joins does it age TTLs against the original upstream
+observation, acquire the positive output guard and begin the framed write under
+the original request. It then joins the TCP acknowledgment receipt before
+publishing TTL/grace retention. A successful join permits taking the connection
+back for another query or FIN shutdown; no other stage permits stream reuse.
+
+Original request, native commit, framing and acknowledgment failures close the
+connection and routing controller. The failed owner retains its output guard
+and flow control until its supervisor joins native output and discards queued
+frames. Primary and routing-closure failures remain separately inspectable.
+There is no automatic retry, direct fallback, detached task or native cleanup
+claim on object drop. This owner is a service composition boundary; it does not
+enable daemon DNS configurations or install resolver policy by itself.
+
 `dns::connection::Connection` owns one stream and permits one framed read or
 write at a time. The service begins each operation with its original deadline
 and cancellation owner, then observes it using separately bounded waits.

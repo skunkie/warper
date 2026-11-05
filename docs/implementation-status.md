@@ -433,8 +433,24 @@ the installed idle-service scope. Evidence belongs under
 unconsumed receipts now keep their original flow admission after stream/slot
 retirement; consuming a receipt releases that reference, while interrupted
 observation preserves it. A regression checks admission refusal and eventual
-reuse for both receipt join and drop. Privileged evidence for this retained
-admission fix remains pending.
+reuse for both receipt join and drop. This retained-admission fix passes at
+`52e8e49` in [CI 41941582330](https://github.com/skunkie/warper/actions/runs/41941582330),
+including the full build matrix and all five inspected Linux manifests. The
+four probes preserve host state with zero exit/no timeout; installed-unit
+acceptance has no errors for its idle-service scope. Evidence belongs under
+`target/evidence/phase-2/tcp-admission/`.
+
+Routed TCP output now composes native commit, original-observation TTL aging,
+framing, peer acknowledgment and TTL/grace retention in one retained service
+owner. Successful output returns the connection for the next query; uncertain
+failure closes admission and retains its route guard through supervised native
+cleanup. Controlled real-stack tests cover interrupted observations, exact
+frame bytes, zero-TTL protection, original cancellation/expiry, reset, rejected
+admission and typed native commit failure. The native coordinator now prepares
+20 actual selected SOCKS replies over one kernel TCP/TUN connection and uses
+this owner for each response. Privileged evidence for this composition remains
+pending. Production request-worker supervision, daemon/resolver integration,
+global transient admission and full Phase 2 acceptance remain open.
 
 ## Phase 0 Exit Evidence
 

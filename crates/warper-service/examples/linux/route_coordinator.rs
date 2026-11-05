@@ -41,6 +41,7 @@ use warper_core::{
 use warper_service::{
     dns::output::{RoutedReply, UdpOutput},
     dns::prepare::{Prepared, Resolver},
+    dns::tcp_output::{Reply as TcpReply, TcpOutput},
     dns::{Limits as PacketLimits, Packet, routes::Controller},
     dns::{QueryBudget, ServiceDiscoveryLimits},
     linux::{
@@ -198,6 +199,7 @@ async fn run(
     let mut latency = Vec::with_capacity(20);
     let mut saw_intent = false;
     let mut pending_udp: Option<UdpOutput> = None;
+    let mut pending_tcp: Option<TcpOutput> = None;
     let mut selected_peer = None;
     // Fixture-owned DNS capture only. Production route publication still
     // requires both DNS transports and daemon lifecycle integration.
@@ -387,13 +389,9 @@ async fn run(
         pending_udp.as_mut().ok_or("UDP completion ownership lost")?.wait(request(&service_owner)).await?;
         drop(pending_udp.take());
         routed_udp_workload(controller.clone(),manager,&mut dns,&service_owner,&mut pending_udp,peer).await?;
-        let response=reserve(&controller,&[ipv4(70)])?;
-        let renewed_route=controller.response_route(&response,0)?;
-        if renewed_route==route {return Err("automatic retirement reused the stale route generation".into());}
-        let route=renewed_route;
-        manager.begin_commit(response,request(&service_owner))?;
-        let response=match manager.wait(request(&service_owner)).await? {Completion::Committed(response)=>response,Completion::Retired=>return Err("framed DNS renewal returned retirement".into())};
-        dns_reply(&controller,response,&mut tcp_dns).await?;
+        let renewed_route = dns_reply(controller.clone(), manager, &mut tcp_dns, peer, &mut pending_tcp).await?;
+        if renewed_route == route { return Err("automatic retirement reused the stale route generation".into()); }
+        let route = renewed_route;
         udp_dns_reply(&mut dns).await?;
         wait_flows(&controller, &channels.publication).await?;
         while let Some(expiry)=controller.next_expiry()? {tokio::time::sleep_until(expiry).await;controller.advance()?;}
@@ -548,9 +546,9 @@ async fn run(
     let mut cleanup = Vec::new();
     if let Some(peer) = selected_peer.take() {
         match peer.close().await {
-            Ok((21, 1, bytes)) => {
+            Ok((41, 1, bytes)) => {
                 println!(
-                    "selected_socks dns_queries=21 tcp_flows=1 stream_bytes={bytes}; one serial controlled loopback SOCKS/DNS/echo peer, protected production connector, includes handshakes and DNS framing"
+                    "selected_socks dns_queries=41 tcp_flows=1 stream_bytes={bytes}; one serial controlled loopback SOCKS/DNS/echo peer, protected production connector, includes handshakes and DNS framing"
                 );
             }
             Ok(_) if outcome.is_err() => {}
@@ -572,7 +570,7 @@ async fn run(
     if let Err(error) = controller.close() {
         cleanup.push(Box::new(error) as Failure);
     }
-    if let Some(mut output) = pending_udp.take() {
+    if pending_udp.is_some() || pending_tcp.is_some() {
         // A failed fixture can still own queued native output. Stop producers,
         // join packet I/O and destroy the queued frames before releasing it.
         match channels.admission.cancel_flows() {
@@ -605,12 +603,15 @@ async fn run(
                 Err(error) => cleanup.push(Box::new(error) as Failure),
             }
         }
-        if output.has_pending()
-            && let Err(error) = output.wait(request(&service_owner)).await
-        {
-            cleanup.push(Box::new(error) as Failure);
+        if let Some(mut output) = pending_udp.take() {
+            if output.has_pending()
+                && let Err(error) = output.wait(request(&service_owner)).await
+            {
+                cleanup.push(Box::new(error) as Failure);
+            }
+            drop(output);
         }
-        drop(output);
+        drop(pending_tcp.take());
     }
     if manager.has_pending() {
         match manager.wait(request(&service_owner)).await {
@@ -1152,11 +1153,14 @@ async fn wait_flows(
     .await?
 }
 async fn dns_reply(
-    controller: &Controller,
-    response: lease::Response,
+    controller: Arc<Controller>,
+    manager: &mut Manager,
     accepted: &mut tokio::sync::mpsc::Receiver<warper_stack::host::AcceptedDnsFlow>,
-) -> Result<(), Failure> {
+    peer: &selected_dns::Peer,
+    pending: &mut Option<TcpOutput>,
+) -> Result<lease::Route, Failure> {
     use warper_service::dns::connection::{Completion as StreamCompletion, Connection};
+    use warper_service::linux::dns_routes::queue::Driver;
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let mut latencies = Vec::with_capacity(20);
@@ -1166,13 +1170,8 @@ async fn dns_reply(
     bytes.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
     bytes.extend_from_slice(&[0, 1, 0, 1]);
     let query = Packet::request(&bytes, limits)?;
-    bytes[2..4].copy_from_slice(&[0x81, 0x80]);
-    bytes[7] = 1;
-    bytes.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 203, 0, 113, 70]);
-    let reply = Packet::response(&bytes, &query, limits)?;
-    let wire = reply.encode()?;
     let endpoint = "203.0.113.53:53".parse()?;
-    let (mut client, mut flow) = timeout(Duration::from_secs(2), async {
+    let (mut client, flow) = timeout(Duration::from_secs(2), async {
         let client = TcpStream::connect(endpoint);
         let server = async {
             accepted
@@ -1188,64 +1187,102 @@ async fn dns_reply(
         return Err("virtual TCP DNS lost original tuple metadata".into());
     }
     client.set_nodelay(true)?;
-    let delivery = flow.stream.dns_output()?;
-    let mut output = controller.begin_output(response)?;
     let (owner, _) = watch::channel(false);
-    timeout(Duration::from_secs(5), async {
-        let mut server = Connection::new(&mut flow.stream, limits);
-        let encoded = query.encode()?;
-        for _ in 0..20 {
-            let before = Instant::now();
-            client
-                .write_all(&(encoded.len() as u16).to_be_bytes())
-                .await?;
-            client.write_all(&encoded).await?;
+    let (mailbox, mut driver) = Driver::new(manager, 2)?;
+    let workload = async {
+        let result = timeout(Duration::from_secs(5), async {
+            let mut server = Some(Connection::new(flow.stream, limits));
+            let encoded = query.encode()?;
+            let mut last_route = None;
+            for index in 0..20 {
+                let before = Instant::now();
+                client.write_u16(encoded.len() as u16).await?;
+                client.write_all(&encoded).await?;
+                let connection = server.as_mut().ok_or("TCP framing owner missing")?;
+                connection.begin_read(request(&owner))?;
+                let StreamCompletion::Query(incoming) = connection.wait(request(&owner)).await? else {
+                    return Err("framed DNS server did not receive a query".into());
+                };
+                let operation = request(&owner);
+                let resolver = Resolver::new(&peer.transport, &peer.domains, &controller, RoutingMode::Dynamic,
+                    ServiceDiscoveryLimits { alias_hops: 4, addresses: 4, ipv6: false, work_items: 16 })?;
+                let Prepared::Upstream { packet, received_at, reservation: Some(reservation), .. } =
+                    resolver.prepare(&incoming, operation.clone(), &QueryBudget::new(4)?).await? else {
+                        return Err("selected TCP discovery did not reserve its positive answer".into());
+                    };
+                last_route = Some(controller.response_route(&reservation, 0)?);
+                let wire = packet.encode()?;
+                *pending = Some(TcpOutput::begin_queued(controller.clone(),
+                    server.take().ok_or("TCP framing owner lost")?, &incoming,
+                    TcpReply { packet: *packet, received_at, reservation, grace: Duration::from_secs(1) },
+                    &mailbox, operation)?);
+                if index == 0 {
+                    let (cancelled, _) = watch::channel(true);
+                    if pending.as_mut().ok_or("TCP output owner lost")?.wait(request(&cancelled)).await
+                        != Err(warper_service::dns::tcp_output::Error::WaitCancelled) {
+                        return Err("TCP output observation cancellation lost publication ownership".into());
+                    }
+                    if !matches!(client.try_read(&mut [0; 2]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock) {
+                        return Err("TCP positive answer preceded committed publication".into());
+                    }
+                }
+                let output = pending.as_mut().ok_or("TCP output owner missing")?;
+                let read = async {
+                    let length = client.read_u16().await?;
+                    let mut received = vec![0; usize::from(length)];
+                    client.read_exact(&mut received).await?;
+                    Packet::response(&received, &query, limits)?;
+                    if received != wire || u32::from_be_bytes(received[received.len()-10..received.len()-6].try_into()?) != 0 {
+                        return Err("coordinated zero-TTL TCP reply differs".into());
+                    }
+                    Ok::<_, Failure>(received.len())
+                };
+                let (joined, received) = tokio::join!(output.wait(request(&owner)), read);
+                joined?;
+                transferred += encoded.len() + received?;
+                server = output.take_connection();
+                drop(pending.take());
+                if mailbox.active() != 0 || controller.stats()?.responses != 0 {
+                    return Err("routed TCP reply retained joined admission or output ownership".into());
+                }
+                latencies.push(before.elapsed().as_nanos());
+            }
+            client.shutdown().await?;
+            let mut server = server.take().ok_or("TCP connection missing after output")?;
             server.begin_read(request(&owner))?;
-            let StreamCompletion::Query(incoming) = server.wait(request(&owner)).await? else {
-                return Err("framed DNS server did not receive a query".into());
-            };
-            if incoming.question() != query.question() || incoming.id() != query.id() {
-                return Err("framed DNS query correlation changed".into());
+            if !matches!(server.wait(request(&owner)).await?, StreamCompletion::End) {
+                return Err("framed DNS server lost clean EOF".into());
             }
-            delivery.begin(request(&owner))?;
-            server.begin_reply(&reply, request(&owner))?;
-            if !matches!(
-                server.wait(request(&owner)).await?,
-                StreamCompletion::Written
-            ) {
-                return Err("framed DNS reply did not complete stream acceptance".into());
-            }
-            let mut receipt = delivery.receipt()?;
-            let length = client.read_u16().await?;
-            let mut received = vec![0; usize::from(length)];
-            client.read_exact(&mut received).await?;
-            Packet::response(&received, &query, limits)?;
-            if received != wire
-                || u32::from_be_bytes(received[received.len() - 10..received.len() - 6].try_into()?)
-                    != 0
-            {
-                return Err("coordinated zero-TTL frame differs".into());
-            }
-            receipt.wait(request(&owner)).await?;
-            transferred += encoded.len() + received.len();
-            latencies.push(before.elapsed().as_nanos());
+            let mut stream = server.into_inner();
+            stream.shutdown().await?;
+            if client.read(&mut [0]).await? != 0 { return Err("virtual TCP DNS lost server FIN".into()); }
+            drop(stream);
+            last_route.ok_or_else(|| "routed TCP did not expose a route".into())
+        }).await.map_err(|error| Box::new(error) as Failure).and_then(|result| result);
+        drop(mailbox);
+        result
+    };
+    let driven = async {
+        let result = driver.run(request(&owner)).await;
+        if result.is_err() {
+            owner.send_replace(true);
         }
-        // Keep one conservative reference for this controlled workload. Every
-        // framed response is acknowledged before its grace period can start.
-        controller.complete_output(&mut output, Duration::from_secs(1))?;
-        client.shutdown().await?;
-        server.begin_read(request(&owner))?;
-        if !matches!(server.wait(request(&owner)).await?, StreamCompletion::End) {
-            return Err("framed DNS server lost clean EOF".into());
+        result
+    };
+    let (workload, driven) = tokio::join!(workload, driven);
+    let mut cleanup = Vec::new();
+    if let Err(error) = driven {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    if let Some(error) = driver.join_error() {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    if let Some(failure) = driver.failure() {
+        for error in failure.cleanup.into_iter().flatten() {
+            cleanup.push(Box::new(error) as Failure);
         }
-        drop(server);
-        flow.stream.shutdown().await?;
-        if client.read(&mut [0]).await? != 0 {
-            return Err("virtual TCP DNS lost server FIN".into());
-        }
-        Ok::<_, Failure>(())
-    })
-    .await??;
+    }
+    let route = preserve(workload, cleanup)?;
     latencies.sort_unstable();
     let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
@@ -1257,16 +1294,16 @@ async fn dns_reply(
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("local TCP DNS RSS unavailable")?;
     println!(
-        "local_tcp_dns requests=20 concurrency=1 dns_payload_bytes={transferred} framing_bytes=80 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, fixed zero-TTL reply after native route ACK, no upstream discovery, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
+        "local_tcp_dns requests=20 concurrency=1 dns_payload_bytes={transferred} framing_bytes=80 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, selected SOCKS discovery, per-response native route commit, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
         started.elapsed().as_nanos(),
         latencies[9],
         latencies[18],
         latencies[19]
     );
     println!(
-        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, frames zero-TTL replies after route ACK, joins peer acknowledgments before grace and joins both FINs"
+        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, discovers selected SOCKS answers, commits each route before framed zero-TTL output, joins peer acknowledgments before grace and joins both FINs"
     );
-    Ok(())
+    Ok(route)
 }
 
 fn finish_watcher(
