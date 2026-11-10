@@ -115,11 +115,11 @@ fn out_of_order_aliases_keep_only_reachable_answer_addresses() {
     assert_eq!(answer.question, query);
     assert_eq!(answer.canonical_name, name("end.example.test"));
     assert_eq!(
-        answer.aliases,
+        answer.aliases[..],
         [name("mid.example.test"), name("end.example.test")]
     );
     assert_eq!(
-        answer.addresses,
+        answer.addresses[..],
         [Address {
             ip: "192.0.2.1".parse().unwrap(),
             expires_at: now + Duration::from_secs(10)
@@ -233,7 +233,7 @@ fn ipv6_answers_preserve_family_and_ignore_other_record_types() {
             .unwrap(),
     );
     assert_eq!(
-        answer.addresses,
+        answer.addresses[..],
         [Address {
             ip: IpAddr::V6(ip),
             expires_at: now + Duration::from_secs(20)
@@ -434,6 +434,6 @@ fn repeated_identical_aliases_share_one_hop_and_use_minimum_ttl() {
             .advance(&packet(query, &bytes), now)
             .unwrap(),
     );
-    assert_eq!(answer.aliases, [name("end.test")]);
+    assert_eq!(answer.aliases[..], [name("end.test")]);
     assert_eq!(answer.addresses[0].expires_at, now + Duration::from_secs(3));
 }

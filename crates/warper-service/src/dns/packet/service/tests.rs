@@ -68,7 +68,7 @@ fn packet(owner: &str, kind: u16, bytes: &[u8]) -> Packet {
     let request = Packet::request(&wire(owner, kind, false), limits).unwrap();
     Packet::response(bytes, &request, limits).unwrap()
 }
-fn bindings(set: BindingSet<'_>) -> Vec<ServiceBinding<'_>> {
+fn bindings(set: BindingSet<'_>) -> Stored<ServiceBinding<'_>> {
     match set {
         BindingSet::ServiceMode(records) => records,
         _ => panic!("expected every ServiceMode alternative"),
@@ -165,7 +165,7 @@ fn root_service_targets_keep_effective_owner_and_alias_targets_are_not_prefixed(
             panic!("expected AliasMode");
         };
         assert_eq!(
-            aliases,
+            aliases[..],
             [ServiceAlias::Target(TimedAlias {
                 target: name("alias.test"),
                 expires_at: now + Duration::from_secs(5)
@@ -218,7 +218,7 @@ fn alias_mode_suppresses_service_mode_and_ignores_parameters() {
     };
     let expires_at = now + Duration::from_secs(10);
     assert_eq!(
-        aliases,
+        aliases[..],
         [
             ServiceAlias::Target(TimedAlias {
                 target: name("one.test"),
@@ -457,7 +457,7 @@ fn related_addresses_keep_both_families_sections_and_minimum_rrset_ttls() {
         panic!("missing related endpoints");
     };
     assert_eq!(
-        addresses,
+        addresses[..],
         [
             RelatedAddress {
                 address: Address {
@@ -629,4 +629,78 @@ fn additional_records_cannot_contradict_service_or_cname_ownership() {
             "case {case}"
         );
     }
+}
+
+#[test]
+fn packet_views_retain_metadata_and_reject_byte_pressure_before_allocation() {
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let limits = Limits::new(65535, 64).unwrap();
+    let request =
+        Packet::request_with_budget(&wire("service.test", 65, false), limits, &buffers).unwrap();
+    let now = Instant::now();
+    for priority in [0, 1] {
+        let mut bytes = wire("service.test", 65, true);
+        service(
+            &mut bytes,
+            "service.test",
+            65,
+            priority,
+            "target.test",
+            10,
+            &[],
+        );
+        record(&mut bytes, 10, "target.test", 1, 1, 10, &[192, 0, 2, 1]);
+        let response = Packet::response(&bytes, &request, limits).unwrap();
+        let baseline = buffers.used();
+        let competing = buffers.reserve(buffers.limit() - baseline).unwrap();
+        assert!(matches!(
+            response.service_bindings(name("service.test"), now),
+            Err(ServiceError::ResourceLimit)
+        ));
+        assert!(matches!(
+            response.related_addresses(name("target.test"), now, 1),
+            Err(ServiceError::ResourceLimit)
+        ));
+        assert_eq!(buffers.used(), buffers.limit());
+        drop(competing);
+        match response
+            .service_bindings(name("service.test"), now)
+            .unwrap()
+        {
+            BindingSet::AliasMode(values) => {
+                let mut values = values.into_iter();
+                assert!(buffers.used() > baseline);
+                assert!(values.next().is_some());
+                assert!(values.next().is_none());
+                assert!(buffers.used() > baseline);
+                drop(values);
+            }
+            BindingSet::ServiceMode(values) => {
+                let mut values = values.into_iter();
+                assert!(buffers.used() > baseline);
+                assert!(values.next().is_some());
+                assert!(values.next().is_none());
+                assert!(buffers.used() > baseline);
+                drop(values);
+            }
+            _ => panic!("expected an admitted service view"),
+        }
+        assert_eq!(buffers.used(), baseline);
+        let RelatedSet::Addresses(values) = response
+            .related_addresses(name("target.test"), now, 1)
+            .unwrap()
+        else {
+            panic!("expected related addresses");
+        };
+        assert!(buffers.used() > baseline);
+        let mut values = values.into_iter();
+        assert!(values.next().is_some());
+        assert!(values.next().is_none());
+        assert!(buffers.used() > baseline);
+        drop(values);
+        assert_eq!(buffers.used(), baseline);
+        drop(response);
+    }
+    drop(request);
+    assert_eq!(buffers.used(), 0);
 }

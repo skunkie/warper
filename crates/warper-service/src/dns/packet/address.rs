@@ -4,7 +4,8 @@
 
 //! Address dependencies without exposing the DNS library or granting output.
 
-use std::{fmt, net::IpAddr, time::Duration};
+use crate::dns::memory::{Reservation, Stored};
+use std::{fmt, mem::size_of, net::IpAddr, sync::Arc, time::Duration};
 
 use hickory_proto::rr::{DNSClass, RData};
 use tokio::time::Instant;
@@ -48,8 +49,8 @@ pub struct Address {
 pub struct AddressAnswer {
     pub question: Question,
     pub canonical_name: Name,
-    pub aliases: Vec<Name>,
-    pub addresses: Vec<Address>,
+    pub aliases: Stored<Name>,
+    pub addresses: Stored<Address>,
     pub response_code: u16,
 }
 
@@ -69,6 +70,7 @@ pub struct AddressLookup {
     expires_at: Option<Instant>,
     max_alias_hops: usize,
     max_addresses: usize,
+    storage: Option<Reservation>,
 }
 
 impl AddressLookup {
@@ -90,7 +92,20 @@ impl AddressLookup {
             expires_at: None,
             max_alias_hops,
             max_addresses,
+            storage: None,
         })
+    }
+
+    pub(crate) fn with_packet_storage(mut self, packet: &Packet) -> Result<Self, AddressError> {
+        self.storage = packet
+            .reserve_metadata(
+                size_of::<Self>()
+                    + size_of::<AddressAnswer>()
+                    + size_of::<Reservation>()
+                    + 2 * size_of::<usize>(),
+            )
+            .map_err(|_| AddressError::ResourceLimit)?;
+        Ok(self)
     }
 
     pub fn question(&self) -> Question {
@@ -152,6 +167,11 @@ impl AddressLookup {
                             if addresses.len() == self.max_addresses {
                                 return Err(AddressError::ResourceLimit);
                             }
+                            if let Some(storage) = &mut self.storage {
+                                storage
+                                    .grow(2 * size_of::<Address>())
+                                    .map_err(|_| AddressError::ResourceLimit)?;
+                            }
                             addresses
                                 .try_reserve_exact(1)
                                 .map_err(|_| AddressError::ResourceLimit)?;
@@ -173,6 +193,11 @@ impl AddressLookup {
                 }
                 if self.aliases.len() == self.max_alias_hops {
                     return Err(AddressError::ResourceLimit);
+                }
+                if let Some(storage) = &mut self.storage {
+                    storage
+                        .grow(2 * size_of::<Name>())
+                        .map_err(|_| AddressError::ResourceLimit)?;
                 }
                 self.aliases
                     .try_reserve_exact(1)
@@ -205,11 +230,12 @@ impl AddressLookup {
     }
 
     fn finish(self, addresses: Vec<Address>, response_code: u16) -> AddressProgress {
+        let storage = self.storage.map(Arc::new);
         AddressProgress::Complete(AddressAnswer {
             question: self.original,
             canonical_name: self.current.name,
-            aliases: self.aliases,
-            addresses,
+            aliases: Stored::new(self.aliases, storage.clone()),
+            addresses: Stored::new(addresses, storage),
             response_code,
         })
     }

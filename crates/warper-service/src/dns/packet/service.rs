@@ -4,7 +4,8 @@
 
 //! RFC 9460 packet semantics, without client selection or output permission.
 
-use std::{fmt, net::IpAddr, time::Duration};
+use crate::dns::memory::{Reservation, Stored};
+use std::{fmt, mem::size_of, net::IpAddr, sync::Arc, time::Duration};
 
 use hickory_proto::rr::{
     DNSClass, RData, Record,
@@ -64,8 +65,8 @@ pub enum BindingSet<'a> {
     Negative(u16),
     Empty,
     Cname(TimedAlias),
-    AliasMode(Vec<ServiceAlias>),
-    ServiceMode(Vec<ServiceBinding<'a>>),
+    AliasMode(Stored<ServiceAlias>),
+    ServiceMode(Stored<ServiceBinding<'a>>),
 }
 
 /// Borrows opaque parameters from the admitted packet. No hint or unknown
@@ -141,7 +142,7 @@ pub struct RelatedAddress {
 pub enum RelatedSet {
     Empty,
     Cname(TimedAlias),
-    Addresses(Vec<RelatedAddress>),
+    Addresses(Stored<RelatedAddress>),
 }
 
 impl Packet {
@@ -217,6 +218,7 @@ impl Packet {
             return Ok(BindingSet::Empty);
         };
         if alias_mode {
+            let storage = self.view_storage::<ServiceAlias>(count)?;
             let mut aliases = Vec::new();
             aliases
                 .try_reserve_exact(count)
@@ -241,8 +243,12 @@ impl Packet {
                     aliases.push(alias);
                 }
             }
-            return Ok(BindingSet::AliasMode(aliases));
+            return Ok(BindingSet::AliasMode(Stored::new(
+                aliases,
+                storage.map(Arc::new),
+            )));
         }
+        let storage = self.view_storage::<ServiceBinding<'_>>(count)?;
         let mut bindings = Vec::new();
         bindings
             .try_reserve_exact(count)
@@ -263,7 +269,10 @@ impl Packet {
                 expires_at,
             });
         }
-        Ok(BindingSet::ServiceMode(bindings))
+        Ok(BindingSet::ServiceMode(Stored::new(
+            bindings,
+            storage.map(Arc::new),
+        )))
     }
 
     pub fn related_addresses(
@@ -282,6 +291,7 @@ impl Packet {
             return Ok(RelatedSet::Empty);
         }
         let mut cname = None;
+        let mut storage = self.view_storage::<RelatedAddress>(0)?;
         let mut addresses: Vec<RelatedAddress> = Vec::new();
         let mut v4_expiry = None;
         let mut v6_expiry = None;
@@ -325,6 +335,11 @@ impl Packet {
                 {
                     continue;
                 }
+                if let Some(storage) = &mut storage {
+                    storage
+                        .grow(2 * size_of::<RelatedAddress>())
+                        .map_err(|_| ServiceError::ResourceLimit)?;
+                }
                 addresses
                     .try_reserve_exact(1)
                     .map_err(|_| ServiceError::ResourceLimit)?;
@@ -356,7 +371,23 @@ impl Packet {
             // Every retained address contributed to exactly one family above.
             address.address.expires_at = expires_at.ok_or(ServiceError::Malformed)?;
         }
-        Ok(RelatedSet::Addresses(addresses))
+        Ok(RelatedSet::Addresses(Stored::new(
+            addresses,
+            storage.map(Arc::new),
+        )))
+    }
+
+    fn view_storage<T>(&self, count: usize) -> Result<Option<Reservation>, ServiceError> {
+        let bytes = count
+            .checked_mul(size_of::<T>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    size_of::<Stored<T>>() + size_of::<Reservation>() + 2 * size_of::<usize>(),
+                )
+            })
+            .ok_or(ServiceError::ResourceLimit)?;
+        self.reserve_metadata(bytes)
+            .map_err(|_| ServiceError::ResourceLimit)
     }
 }
 

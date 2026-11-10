@@ -493,14 +493,22 @@ async fn service_reply_retains_original_observation_and_releases_shared_packet_o
     let sample = Packet::response(&expected, &root, packet_limits()).unwrap();
     let response_storage = buffers.used() - retained;
     drop(sample);
-    assert_eq!(
-        retained,
-        query_storage + response_storage,
-        "completed discovery must release dependency packets"
-    );
+    let packet_storage = query_storage + response_storage;
+    assert!(retained > packet_storage);
     let shared = result.response.clone();
-    drop(result);
+    let mut endpoints = result.endpoints.into_iter();
+    drop(result.paths);
+    drop(result.response);
     assert_eq!(buffers.used(), retained);
+    assert!(endpoints.next().is_some());
+    for _ in &mut endpoints {}
+    assert_eq!(
+        buffers.used(),
+        retained,
+        "an exhausted iterator still owns its allocation"
+    );
+    drop(endpoints);
+    assert_eq!(buffers.used(), packet_storage);
     drop(shared);
     assert_eq!(buffers.used(), query_storage);
     drop(root);
@@ -856,7 +864,11 @@ async fn cancellation_and_future_drop_close_dependency_streams_without_backgroun
             ("target.example.test", 1, Reply::Stall),
         ]);
         let (owner, request) = context();
-        let query = query();
+        let buffers = crate::dns::memory::Budget::new(64 * 1024 * 1024).unwrap();
+        let query =
+            Packet::request_with_budget(&query().encode().unwrap(), packet_limits(), &buffers)
+                .unwrap();
+        let query_storage = buffers.used();
         let budget = QueryBudget::new(2).unwrap();
         let policy = policy();
         let mut operation = Box::pin(transport.discover_service_bindings(
@@ -873,6 +885,7 @@ async fn cancellation_and_future_drop_close_dependency_streams_without_backgroun
         };
         tokio::select! { result = &mut operation => panic!("dependency unexpectedly completed: {result:?}"), () = observed => {} }
         assert_eq!(fixture.backend.admission.active(), 1);
+        assert!(buffers.used() > query_storage);
         if cancel {
             owner.send(true).unwrap();
             assert!(matches!(
@@ -883,6 +896,9 @@ async fn cancellation_and_future_drop_close_dependency_streams_without_backgroun
             ));
         }
         drop(operation);
+        assert_eq!(buffers.used(), query_storage);
+        drop(query);
+        assert_eq!(buffers.used(), 0);
         assert_eq!(budget.used(), 2);
         fixture.finish(transport).await;
     }
@@ -1271,5 +1287,234 @@ async fn alias_without_service_records_uses_fallback_but_nxdomain_cannot_expose_
             );
         }
         fixture.finish(transport).await;
+    }
+}
+
+#[tokio::test]
+async fn discovery_metadata_shortage_fails_before_any_upstream_attempt() {
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    for kind in [1, 65] {
+        let sample = Packet::request_with_budget(
+            &wire("start.example.test", kind, false),
+            packet_limits(),
+            &buffers,
+        )
+        .unwrap();
+        let used = buffers.used();
+        let competing = buffers.reserve(buffers.limit() - used).unwrap();
+        let (fixture, transport) = fixture(Vec::new());
+        let (_owner, request) = context();
+        let attempts = QueryBudget::new(2).unwrap();
+        if kind == 65 {
+            assert!(matches!(
+                transport
+                    .discover_service_bindings(
+                        &sample,
+                        request,
+                        &attempts,
+                        &policy(),
+                        bounds(false)
+                    )
+                    .await,
+                Err(ServiceDiscoveryError::ResourceLimit)
+            ));
+        } else {
+            assert!(matches!(
+                transport
+                    .discover_addresses(
+                        &sample,
+                        request,
+                        &attempts,
+                        crate::dns::AddressDiscoveryLimits {
+                            alias_hops: 8,
+                            addresses: 64
+                        }
+                    )
+                    .await,
+                Err(crate::dns::DiscoveryError::Answer(
+                    crate::dns::AddressError::ResourceLimit
+                ))
+            ));
+        }
+        assert_eq!(attempts.used(), 0);
+        assert!(fixture.backend.deadlines.lock().unwrap().is_empty());
+        assert_eq!(buffers.used(), buffers.limit());
+        assert!(fixture.finish(transport).await.is_empty());
+        drop(competing);
+        assert_eq!(buffers.used(), used);
+        drop(sample);
+        assert_eq!(buffers.used(), 0);
+    }
+}
+
+#[tokio::test]
+async fn traversal_storage_exhaustion_releases_saved_responses_and_partial_metadata() {
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let sample = Packet::request_with_budget(
+        &wire("start.example.test", 65, false),
+        packet_limits(),
+        &buffers,
+    )
+    .unwrap();
+    let used = buffers.used();
+    let mut response = wire("start.example.test", 65, true);
+    service(
+        &mut response,
+        "start.example.test",
+        1,
+        "target.example.test",
+        10,
+        &[192, 0, 2, 1],
+    );
+    let decoded = Packet::response(&response, &sample, packet_limits()).unwrap();
+    let response_bytes = buffers.used() - used;
+    drop(decoded);
+    let fixed = size_of::<Discovery<'_>>()
+        + size_of::<ServiceResolution>()
+        + size_of::<Reservation>()
+        + 2 * size_of::<usize>();
+    let allowed =
+        fixed + response_bytes + 2 * size_of::<Observed>() + 2 * size_of::<EndpointPath>() - 1;
+    let competing = buffers.reserve(buffers.limit() - used - allowed).unwrap();
+    let retained = buffers.used();
+    let (fixture, transport) = fixture(vec![("start.example.test", 65, ready(response))]);
+    let (_owner, request) = context();
+    let attempts = QueryBudget::new(2).unwrap();
+    assert!(matches!(
+        transport
+            .discover_service_bindings(&sample, request, &attempts, &policy(), bounds(false))
+            .await,
+        Err(ServiceDiscoveryError::ResourceLimit)
+    ));
+    assert_eq!(attempts.used(), 1);
+    assert_eq!(fixture.finish(transport).await.len(), 1);
+    assert_eq!(buffers.used(), retained);
+    drop(competing);
+    drop(sample);
+    assert_eq!(buffers.used(), 0);
+}
+
+#[tokio::test]
+async fn address_result_storage_follows_both_moved_vectors_after_packet_release() {
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let sample = Packet::request_with_budget(
+        &wire("start.example.test", 1, false),
+        packet_limits(),
+        &buffers,
+    )
+    .unwrap();
+    let query_storage = buffers.used();
+    let mut reply = wire("start.example.test", 1, true);
+    record(
+        &mut reply,
+        6,
+        "start.example.test",
+        5,
+        20,
+        name("target.example.test").wire(),
+    );
+    record(&mut reply, 6, "target.example.test", 1, 20, &[192, 0, 2, 7]);
+    let decoded = Packet::response(&reply, &sample, packet_limits()).unwrap();
+    let response_storage = buffers.used() - query_storage;
+    drop(decoded);
+    let (fixture, transport) = fixture(vec![("start.example.test", 1, ready(reply))]);
+    let (_owner, request) = context();
+    let result = transport
+        .discover_addresses(
+            &sample,
+            request,
+            &QueryBudget::new(1).unwrap(),
+            crate::dns::AddressDiscoveryLimits {
+                alias_hops: 8,
+                addresses: 64,
+            },
+        )
+        .await
+        .unwrap();
+    let retained = buffers.used();
+    assert!(retained > query_storage + response_storage);
+    let mut aliases = result.answer.aliases.into_iter();
+    let mut addresses = result.answer.addresses.into_iter();
+    drop(result.response);
+    assert_eq!(buffers.used(), retained - response_storage);
+    assert_eq!(aliases.next(), Some(name("target.example.test")));
+    assert_eq!(aliases.next(), None);
+    drop(aliases);
+    assert_eq!(buffers.used(), retained - response_storage);
+    assert_eq!(
+        addresses.next().unwrap().ip,
+        "192.0.2.7".parse::<IpAddr>().unwrap()
+    );
+    assert_eq!(addresses.next(), None);
+    drop(addresses);
+    assert_eq!(buffers.used(), query_storage);
+    drop(sample);
+    assert_eq!(buffers.used(), 0);
+    assert_eq!(fixture.finish(transport).await.len(), 1);
+}
+
+#[tokio::test]
+async fn address_storage_refusal_releases_partial_alias_and_address_state() {
+    for short_alias in [true, false] {
+        let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+        let sample = Packet::request_with_budget(
+            &wire("start.example.test", 1, false),
+            packet_limits(),
+            &buffers,
+        )
+        .unwrap();
+        let query_storage = buffers.used();
+        let mut reply = wire("start.example.test", 1, true);
+        record(
+            &mut reply,
+            6,
+            "start.example.test",
+            5,
+            20,
+            name("target.example.test").wire(),
+        );
+        record(&mut reply, 6, "target.example.test", 1, 20, &[192, 0, 2, 7]);
+        let decoded = Packet::response(&reply, &sample, packet_limits()).unwrap();
+        let response_storage = buffers.used() - query_storage;
+        drop(decoded);
+        let fixed = size_of::<crate::dns::AddressLookup>()
+            + size_of::<crate::dns::AddressAnswer>()
+            + size_of::<Reservation>()
+            + 2 * size_of::<usize>();
+        let extra = if short_alias {
+            0
+        } else {
+            2 * size_of::<crate::dns::Address>()
+        };
+        let allowed = fixed + response_storage + 2 * size_of::<Name>() + extra - 1;
+        let competing = buffers
+            .reserve(buffers.limit() - query_storage - allowed)
+            .unwrap();
+        let retained = buffers.used();
+        let (fixture, transport) = fixture(vec![("start.example.test", 1, ready(reply))]);
+        let (_owner, request) = context();
+        let attempts = QueryBudget::new(1).unwrap();
+        assert!(matches!(
+            transport
+                .discover_addresses(
+                    &sample,
+                    request,
+                    &attempts,
+                    crate::dns::AddressDiscoveryLimits {
+                        alias_hops: 8,
+                        addresses: 64
+                    }
+                )
+                .await,
+            Err(crate::dns::DiscoveryError::Answer(
+                crate::dns::AddressError::ResourceLimit
+            ))
+        ));
+        assert_eq!(attempts.used(), 1);
+        assert_eq!(fixture.finish(transport).await.len(), 1);
+        assert_eq!(buffers.used(), retained);
+        drop(competing);
+        drop(sample);
+        assert_eq!(buffers.used(), 0);
     }
 }

@@ -577,9 +577,25 @@ CSYNC bitmap expansion. Response envelope admission preserves correlated TC
 retry even when the final record is incomplete. Controlled tests cover exact
 shortage, malformed decode, synthesis pressure, shared ownership, TCP framing,
 discovery dependencies and maximum-size EDNS. Both worker protocols use these
-budgeted entry points; native evidence for this increment remains pending.
+budgeted entry points. Acceptance passes at `8ad4fb5` in
+[CI 42895301870](https://github.com/skunkie/warper/actions/runs/42895301870),
+including all native build/test targets and five inspected Linux manifests.
+Four isolated probes exit zero without timeout and preserve host state;
+installed idle-service acceptance has no errors. Evidence belongs under
+`target/evidence/phase-2/dns-decoded-admission/`.
 Discovery/task/channel/native metadata and daemon/resolver integration remain
 required before Phase 2 closure.
+
+Discovery now admits fixed metadata before upstream work and grows its shared
+reservation before allocating traversal, alias, endpoint or view storage.
+Read-only result containers retain charges when fields move or owned iterators
+are exhausted. Controlled tests cover refusal before I/O, mid-traversal quota
+exhaustion, cancellation/future drop, both moved address arrays, shared service
+results and temporary packet views. These paths preserve work/attempt counts
+and release partial owners on failure. Native acceptance for this increment is
+pending. Preparation contribution capacity is charged before allocation and
+held through routing reservation. Task/channel/native metadata and production
+daemon/resolver integration remain required; Phase 2 is not closed.
 
 ## Phase 0 Exit Evidence
 

@@ -4,7 +4,8 @@
 
 //! Whole-response service endpoint discovery through one selected backend.
 
-use std::{fmt, net::IpAddr, sync::Arc};
+use crate::dns::memory::{Reservation, Stored};
+use std::{fmt, mem::size_of, net::IpAddr, sync::Arc};
 
 use tokio::time::Instant;
 use warper_core::{
@@ -102,8 +103,8 @@ pub struct ServiceResolution {
     pub backend: BackendId,
     pub response: Arc<Packet>,
     pub response_received_at: Instant,
-    pub paths: Vec<EndpointPath>,
-    pub endpoints: Vec<ServiceEndpoint>,
+    pub paths: Stored<EndpointPath>,
+    pub endpoints: Stored<ServiceEndpoint>,
 }
 
 #[derive(Clone)]
@@ -130,6 +131,7 @@ struct Discovery<'a> {
     pending: Vec<Step>,
     responses: Vec<Observed>,
     unique_addresses: usize,
+    storage: Option<Reservation>,
 }
 
 impl TcpTransport {
@@ -168,6 +170,14 @@ impl TcpTransport {
         }
         let mut discovery = Discovery::new(policy, self.backend(), limits)?;
         discovery.check_name(query.question().name)?;
+        discovery.storage = query
+            .reserve_metadata(
+                size_of::<Discovery<'_>>()
+                    + size_of::<ServiceResolution>()
+                    + size_of::<Reservation>()
+                    + 2 * size_of::<usize>(),
+            )
+            .map_err(|_| ServiceDiscoveryError::ResourceLimit)?;
         let permit = self
             .admission
             .reserve()
@@ -240,12 +250,13 @@ impl TcpTransport {
                 }
             }
         }
+        let storage = discovery.storage.map(Arc::new);
         Ok(ServiceResolution {
             backend: self.backend(),
             response: first,
             response_received_at,
-            paths: discovery.paths,
-            endpoints: discovery.endpoints,
+            paths: Stored::new(discovery.paths, storage.clone()),
+            endpoints: Stored::new(discovery.endpoints, storage),
         })
     }
 }
@@ -269,6 +280,7 @@ impl<'a> Discovery<'a> {
             pending: Vec::new(),
             responses: Vec::new(),
             unique_addresses: 0,
+            storage: None,
         })
     }
 
@@ -619,7 +631,7 @@ impl<'a> Discovery<'a> {
                 }
             }
         }
-        self.charge()?;
+        self.charge(size_of::<EndpointPath>())?;
         self.paths
             .try_reserve_exact(1)
             .map_err(|_| ServiceDiscoveryError::ResourceLimit)?;
@@ -661,7 +673,7 @@ impl<'a> Discovery<'a> {
             prior.expires_at = prior.expires_at.min(expires_at);
             return Ok(());
         }
-        self.charge()?;
+        self.charge(size_of::<ServiceEndpoint>())?;
         self.endpoints
             .try_reserve_exact(1)
             .map_err(|_| ServiceDiscoveryError::ResourceLimit)?;
@@ -675,7 +687,7 @@ impl<'a> Discovery<'a> {
     }
 
     fn queue(&mut self, step: Step) -> Result<(), ServiceDiscoveryError> {
-        self.charge()?;
+        self.charge(size_of::<Step>())?;
         self.pending
             .try_reserve_exact(1)
             .map_err(|_| ServiceDiscoveryError::ResourceLimit)?;
@@ -684,7 +696,7 @@ impl<'a> Discovery<'a> {
     }
 
     fn save(&mut self, response: Observed) -> Result<(), ServiceDiscoveryError> {
-        self.charge()?;
+        self.charge(size_of::<Observed>())?;
         self.responses
             .try_reserve_exact(1)
             .map_err(|_| ServiceDiscoveryError::ResourceLimit)?;
@@ -711,11 +723,19 @@ impl<'a> Discovery<'a> {
         Ok(())
     }
 
-    fn charge(&mut self) -> Result<(), ServiceDiscoveryError> {
-        self.remaining = self
+    fn charge(&mut self, bytes: usize) -> Result<(), ServiceDiscoveryError> {
+        let remaining = self
             .remaining
             .checked_sub(1)
             .ok_or(ServiceDiscoveryError::ResourceLimit)?;
+        if let Some(storage) = &mut self.storage {
+            // Exact one-element growth can temporarily retain both old and
+            // new allocations. Popped work keeps its reserved capacity.
+            storage
+                .grow(2 * bytes)
+                .map_err(|_| ServiceDiscoveryError::ResourceLimit)?;
+        }
+        self.remaining = remaining;
         Ok(())
     }
 }

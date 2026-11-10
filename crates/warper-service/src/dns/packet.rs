@@ -417,6 +417,16 @@ impl Packet {
         Ok(bytes)
     }
 
+    pub(super) fn reserve_metadata(
+        &self,
+        bytes: usize,
+    ) -> Result<Option<super::memory::Reservation>, Error> {
+        self.storage
+            .as_ref()
+            .map(|storage| storage.budget().reserve(bytes))
+            .transpose()
+            .map_err(|_| Error::ResourceLimit)
+    }
     fn decode(
         bytes: &[u8],
         question: Question,

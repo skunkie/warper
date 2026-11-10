@@ -71,6 +71,7 @@ impl TcpTransport {
             return Err(DiscoveryError::Exchange(ExchangeError::InvalidRequest));
         }
         let mut lookup = AddressLookup::new(query.question(), limits.alias_hops, limits.addresses)
+            .and_then(|lookup| lookup.with_packet_storage(query))
             .map_err(DiscoveryError::Answer)?;
         let permit = self.admission.reserve().map_err(DiscoveryError::Exchange)?;
         let first = exchange_packet(

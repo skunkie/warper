@@ -4,7 +4,7 @@
 
 //! Selected discovery and whole-response reservation, without publication.
 
-use std::{fmt, net::IpAddr, sync::Arc};
+use std::{fmt, mem::size_of, net::IpAddr, sync::Arc};
 use tokio::time::Instant;
 use warper_config::schema::RoutingMode;
 use warper_core::{
@@ -157,6 +157,11 @@ impl<'a> Resolver<'a> {
                 .map(Prepared::Local)
                 .map_err(Error::Packet);
         }
+        let mut storage = query
+            .reserve_metadata(
+                size_of::<Vec<Contribution>>() + size_of::<super::memory::Reservation>(),
+            )
+            .map_err(|_| Error::ResourceLimit)?;
         let mut contributions = Vec::new();
         let (packet, received_at) = if matches!(question.record_type, 1 | 28) {
             let resolution = self
@@ -172,6 +177,7 @@ impl<'a> Resolver<'a> {
                 )
                 .await
                 .map_err(Error::Address)?;
+            reserve_contributions(&mut storage, resolution.answer.addresses.len())?;
             contributions
                 .try_reserve_exact(resolution.answer.addresses.len())
                 .map_err(|_| Error::ResourceLimit)?;
@@ -191,6 +197,10 @@ impl<'a> Resolver<'a> {
                 )
                 .await
                 .map_err(Error::Service)?;
+            reserve_contributions(
+                &mut storage,
+                resolution.endpoints.len().min(self.limits.addresses),
+            )?;
             contributions
                 .try_reserve_exact(resolution.endpoints.len().min(self.limits.addresses))
                 .map_err(|_| Error::ResourceLimit)?;
@@ -267,6 +277,19 @@ impl<'a> Resolver<'a> {
         });
         Ok(())
     }
+}
+
+fn reserve_contributions(
+    storage: &mut Option<super::memory::Reservation>,
+    count: usize,
+) -> Result<(), Error> {
+    let bytes = count
+        .checked_mul(2 * size_of::<Contribution>())
+        .ok_or(Error::ResourceLimit)?;
+    if let Some(storage) = storage {
+        storage.grow(bytes).map_err(|_| Error::ResourceLimit)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -608,3 +608,46 @@ async fn shared_ip_conflict_preserves_the_original_backend_reservation() {
     fixture.routes.advance().unwrap();
     fixture.finish(1).await;
 }
+
+#[tokio::test]
+async fn contribution_storage_shortage_releases_discovery_without_reserving_routes() {
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let sample = Packet::request_with_budget(&wire(1), packet_limits(), &buffers).unwrap();
+    let query_storage = buffers.used();
+    let reply = response(1, &[(1, 10, vec![192, 0, 2, 7])]);
+    let decoded = Packet::response(&reply, &sample, packet_limits()).unwrap();
+    let response_storage = buffers.used() - query_storage;
+    drop(decoded);
+    let lookup = size_of::<crate::dns::AddressLookup>()
+        + size_of::<crate::dns::AddressAnswer>()
+        + size_of::<super::super::memory::Reservation>()
+        + 2 * size_of::<usize>();
+    let header = size_of::<Vec<Contribution>>() + size_of::<super::super::memory::Reservation>();
+    let allowed = header
+        + response_storage
+        + lookup
+        + 2 * size_of::<crate::dns::Address>()
+        + 2 * size_of::<Contribution>()
+        - 1;
+    let competing = buffers
+        .reserve(buffers.limit() - query_storage - allowed)
+        .unwrap();
+    let retained = buffers.used();
+    let fixture = Fixture::new(vec![(1, reply)], &[]);
+    let attempts = QueryBudget::new(1).unwrap();
+    assert!(matches!(
+        fixture
+            .resolver(RoutingMode::Dynamic)
+            .prepare(&sample, fixture.operation.clone(), &attempts)
+            .await,
+        Err(Error::ResourceLimit)
+    ));
+    assert_eq!(attempts.used(), 1);
+    assert_eq!(fixture.routes.stats().unwrap().responses, 0);
+    assert_eq!(fixture.routes.stats().unwrap().routes, 0);
+    assert_eq!(buffers.used(), retained);
+    fixture.finish(1).await;
+    drop(competing);
+    drop(sample);
+    assert_eq!(buffers.used(), 0);
+}

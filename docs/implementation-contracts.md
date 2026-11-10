@@ -3518,7 +3518,35 @@ protocol adapters without a shared byte budget; composed service work uses the
 budgeted entry points. Independently used adapters must also admit their wire
 buffers. Full-size EDNS, partial-TC retry, decode failure, synthesis pressure and
 shared discovery-response lifetime have controlled evidence. Daemon DNS still
-requires discovery/task/channel/native metadata admission and resolver wiring.
+requires remaining task/channel/native metadata admission and resolver wiring.
+
+Discovery paths, saved-response observations, pending steps and endpoints now
+share the packet budget. Reserve fixed owner layouts before upstream I/O, then
+grow the reservation before each vector allocation. Growth rejects overflow or
+exhaustion without altering an existing charge. Work-item accounting remains
+independent; popped steps keep their capacity charged. One-element vector growth
+reserves both old and replacement storage, without preallocating the configured
+maximum work count. Address lookup similarly admits alias/address capacity
+before adding values and carries its owner through followup responses.
+
+Owned discovery arrays use `memory::Stored<T>` instead of an extractable Vec.
+It offers read-only slice access, borrowed iteration and an owned iterator that
+retains the reservation through drop, including after iterator exhaustion. The
+original vector cannot be extracted or expanded. Shared reservations follow
+both result arrays when fields move independently; releasing the packet or
+another array cannot release bytes still owned by the remaining array. New
+allocations made by callers from copied values require separate admission.
+
+Alias/service-binding views reserve their exact bounded record capacity before
+allocation; related-address views grow under the same budget. Borrowed opaque
+parameters stay in the charged packet. Error, cancellation and dropped-future
+paths release partial traversal, view and packet owners together. Positive
+routing/output permission still requires the separate complete-response gate.
+Preparation contribution arrays also reserve their header and capacity before
+allocation, retaining the charge through routing reservation and array release.
+Task/channel allocations and native metadata still need aggregate admission and
+daemon composition; these owners alone do not
+enable DNS configuration or install resolver policy.
 
 On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
 `Connection<AcceptedStream>` from a caller-owned option, the validated query,
