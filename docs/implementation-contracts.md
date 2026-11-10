@@ -3438,6 +3438,22 @@ pool does not enable daemon DNS or install resolver policy by itself.
 Task join success means tasks joined, independently of native cleanup; typed
 request/response diagnostics and shutdown failures remain separately available.
 
+`Workers::serve` borrows both virtual DNS input consumers and the retained
+worker owner. It reaps ready completions before capacity admission and selects
+fairly between UDP and TCP input. It drops excess input before decoding or
+upstream work, counts rejected datagrams/connections, and preserves established
+work. Expired queued UDP requests count as rejected and gain no new deadline.
+Malformed/request failures without pending output remain per-request outcomes;
+worker panic, consumer loss or failed/uncertain output stops admission and
+returns a typed failure. Native output owners remain retained for parent cleanup.
+
+The run request is only an observation deadline/cancellation scope. Interrupting
+it does not stop admitted work, close native commit admission or renew any
+original operation. The parent may resume serving or explicitly stop/join;
+it separately drives native commit/expiry work and supervises runtime/packet
+producers. The receive loop spawns no additional task or queue and does not
+supply resolver policy, daemon readiness or global byte admission.
+
 On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
 `Connection<AcceptedStream>` from a caller-owned option, the validated query,
 a prepared positive reply and its uncommitted reservation, and the supervised

@@ -7,7 +7,7 @@
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tokio::{
-    sync::{Mutex, watch},
+    sync::{Mutex, mpsc, watch},
     task::JoinSet,
     time::{Instant, timeout_at},
 };
@@ -46,6 +46,8 @@ pub enum Error {
     InvalidState,
     WorkerStopped,
     ShutdownDeadline,
+    ConsumerClosed,
+    Observer(warper_core::transport::Error),
     Packet(super::Error),
     Dispatch(dispatch::Error),
     Output(output::Error),
@@ -85,6 +87,18 @@ pub struct Completion {
     pub outcome: Result<Option<RequestFailure>, Error>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RejectedInputs {
+    pub udp: u64,
+    pub tcp: u64,
+}
+
+enum Input {
+    Udp(Option<udp_dns::Datagram>),
+    Tcp(Option<AcceptedDnsFlow>),
+    Completed(Option<Result<Completion, Error>>),
+}
+
 #[must_use = "retain outside tasks through task join and native output cleanup"]
 pub struct Workers {
     dispatcher: Arc<Dispatcher>,
@@ -98,6 +112,7 @@ pub struct Workers {
     first_request_failure: Option<RequestFailure>,
     first_request_error: Option<Error>,
     shutdown_error: Option<Error>,
+    rejected_inputs: RejectedInputs,
 }
 impl Workers {
     pub fn new(
@@ -133,7 +148,24 @@ impl Workers {
             first_request_failure: None,
             first_request_error: None,
             shutdown_error: None,
+            rejected_inputs: RejectedInputs::default(),
         })
+    }
+
+    /// Receive both local DNS protocols and join completed workers. The parent
+    /// retains these owners and supervises the native commit driver separately.
+    /// Interrupting this observation leaves accepted work available for resumed
+    /// observation or explicit stop/join; it does not renew request deadlines.
+    pub async fn serve(
+        &mut self,
+        udp: &mut udp_dns::Endpoint,
+        tcp: &mut mpsc::Receiver<AcceptedDnsFlow>,
+        observer: Request,
+    ) -> Result<(), Error> {
+        observer
+            .run(async { Ok(self.receive(udp, tcp).await) })
+            .await
+            .map_err(Error::Observer)?
     }
 
     pub fn admit_udp(&mut self, datagram: udp_dns::Datagram) -> Result<(), Error> {
@@ -260,6 +292,10 @@ impl Workers {
         self.stopping
     }
 
+    pub fn rejected_inputs(&self) -> RejectedInputs {
+        self.rejected_inputs
+    }
+
     pub fn first_request_failure(&self) -> Option<RequestFailure> {
         self.first_request_failure
     }
@@ -321,6 +357,56 @@ impl Workers {
             slot.active = false;
         }
         Ok(())
+    }
+    async fn receive(
+        &mut self,
+        udp: &mut udp_dns::Endpoint,
+        tcp: &mut mpsc::Receiver<AcceptedDnsFlow>,
+    ) -> Result<(), Error> {
+        loop {
+            if self.stopping {
+                return Err(Error::Stopping);
+            }
+            let active = !self.tasks.is_empty();
+            // Reap ready completions before rejecting another request for
+            // capacity. The two input protocols use fair selection.
+            let input = tokio::select! {
+                biased;
+                completed = self.join_next(), if active => Input::Completed(completed),
+                input = async {
+                    tokio::select! {
+                        datagram = udp.requests.recv() => Input::Udp(datagram),
+                        flow = tcp.recv() => Input::Tcp(flow),
+                    }
+                } => input,
+            };
+            let admitted = match input {
+                Input::Udp(Some(datagram)) => match self.admit_udp(datagram) {
+                    Err(Error::Full | Error::Expired) => {
+                        self.rejected_inputs.udp = self.rejected_inputs.udp.saturating_add(1);
+                        Ok(())
+                    }
+                    result => result,
+                },
+                Input::Tcp(Some(flow)) => match self.admit_tcp(flow) {
+                    Err(Error::Full) => {
+                        self.rejected_inputs.tcp = self.rejected_inputs.tcp.saturating_add(1);
+                        Ok(())
+                    }
+                    result => result,
+                },
+                Input::Completed(Some(Ok(completion))) if self.stopping => {
+                    Err(completion.outcome.err().unwrap_or(Error::Stopping))
+                }
+                Input::Completed(Some(result)) => result.map(|_| ()),
+                Input::Completed(None) => Err(Error::WorkerStopped),
+                Input::Udp(None) | Input::Tcp(None) => Err(Error::ConsumerClosed),
+            };
+            if let Err(error) = admitted {
+                self.stop();
+                return Err(error);
+            }
+        }
     }
 }
 

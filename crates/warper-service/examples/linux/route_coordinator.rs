@@ -389,8 +389,8 @@ async fn run(
         .await??;
         pending_udp.as_mut().ok_or("UDP completion ownership lost")?.wait(request(&service_owner)).await?;
         drop(pending_udp.take());
-        routed_udp_workload(controller.clone(),manager,&mut dns,&service_owner,&mut dns_workers,peer).await?;
-        let renewed_route = dns_reply(controller.clone(), manager, &mut tcp_dns, peer, &mut dns_workers).await?;
+        routed_udp_workload(controller.clone(),manager,&mut dns,&mut tcp_dns,&service_owner,&mut dns_workers,peer).await?;
+        let renewed_route = dns_reply(controller.clone(), manager, &mut tcp_dns, &mut dns, peer, &mut dns_workers).await?;
         if renewed_route == route { return Err("automatic retirement reused the stale route generation".into()); }
         let route = renewed_route;
         udp_dns_reply(&mut dns).await?;
@@ -908,6 +908,7 @@ async fn routed_udp_workload(
     controller: Arc<Controller>,
     manager: &mut Manager,
     endpoint: &mut udp_dns::Endpoint,
+    tcp: &mut tokio::sync::mpsc::Receiver<warper_stack::host::AcceptedDnsFlow>,
     owner: &watch::Sender<bool>,
     pending: &mut Option<DnsWorkers>,
     peer: &selected_dns::Peer,
@@ -958,8 +959,9 @@ async fn routed_udp_workload(
             packet: PacketLimits::new(512, 8)?,
         },
     )?);
+    let local_addr = endpoint.local_addr();
     let workload = async {
-        let result = async {
+        let clients = async {
             let mut wire = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
             wire.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
             wire.extend_from_slice(&[0, 1, 0, 1]);
@@ -967,22 +969,11 @@ async fn routed_udp_workload(
             for _ in 0..20 {
                 let before = Instant::now();
                 let client = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
-                client.connect(endpoint.local_addr()).await?;
+                client.connect(local_addr).await?;
                 if client.send(&wire).await? != wire.len() {
                     return Err("worker query datagram was incomplete".into());
                 }
-                let datagram = timeout(Duration::from_secs(2), endpoint.requests.recv())
-                    .await?
-                    .ok_or("UDP request consumer stopped")?;
-                transferred += datagram.payload().len();
-                let workers = pending.as_mut().ok_or("UDP worker ownership missing")?;
-                workers.admit_udp(datagram)?;
-                let completion = timeout(Duration::from_secs(3), workers.join_next())
-                    .await?
-                    .ok_or("UDP worker result disappeared")??;
-                if completion.outcome?.is_some() {
-                    return Err("selected UDP worker synthesized a failure reply".into());
-                }
+                transferred += wire.len();
                 let mut reply = [0; 512];
                 let length = timeout(Duration::from_secs(2), client.recv(&mut reply)).await??;
                 if Packet::response(&reply[..length], &query, PacketLimits::new(512, 8)?)?
@@ -995,11 +986,14 @@ async fn routed_udp_workload(
                     return Err("supervised UDP worker changed its discovered endpoint".into());
                 }
                 transferred += length;
-                if workers.active() != 0
-                    || endpoint.retained_requests() != 0
-                    || controller.stats()?.responses != 0
-                    || controller.reserved_bytes()? != reserved
-                {
+                timeout(Duration::from_secs(2), async {
+                    while controller.stats()?.responses != 0 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    Ok::<_, Failure>(())
+                })
+                .await??;
+                if controller.reserved_bytes()? != reserved {
                     return Err("supervised UDP workers leaked request or output ownership".into());
                 }
                 latencies.push(before.elapsed().as_nanos());
@@ -1012,13 +1006,32 @@ async fn routed_udp_workload(
             })
             .await??;
             Ok::<_, Failure>(())
-        }
+        };
+        let result = receive_workload(
+            pending.as_mut().ok_or("UDP worker owner missing")?,
+            endpoint,
+            tcp,
+            clients,
+        )
         .await;
         let joined = pending
             .as_mut()
             .ok_or("UDP worker ownership lost")?
             .join(Instant::now() + Duration::from_secs(2))
             .await;
+        let result = result.and_then(|()| {
+            let workers = pending.as_ref().ok_or("UDP worker owner lost")?;
+            if workers.active() != 0
+                || endpoint.retained_requests() != 0
+                || workers.first_request_error().is_some()
+                || workers.first_request_failure().is_some()
+            {
+                return Err(
+                    "UDP receive loop retained work or lost its successful completion".into(),
+                );
+            }
+            Ok(())
+        });
         preserve(
             result,
             joined
@@ -1059,6 +1072,39 @@ async fn routed_udp_workload(
         latencies[9], latencies[18], latencies[19]
     );
     Ok(())
+}
+
+async fn receive_workload<T>(
+    workers: &mut DnsWorkers,
+    udp: &mut udp_dns::Endpoint,
+    tcp: &mut tokio::sync::mpsc::Receiver<warper_stack::host::AcceptedDnsFlow>,
+    clients: impl Future<Output = Result<T, Failure>>,
+) -> Result<T, Failure> {
+    let (stop, cancellation) = watch::channel(false);
+    let receiving = workers.serve(
+        udp,
+        tcp,
+        Request {
+            deadline: Instant::now() + Duration::from_secs(10),
+            cancellation,
+        },
+    );
+    let (result, received) = tokio::join!(
+        async {
+            let result = clients.await;
+            stop.send_replace(true);
+            result
+        },
+        receiving
+    );
+    let cleanup = match received {
+        Err(warper_service::dns::server::Error::Observer(
+            warper_core::transport::Error::Cancelled,
+        )) => Vec::new(),
+        Err(error) => vec![Box::new(error) as Failure],
+        Ok(()) => vec!["DNS receive loop stopped unexpectedly".into()],
+    };
+    preserve(result, cleanup)
 }
 
 async fn udp_dns_reply(endpoint: &mut udp_dns::Endpoint) -> Result<(), Failure> {
@@ -1200,6 +1246,7 @@ async fn dns_reply(
     controller: Arc<Controller>,
     manager: &mut Manager,
     accepted: &mut tokio::sync::mpsc::Receiver<warper_stack::host::AcceptedDnsFlow>,
+    udp: &mut udp_dns::Endpoint,
     peer: &selected_dns::Peer,
     pending: &mut Option<DnsWorkers>,
 ) -> Result<lease::Route, Failure> {
@@ -1209,22 +1256,8 @@ async fn dns_reply(
     let mut latencies = Vec::with_capacity(24);
     let mut transferred = 0usize;
     let limits = PacketLimits::new(512, 8)?;
-    let endpoint = "203.0.113.53:53".parse()?;
-    let (mut client, flow) = timeout(Duration::from_secs(2), async {
-        let client = TcpStream::connect(endpoint);
-        let server = async {
-            accepted
-                .recv()
-                .await
-                .ok_or("virtual TCP DNS consumer stopped")
-        };
-        let (client, server) = tokio::join!(client, server);
-        Ok::<_, Failure>((client?, server?))
-    })
-    .await??;
-    if flow.metadata.destination != endpoint || flow.metadata.source != client.local_addr()? {
-        return Err("virtual TCP DNS lost original tuple metadata".into());
-    }
+    let endpoint: std::net::SocketAddr = "203.0.113.53:53".parse()?;
+    let mut client = timeout(Duration::from_secs(2), TcpStream::connect(endpoint)).await??;
     client.set_nodelay(true)?;
     let (owner, _) = watch::channel(false);
     let (mailbox, mut driver) = Driver::new(manager, 2)?;
@@ -1258,12 +1291,8 @@ async fn dns_reply(
             packet: limits,
         },
     )?);
-    pending
-        .as_mut()
-        .ok_or("TCP worker owner missing")?
-        .admit_tcp(flow)?;
     let workload = async {
-        let result = timeout(Duration::from_secs(5), async {
+        let clients = timeout(Duration::from_secs(5), async {
             for index in 0..24 {
                 let mut pressure = Vec::new();
                 if index == 22 {
@@ -1326,33 +1355,44 @@ async fn dns_reply(
             if client.read(&mut [0]).await? != 0 {
                 return Err("virtual TCP DNS lost server FIN".into());
             }
-            let workers = pending.as_mut().ok_or("TCP worker owner lost")?;
-            let completion = workers
-                .join_next()
-                .await
-                .ok_or("TCP worker completion disappeared")??;
+            Ok::<_, Failure>(())
+        });
+        let result = receive_workload(
+            pending.as_mut().ok_or("TCP worker owner missing")?,
+            udp,
+            accepted,
+            async {
+                clients
+                    .await
+                    .map_err(|error| Box::new(error) as Failure)
+                    .and_then(|result| result)
+            },
+        )
+        .await;
+        let joined = pending
+            .as_mut()
+            .ok_or("TCP worker ownership disappeared")?
+            .join(Instant::now() + Duration::from_secs(2))
+            .await;
+        let result = result.and_then(|()| {
+            let workers = pending.as_ref().ok_or("TCP worker owner lost")?;
             if !matches!(
-                completion.outcome?,
+                workers.first_request_failure(),
                 Some(warper_service::dns::server::RequestFailure::Dispatch(
                     warper_service::dns::dispatch::Error::Selected(
                         warper_service::dns::prepare::Error::UnsupportedQuestion
                     )
                 ))
             ) || workers.active() != 0
+                || workers.first_request_error().is_some()
                 || controller.stats()?.responses != 0
             {
-                return Err("TCP worker retained output or synthesized a request failure".into());
+                return Err(
+                    "TCP receive loop retained output or lost its request diagnostic".into(),
+                );
             }
-            Ok::<_, Failure>(())
-        })
-        .await
-        .map_err(|error| Box::new(error) as Failure)
-        .and_then(|result| result);
-        let joined = pending
-            .as_mut()
-            .ok_or("TCP worker ownership disappeared")?
-            .join(Instant::now() + Duration::from_secs(2))
-            .await;
+            Ok(())
+        });
         drop(pressure_mailbox);
         preserve(
             result,

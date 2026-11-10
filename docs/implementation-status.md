@@ -529,6 +529,24 @@ smaller records and conservative recovery remain supported. Boundary and
 foreign-inventory tests cover these limits; large native route publication and
 recovery acceptance remain unverified. Daemon composition must still enforce
 the configured shared static/dynamic route count and reserve native metadata.
+The capacity increment passes at `db73467` in
+[CI 42869758961](https://github.com/skunkie/warper/actions/runs/42869758961),
+including all native build/test targets and five inspected Linux manifests.
+Four isolated probes exit zero without timeout and preserve host state;
+installed idle-service acceptance has no errors. This existing acceptance does
+not exercise a full 16,384-route kernel batch. Evidence belongs under
+`target/evidence/phase-2/native-capacity/`.
+
+The service DNS receive loop now polls UDP/TCP consumers against the same
+worker pool and reaps completed tasks before capacity rejection. Observer
+interruption preserves admitted work and original deadlines. Pressure is
+counted, malformed requests remain local failures, and consumer loss, panic or
+uncertain output stops admission while retaining native-output owners for
+cleanup. Controlled runtime tests cover pressure/resumption, closed consumers,
+malformed input and uncertain delivery. Both native workload paths now use the
+receive loop instead of manually receiving/admitting/joining each request;
+privileged evidence for this integration remains pending. Daemon configuration,
+resolver composition and global transient memory admission remain open.
 
 ## Phase 0 Exit Evidence
 
