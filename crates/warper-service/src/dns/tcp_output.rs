@@ -82,29 +82,35 @@ impl TcpOutput {
     /// and drive the mailbox owner alongside this output.
     pub fn begin_queued(
         controller: Arc<Controller>,
-        connection: Connection<AcceptedStream>,
+        connection: &mut Option<Connection<AcceptedStream>>,
         query: &Packet,
         mut reply: Reply,
         mailbox: &Mailbox,
         operation: Request,
     ) -> Result<Self, Error> {
-        validate(&controller, &connection, query, &mut reply, &operation)?;
-        let control = connection.stream().dns_output().map_err(Error::Output)?;
-        control.begin(operation.clone()).map_err(Error::Output)?;
+        let borrowed = connection.as_ref().ok_or(Error::InvalidState)?;
+        validate(&controller, borrowed, query, &mut reply, &operation)?;
+        let control = borrowed.stream().dns_output().map_err(Error::Output)?;
+        control.check_begin(&operation).map_err(Error::Output)?;
         let Reply {
             packet,
             received_at,
             reservation,
             grace,
         } = reply;
-        let commit = mailbox
-            .submit(reservation, operation.clone())
-            .map_err(Error::Commit)?;
+        let owned = connection.take().ok_or(Error::InvalidState)?;
+        let commit = match mailbox.submit(reservation, operation.clone()) {
+            Ok(commit) => commit,
+            Err(error) => {
+                *connection = Some(owned);
+                return Err(Error::Commit(error));
+            }
+        };
         // The mailbox owns the reservation until its receipt joins. Keep only
         // the immutable response data here; no positive bytes have been written.
         Ok(Self {
             controller,
-            connection: Some(connection),
+            connection: Some(owned),
             control: Some(control),
             commit: Some(commit),
             reply: Some(PendingReply {
@@ -156,6 +162,11 @@ impl TcpOutput {
                                 .begin_output(reservation)
                                 .map_err(Error::Metadata)?,
                         );
+                        self.control
+                            .as_ref()
+                            .ok_or(Error::InvalidState)?
+                            .begin(self.operation.clone().ok_or(Error::InvalidState)?)
+                            .map_err(Error::Output)?;
                         self.connection
                             .as_mut()
                             .ok_or(Error::InvalidState)?

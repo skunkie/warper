@@ -499,8 +499,19 @@ ordinary transport lifetime, and fully joined output permits FIN processing
 after stream drop. Evidence, controlled workload metrics and regressions belong
 under `target/evidence/phase-2/udp-workers/`. This is service-component evidence,
 not production daemon DNS or native macOS networking acceptance.
-Global transient admission, TCP native-admission rejection recovery,
+Global transient admission,
 daemon/resolver composition and the remaining Phase 2 gates remain open.
+
+TCP pre-admission rejection now preserves the idle connection for SERVFAIL
+under its original request deadline. Readiness validation reserves no output;
+the connection and control transfer only after native command admission, with
+positive output beginning after the native commit. Accepted commands and
+partial frames remain nonrecoverable through this path. The controlled
+full-mailbox regression verifies connection preservation and no deadline
+renewal, and fails with the former mutating readiness behavior. The native
+workload now holds both publication slots, checks SERVFAIL, releases the slots
+and sends a subsequent query on the same TCP connection. Privileged evidence
+for this admission recovery remains pending.
 
 ## Phase 0 Exit Evidence
 

@@ -184,20 +184,14 @@ impl OutputControl {
         Self(progress, lifetime)
     }
     pub fn begin(&self, request: Request) -> Result<(), Error> {
-        check(&request)?;
-        if request.deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(30) {
-            return Err(Error::InvalidRequest);
-        }
-        let mut state = self.0.state.lock().map_err(|_| Error::Poisoned)?;
-        if let Some(error) = state.failure {
-            return Err(error);
-        }
-        if state.request.is_some() || state.outstanding || state.accepted != state.acknowledged {
-            return Err(Error::Busy);
-        }
+        let mut state = self.ready(&request)?;
         state.start = state.accepted;
         state.request = Some(request);
         Ok(())
+    }
+    /// Validate readiness without reserving an operation or changing its clock.
+    pub fn check_begin(&self, request: &Request) -> Result<(), Error> {
+        self.ready(request).map(drop)
     }
     /// Snapshot only after the entire framed reply has entered the stream.
     pub fn receipt(&self) -> Result<Receipt, Error> {
@@ -217,6 +211,21 @@ impl OutputControl {
             joined: false,
             lifetime: Some(self.1.clone()),
         })
+    }
+
+    fn ready(&self, request: &Request) -> Result<std::sync::MutexGuard<'_, State>, Error> {
+        check(request)?;
+        if request.deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(30) {
+            return Err(Error::InvalidRequest);
+        }
+        let state = self.0.state.lock().map_err(|_| Error::Poisoned)?;
+        if let Some(error) = state.failure {
+            return Err(error);
+        }
+        if state.request.is_some() || state.outstanding || state.accepted != state.acknowledged {
+            return Err(Error::Busy);
+        }
+        Ok(state)
     }
 }
 

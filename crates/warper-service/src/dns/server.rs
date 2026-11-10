@@ -77,6 +77,7 @@ struct Slot {
 pub enum RequestFailure {
     Dispatch(dispatch::Error),
     Preparation(output::Error),
+    TcpPreparation(tcp_output::Error),
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Completion {
@@ -492,22 +493,39 @@ async fn work_tcp(
                 ..
             }) => {
                 let mut slot = pending.lock().await;
-                *slot = Some(Pending::Tcp(Box::new(
-                    TcpOutput::begin_queued(
-                        controller.clone(),
-                        connection,
-                        &query,
-                        tcp_output::Reply {
-                            packet: *packet,
-                            received_at,
-                            reservation,
-                            grace: limits.grace,
-                        },
-                        &mailbox,
-                        operation,
-                    )
-                    .map_err(Error::TcpOutput)?,
-                )));
+                let mut available = Some(connection);
+                let queued = TcpOutput::begin_queued(
+                    controller.clone(),
+                    &mut available,
+                    &query,
+                    tcp_output::Reply {
+                        packet: *packet,
+                        received_at,
+                        reservation,
+                        grace: limits.grace,
+                    },
+                    &mailbox,
+                    operation.clone(),
+                );
+                let output = match queued {
+                    Ok(output) => output,
+                    Err(error) => {
+                        first_failure.get_or_insert(RequestFailure::TcpPreparation(error));
+                        connection = available.ok_or(Error::InvalidState)?;
+                        drop(slot);
+                        let packet = Packet::response(
+                            &query
+                                .local_reply(LocalReply::ServFail)
+                                .map_err(Error::Packet)?,
+                            &query,
+                            limits.packet,
+                        )
+                        .map_err(Error::Packet)?;
+                        write_plain(&mut connection, &packet, operation, observer()).await?;
+                        continue;
+                    }
+                };
+                *slot = Some(Pending::Tcp(Box::new(output)));
                 let Some(Pending::Tcp(output)) = slot.as_mut() else {
                     return Err(Error::InvalidState);
                 };

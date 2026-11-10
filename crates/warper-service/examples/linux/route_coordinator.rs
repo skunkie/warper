@@ -547,9 +547,9 @@ async fn run(
     let mut cleanup = Vec::new();
     if let Some(peer) = selected_peer.take() {
         match peer.close().await {
-            Ok((41, 1, bytes)) => {
+            Ok((42, 1, bytes)) => {
                 println!(
-                    "selected_socks dns_queries=41 tcp_flows=1 stream_bytes={bytes}; one serial controlled loopback SOCKS/DNS/echo peer, protected production connector, includes handshakes and DNS framing"
+                    "selected_socks dns_queries=42 tcp_flows=1 stream_bytes={bytes}; one serial controlled loopback SOCKS/DNS/echo peer, protected production connector, includes handshakes and DNS framing"
                 );
             }
             Ok(_) if outcome.is_err() => {}
@@ -1206,7 +1206,7 @@ async fn dns_reply(
     use warper_service::linux::dns_routes::queue::Driver;
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
-    let mut latencies = Vec::with_capacity(22);
+    let mut latencies = Vec::with_capacity(24);
     let mut transferred = 0usize;
     let limits = PacketLimits::new(512, 8)?;
     let endpoint = "203.0.113.53:53".parse()?;
@@ -1244,6 +1244,7 @@ async fn dns_reply(
             work_items: 16,
         },
     )?);
+    let pressure_mailbox = mailbox.clone();
     *pending = Some(DnsWorkers::new(
         dispatcher,
         controller.clone(),
@@ -1263,11 +1264,23 @@ async fn dns_reply(
         .admit_tcp(flow)?;
     let workload = async {
         let result = timeout(Duration::from_secs(5), async {
-            for index in 0..22 {
+            for index in 0..24 {
+                let mut pressure = Vec::new();
+                if index == 22 {
+                    for _ in 0..2 {
+                        pressure.push(
+                            pressure_mailbox
+                                .submit(reserve(&controller, &[ipv4(70)])?, request(&owner))?,
+                        );
+                    }
+                    if pressure_mailbox.active() != 2 {
+                        return Err("TCP overload fixture did not retain native admission".into());
+                    }
+                }
                 let before = Instant::now();
                 let mut bytes = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
                 bytes.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
-                bytes.extend_from_slice(&if index == 20 {
+                bytes.extend_from_slice(&if index == 20 || index == 23 {
                     [0, 28, 0, 1]
                 } else if index == 21 {
                     [0, 16, 0, 1]
@@ -1281,7 +1294,7 @@ async fn dns_reply(
                 let mut received = vec![0; usize::from(length)];
                 client.read_exact(&mut received).await?;
                 let reply = Packet::response(&received, &query, limits)?;
-                if reply.response_code() != if index == 21 { 2 } else { 0 } {
+                if reply.response_code() != if index == 21 || index == 22 { 2 } else { 0 } {
                     return Err("supervised TCP worker lost its successful reply".into());
                 }
                 if index >= 20 {
@@ -1295,6 +1308,16 @@ async fn dns_reply(
                     ) != 0
                 {
                     return Err("supervised TCP reply raised its zero TTL".into());
+                }
+                for mut receipt in pressure {
+                    let mut response = receipt.wait(request(&owner)).await?;
+                    controller.cancel(&mut response)?;
+                }
+                if index == 22 {
+                    controller.advance()?;
+                    if pressure_mailbox.active() != 0 {
+                        return Err("TCP overload recovery retained native admission".into());
+                    }
                 }
                 transferred += bytes.len() + received.len();
                 latencies.push(before.elapsed().as_nanos());
@@ -1330,6 +1353,7 @@ async fn dns_reply(
             .ok_or("TCP worker ownership disappeared")?
             .join(Instant::now() + Duration::from_secs(2))
             .await;
+        drop(pressure_mailbox);
         preserve(
             result,
             joined
@@ -1370,14 +1394,14 @@ async fn dns_reply(
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("local TCP DNS RSS unavailable")?;
     println!(
-        "local_tcp_dns requests=22 selected=20 local_nodata=1 local_servfail=1 concurrency=1 dns_payload_bytes={transferred} framing_bytes=88 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, supervised request workers, selected SOCKS discovery, per-response native route commit, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
+        "local_tcp_dns requests=24 selected_positive=20 local_nodata=2 local_servfail=2 concurrency=1 dns_payload_bytes={transferred} framing_bytes=96 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, supervised request workers, selected SOCKS discovery, per-response native route commit, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
         started.elapsed().as_nanos(),
-        latencies[10],
-        latencies[20],
-        latencies[21]
+        latencies[11],
+        latencies[22],
+        latencies[23]
     );
     println!(
-        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, discovers selected SOCKS answers, commits each route before framed zero-TTL output, joins peer acknowledgments before grace and returns local NODATA/SERVFAIL and joins both FINs"
+        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, discovers selected SOCKS answers, commits each route before framed zero-TTL output, joins peer acknowledgments before grace and recovers native admission exhaustion with SERVFAIL, accepts a subsequent query and joins both FINs"
     );
     Ok(route)
 }

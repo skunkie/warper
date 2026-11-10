@@ -111,13 +111,14 @@ impl Fixture {
         }
     }
     fn begin(&mut self, mailbox: &Mailbox) -> Result<TcpOutput, Error> {
+        let operation = self.request();
         TcpOutput::begin_queued(
             self.controller.clone(),
-            self.connection.take().unwrap(),
+            &mut self.connection,
             &self.query,
             self.reply.take().unwrap(),
             mailbox,
-            self.request(),
+            operation,
         )
     }
     fn close(mut self, output: TcpOutput) {
@@ -409,6 +410,106 @@ async fn cancelled_partial_frame_retains_its_guard_and_never_returns_a_reusable_
     fixture.close(output);
 }
 
+#[tokio::test(start_paused = true)]
+async fn full_native_queue_preserves_connection_for_servfail_without_renewing_deadline() {
+    let mut fixture = Fixture::new();
+    let operation = fixture.request();
+    let (mailbox, mut commits) = queue::fixture_mailbox();
+    let initial = fixture.reply.take().unwrap();
+    let mut filler = mailbox
+        .submit(initial.reservation, operation.clone())
+        .unwrap();
+    let reservation = fixture
+        .controller
+        .reserve(
+            RoutingMode::Dynamic,
+            lease::QuestionKey {
+                backend: BackendId(7),
+                name: fixture.query.question().name,
+                record_type: 1,
+                class: 1,
+            },
+            &[lease::Contribution {
+                address: "203.0.113.7".parse().unwrap(),
+                expires_at: Duration::ZERO,
+            }],
+            operation.deadline,
+        )
+        .unwrap();
+    fixture.reply = Some(Reply {
+        packet: initial.packet,
+        received_at: initial.received_at,
+        reservation,
+        grace: initial.grace,
+    });
+    assert!(matches!(
+        fixture.begin(&mailbox),
+        Err(Error::Commit(queue::Error::Full))
+    ));
+    assert_eq!(mailbox.active(), 1);
+    let control = fixture
+        .connection
+        .as_ref()
+        .unwrap()
+        .stream()
+        .dns_output()
+        .unwrap();
+    control.check_begin(&operation).unwrap();
+    assert!(
+        matches!(control.receipt(), Err(DnsOutputError::InvalidRequest)),
+        "readiness checks must not reserve an output operation"
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let wire = fixture
+        .query
+        .local_reply(crate::dns::LocalReply::ServFail)
+        .unwrap();
+    let reply = Packet::response(&wire, &fixture.query, Limits::new(512, 8).unwrap()).unwrap();
+    let observer = fixture.request();
+    control.begin(operation.clone()).unwrap();
+    let connection = fixture.connection.as_mut().unwrap();
+    connection.begin_reply(&reply, operation.clone()).unwrap();
+    assert!(matches!(
+        connection.wait(observer).await.unwrap(),
+        Completion::Written
+    ));
+    let mut receipt = control.receipt().unwrap();
+    tokio::time::advance(Duration::from_secs(9)).await;
+    let (owner, cancellation) = watch::channel(false);
+    assert_eq!(
+        receipt
+            .wait(Request {
+                deadline: Instant::now() + Duration::from_millis(1),
+                cancellation
+            })
+            .await,
+        Err(DnsOutputError::Deadline)
+    );
+    commits
+        .finish_next(|_| Err(crate::linux::dns_routes::Error::RequestExpired))
+        .await;
+    assert!(matches!(
+        filler
+            .wait(Request {
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancellation: owner.subscribe()
+            })
+            .await,
+        Err(queue::Error::Operation(
+            crate::linux::dns_routes::Error::RequestExpired
+        ))
+    ));
+    fixture.host.cancel();
+    drop(fixture.connection.take());
+    drop(control);
+    drop(receipt);
+    fixture.controller.close().unwrap();
+    fixture.controller.advance().unwrap();
+    fixture.controller.finish_drain().unwrap();
+    assert_eq!(fixture.host.retained_flows(), 0);
+    assert_eq!(fixture.controller.stats().unwrap().responses, 0);
+}
+
 #[tokio::test]
 async fn invalid_reply_and_delivery_admission_fail_before_native_submission() {
     for cause in [
@@ -469,6 +570,11 @@ async fn invalid_reply_and_delivery_admission_fail_before_native_submission() {
             "{cause}"
         );
         assert_eq!(mailbox.active(), 0, "{cause}");
+        assert!(
+            fixture.connection.is_some(),
+            "{cause}: pre-admission failure must preserve the connection"
+        );
+        drop(fixture.connection.take());
         fixture.host.cancel();
         while fixture.host.take_packet().is_some() {}
         fixture.controller.close().unwrap();
