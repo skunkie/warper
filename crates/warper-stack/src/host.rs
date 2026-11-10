@@ -338,6 +338,13 @@ struct Slot {
     flow: Option<FlowState>,
 }
 
+struct ParsedTcp {
+    source: SocketAddr,
+    destination: SocketAddr,
+    syn: bool,
+    payload_bytes: usize,
+}
+
 pub struct HostAdapter {
     device: PacketDevice,
     interface: Interface,
@@ -515,8 +522,9 @@ impl HostAdapter {
                 // They must not reach a later listener reusing this slot.
                 let metadata = flow.metadata;
                 self.device.incoming.retain(|packet| {
-                    tcp_metadata(packet).is_ok_and(|(source, destination, _)| {
-                        source != metadata.source || destination != metadata.destination
+                    tcp_metadata(packet).is_ok_and(|packet| {
+                        packet.source != metadata.source
+                            || packet.destination != metadata.destination
                     })
                 });
                 flow.lifetime.terminate(reason);
@@ -560,15 +568,21 @@ impl HostAdapter {
             if packet.request().is_some() {
                 continue;
             }
-            let Ok((source, destination, _)) = tcp_metadata(packet) else {
+            let Ok(metadata) = tcp_metadata(packet) else {
                 continue;
             };
+            // ACK/FIN/RST without payload are transport control, not DNS reply
+            // delivery. Session shutdown still cancels native I/O globally.
+            if metadata.payload_bytes == 0 {
+                continue;
+            }
             if let Some(progress) = self
                 .slots
                 .iter()
                 .filter_map(|slot| slot.flow.as_ref())
                 .find(|flow| {
-                    flow.metadata.source == destination && flow.metadata.destination == source
+                    flow.metadata.source == metadata.destination
+                        && flow.metadata.destination == metadata.source
                 })
                 .and_then(|flow| flow.lifetime.dns_output.as_ref())
             {
@@ -707,7 +721,12 @@ impl HostAdapter {
         if packet.len() > mtu {
             return Err(AdmissionError::PacketTooLarge);
         }
-        let (source, destination, syn) = tcp_metadata(packet)?;
+        let ParsedTcp {
+            source,
+            destination,
+            syn,
+            ..
+        } = tcp_metadata(packet)?;
         let local_dns = self
             .dns
             .as_ref()
@@ -925,7 +944,7 @@ fn bridge(
     None
 }
 
-fn tcp_metadata(bytes: &[u8]) -> Result<(SocketAddr, SocketAddr, bool), AdmissionError> {
+fn tcp_metadata(bytes: &[u8]) -> Result<ParsedTcp, AdmissionError> {
     let malformed = |_| AdmissionError::MalformedPacket;
     let checksums = ChecksumCapabilities::default();
     let (source, destination, protocol, payload): (IpAddress, IpAddress, _, _) =
@@ -971,11 +990,12 @@ fn tcp_metadata(bytes: &[u8]) -> Result<(SocketAddr, SocketAddr, bool), Admissio
         return Err(AdmissionError::MalformedPacket);
     }
     let syn = representation.control == TcpControl::Syn && representation.ack_number.is_none();
-    Ok((
-        SocketAddr::new(source.into(), representation.src_port),
-        SocketAddr::new(destination.into(), representation.dst_port),
+    Ok(ParsedTcp {
+        source: SocketAddr::new(source.into(), representation.src_port),
+        destination: SocketAddr::new(destination.into(), representation.dst_port),
         syn,
-    ))
+        payload_bytes: representation.payload.len(),
+    })
 }
 
 fn accept_error<T>(error: mpsc::error::TrySendError<T>) -> AdmissionError {

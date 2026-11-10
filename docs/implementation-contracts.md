@@ -3375,7 +3375,10 @@ routed TCP owner remains required. The controlled native fixture joins
 each receipt before starting its conservative workload-wide route grace.
 
 Before retiring a flow, the host attaches the original response request and
-connection cancellation receiver to its queued DNS TCP packets. Metadata stays
+connection cancellation receiver to queued DNS TCP packets carrying payload.
+Pure TCP ACK/FIN/RST packets carry no DNS answer and retain ordinary transport
+output lifetime; stopping the native packet owner still cancels them globally.
+Metadata stays
 with each packet through the runtime egress queue; no per-segment task, payload
 copy or delivery receipt is added. Existing packet count/MTU limits still apply.
 Native output checks the original deadline and both cancellation owners before

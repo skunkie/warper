@@ -749,7 +749,10 @@ async fn run(
         || report.lost_delivery_receipts != 0
         || dns.retained_requests() != 0
     {
-        return Err("managed flow dropped packet ownership".into());
+        return Err(format!(
+            "managed flow dropped packet ownership: ingress_drops={} discarded_output={} lost_delivery_receipts={} retained_dns_requests={}",
+            report.ingress_drops, report.discarded_output, report.lost_delivery_receipts, dns.retained_requests()
+        ).into());
     }
     latency.sort_unstable();
     let memory = std::fs::read_to_string("/proc/self/status")?;

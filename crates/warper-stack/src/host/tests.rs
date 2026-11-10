@@ -382,6 +382,67 @@ async fn retained_dns_output_handles_prevent_reusing_flow_admission_until_join_o
 }
 
 #[tokio::test]
+async fn dns_tcp_control_packets_do_not_inherit_response_deadlines_or_cancellation() {
+    use tokio::sync::watch;
+    use warper_core::transport::Request;
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+        Limits::default(),
+        policy(endpoint),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    let mut accepted = None;
+    for turn in 0..100 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+        if let Ok(flow) = dns.try_recv() {
+            accepted = Some(flow);
+            break;
+        }
+    }
+    let mut flow = accepted.unwrap();
+    let control = flow.stream.dns_output().unwrap();
+    let (owner, _) = watch::channel(false);
+    control
+        .begin(Request {
+            deadline: tokio::time::Instant::now() + Duration::from_secs(10),
+            cancellation: owner.subscribe(),
+        })
+        .unwrap();
+    assert_eq!(peer.tcp().send_slice(b"query").unwrap(), 5);
+    let mut packets = Vec::new();
+    for turn in 100..400 {
+        let now = Duration::from_millis(turn);
+        peer.poll(now);
+        while let Some(packet) = peer.device.outgoing.pop_front() {
+            host.inject(&packet).unwrap();
+        }
+        poll(&mut host, now);
+        while let Some(packet) = host.take_output() {
+            packets.push(packet);
+        }
+    }
+    assert!(!packets.is_empty());
+    for packet in packets {
+        assert_eq!(packet.len(), 20 + usize::from(packet[32] >> 4) * 4);
+        assert!(
+            packet.request().is_none(),
+            "pure TCP acknowledgments have no DNS response payload to cancel"
+        );
+        assert!(packet.cancellation().is_none());
+    }
+    let mut received = [0; 5];
+    flow.stream.read_exact(&mut received).await.unwrap();
+    assert_eq!(&received, b"query");
+    host.cancel();
+    drop(flow);
+    drop(control);
+    assert_eq!(host.retained_flows(), 0);
+}
+
+#[tokio::test]
 async fn completed_dns_output_drains_fin_after_the_application_drops_its_stream() {
     use tokio::sync::watch;
     use warper_core::transport::Request;
@@ -1014,7 +1075,7 @@ async fn quiescence_keeps_accepted_lifetimes_and_resets_new_tuples() {
         assert_eq!(host.inject(&peer.syn()), Err(AdmissionError::Quiescing));
         poll(&mut host, Duration::from_secs(1));
         while let Some(packet) = host.take_packet() {
-            let (_, destination, _) = tcp_metadata(&packet).unwrap();
+            let destination = tcp_metadata(&packet).unwrap().destination;
             if destination == peer.source {
                 peer.device.inject(packet).unwrap();
             }
