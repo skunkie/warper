@@ -39,8 +39,9 @@ use warper_core::{
     transport::{Backend, Request},
 };
 use warper_service::{
+    dns::dispatch::{Dispatcher, Selected},
     dns::output::{RoutedReply, UdpOutput},
-    dns::prepare::{Prepared, Resolver},
+    dns::prepare::Prepared,
     dns::tcp_output::{Reply as TcpReply, TcpOutput},
     dns::{Limits as PacketLimits, Packet, routes::Controller},
     dns::{QueryBudget, ServiceDiscoveryLimits},
@@ -828,7 +829,7 @@ async fn queued_commit(
 async fn routed_udp_query(
     endpoint: &mut udp_dns::Endpoint,
     peer: &selected_dns::Peer,
-    controller: &Controller,
+    controller: &Arc<Controller>,
     operation: Request,
 ) -> Result<(UdpSocket, udp_dns::Datagram, Packet, RoutedReply), Failure> {
     timeout(Duration::from_secs(2), async {
@@ -851,11 +852,15 @@ async fn routed_udp_query(
         if incoming.id() != query.id() || incoming.question() != query.question() {
             return Err("routed UDP request correlation changed".into());
         }
-        let resolver = Resolver::new(
-            &peer.transport,
-            &peer.domains,
-            controller,
-            RoutingMode::Dynamic,
+        let resolver = Dispatcher::new(
+            peer.domains.clone(),
+            controller.clone(),
+            vec![Selected {
+                mode: RoutingMode::Dynamic,
+                upstreams: vec![peer.transport.clone()],
+            }],
+            Vec::new(),
+            false,
             ServiceDiscoveryLimits {
                 alias_hops: 4,
                 addresses: 4,
@@ -1204,7 +1209,8 @@ async fn dns_reply(
                     return Err("framed DNS server did not receive a query".into());
                 };
                 let operation = request(&owner);
-                let resolver = Resolver::new(&peer.transport, &peer.domains, &controller, RoutingMode::Dynamic,
+                let resolver = Dispatcher::new(peer.domains.clone(), controller.clone(),
+                    vec![Selected { mode: RoutingMode::Dynamic, upstreams: vec![peer.transport.clone()] }], Vec::new(), false,
                     ServiceDiscoveryLimits { alias_hops: 4, addresses: 4, ipv6: false, work_items: 16 })?;
                 let Prepared::Upstream { packet, received_at, reservation: Some(reservation), .. } =
                     resolver.prepare(&incoming, operation.clone(), &QueryBudget::new(4)?).await? else {

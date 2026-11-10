@@ -461,6 +461,18 @@ controlled workload, not a full daemon or native macOS DNS acceptance claim.
 Production request-worker supervision, daemon/resolver integration,
 global transient admission and full Phase 2 acceptance remain open.
 
+Session DNS dispatch now selects one domain/backend role and preserves ordered
+upstream attempts within it. Selected discovery keeps the original routing mode,
+deadline and shared query budget; valid negatives and policy, authentication,
+protocol or resource failures are final. Global unmatched queries use only
+preserved direct transports and own no capture reservation. Split unmatched
+queries, missing selected groups and closed sessions fail without transport
+I/O. Controlled peers verify retry order, retained deadlines/budgets, final
+negative answers, local disabled-IPv6 handling and registry rejection. Both
+native coordinator DNS paths now use this dispatcher; privileged evidence for
+this increment remains pending. Request-worker supervision, global transient
+admission and daemon/resolver composition remain required before enabling DNS.
+
 ## Phase 0 Exit Evidence
 
 The [exit criteria](implementation-plan.md#phase-0-baseline-and-feasibility)

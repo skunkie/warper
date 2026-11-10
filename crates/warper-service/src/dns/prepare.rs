@@ -88,6 +88,17 @@ impl<'a> Resolver<'a> {
         mode: RoutingMode,
         limits: ServiceDiscoveryLimits,
     ) -> Result<Self, Error> {
+        Self::validate_limits(limits)?;
+        Ok(Self {
+            transport,
+            domains,
+            routes,
+            mode,
+            limits,
+        })
+    }
+
+    pub(super) fn validate_limits(limits: ServiceDiscoveryLimits) -> Result<(), Error> {
         if limits.addresses == 0
             || limits.addresses > 65536
             || limits.alias_hops > 65536
@@ -96,13 +107,7 @@ impl<'a> Resolver<'a> {
         {
             return Err(Error::InvalidLimits);
         }
-        Ok(Self {
-            transport,
-            domains,
-            routes,
-            mode,
-            limits,
-        })
+        Ok(())
     }
 
     pub async fn prepare(

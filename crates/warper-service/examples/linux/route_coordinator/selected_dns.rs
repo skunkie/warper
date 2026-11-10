@@ -24,8 +24,8 @@ use warper_service::{
 };
 
 pub(super) struct Peer {
-    pub transport: TcpTransport,
-    pub domains: Policy,
+    pub transport: Arc<TcpTransport>,
+    pub domains: Arc<Policy>,
     pub backend: Arc<Socks5>,
     stop: watch::Sender<bool>,
     task: JoinHandle<Result<(usize, usize, usize), Failure>>,
@@ -48,13 +48,13 @@ impl Peer {
             2,
             Arc::new(connector),
         )?);
-        let transport = TcpTransport::new(
+        let transport = Arc::new(TcpTransport::new(
             backend.clone(),
             "192.0.2.53:53".parse()?,
             Limits::new(512, 8)?,
             Admission::new(1)?,
-        )?;
-        let domains = Policy::new(&[Rule::new("example.test", BackendId(7))?], 1)?;
+        )?);
+        let domains = Arc::new(Policy::new(&[Rule::new("example.test", BackendId(7))?], 1)?);
         let (stop, mut cancellation) = watch::channel(false);
         let task = tokio::spawn(async move {
             let mut dns = 0;

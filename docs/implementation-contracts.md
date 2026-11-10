@@ -3387,6 +3387,25 @@ packet cancellation alone cannot prove that a prior write was not delivered.
 
 ### Server-side DNS TCP framing
 
+`dispatch::Dispatcher` owns the immutable domain policy, selected transport
+groups and preserved direct transports for a DNS service session. Selection is
+made once per validated question. Selected groups retain their configured
+upstream order and routing mode; only connection/transport failures may try the
+next server in that same group. Negative answers, protocol/policy failures,
+resource exhaustion and cancellation are final. All attempts and dependency
+queries share the original request and query budget. Missing selected groups
+fail explicitly and cannot become direct requests.
+
+Unmatched questions use the preserved direct list only in global DNS mode,
+with the same ordered transport-only retry rule. Direct replies own no capture
+reservation. Split-mode unmatched questions fail without transport I/O.
+Disabled IPv6 questions receive the documented local NODATA response, and bad
+EDNS versions receive the existing local version/error response. Transport
+construction must already have verified physical paths and loop-free literal
+upstreams. The dispatcher does not discover resolvers or mutate the host.
+Registry storage is bounded to 64 selected groups and 4,096 total configured
+upstream transports, checked before constructing its owned session storage.
+
 On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
 `Connection<AcceptedStream>`, the validated query, a prepared positive reply and
 its uncommitted reservation, and the supervised native commit mailbox. It
