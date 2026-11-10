@@ -3476,15 +3476,49 @@ releases scratch after native output completion. Failed output, panic or abort
 keeps the parent charge until native packet join/destruction and explicit slot
 release. Emergency owner drop cannot release scratch still retained by an
 aborting task. Fixed pool storage stays reserved until its owner and tasks are
-gone. `Workers::new` creates a standalone bounded budget sized for its slots;
+gone. `Workers::new` creates a standalone 64-MiB budget;
 a composed service must supply its shared admitted budget with `with_budget`.
 The native controlled UDP/TCP workloads share one explicitly bounded budget.
 
-This scratch admission does not yet account for decoded Hickory graphs,
-discovery metadata, task/channel allocations or native transport/route metadata.
-Those separately bounded allocations still require global transient admission
+Decoded packet admission is defined below. Discovery metadata, task/channel
+allocations and native transport/route metadata still require global transient
+admission
 and composition with the existing runtime/relay budget before daemon DNS is
 enabled. Retained DNS lease/cache ownership keeps its independent state budget.
+
+`Packet::request_with_budget` reserves decoded storage before Hickory parses
+names or records. An allocation-free wire walk checks section framing and sums
+RDATA storage; it skips compression pointers without following them. Hickory
+still owns semantic validation, including pointer targets. Limits apply before
+the walk, and malformed/trailing input never leaves a partial decoded owner.
+`Packet::response` inherits the request's budget. It first reserves only envelope
+storage and correlates ID/question before honoring TC, including a cut final
+record. Complete responses reserve their full decoded bound before decoding.
+
+The bound applies to pinned Hickory 0.26.3 with only its `std` feature and the
+pinned Rust toolchain. It covers packet/query/record layouts, record-vector
+capacity, at most three names per record plus envelope temporaries, variable
+RDATA containers and CSYNC's expanding type sets. Name data plus label ends are
+bounded by the 255-byte DNS name, with up to two-capacity TinyVec storage.
+Variable container accounting uses compiler-reported String, boxed TXT,
+SVCB-parameter and EDNS-option layouts, including growth and temporary EDNS
+cloning. Bitmap admission counts set bits and conservatively bounds B-tree
+nodes/keys/edges rather than charging only encoded bitmap bytes. Dependency or
+local synthesis reserves its separate decoded owner before cloning data.
+Changing library features, layouts or toolchain requires reviewing these bounds.
+Allocator bookkeeping and kernel memory remain outside this logical accounting.
+
+Reservations follow packet ownership, including shared response observations in
+service-binding discovery. Last packet drop releases its charge; it grants no
+route/output permission and acknowledges no native cleanup. Dependencies share
+the original budget and request deadline. TCP framing uses `Connection::with_budget`
+in the request workers, so both client protocols reserve before packet decoding.
+Standalone `Packet::request` and `Connection::new` remain count/wire-bounded
+protocol adapters without a shared byte budget; composed service work uses the
+budgeted entry points. Independently used adapters must also admit their wire
+buffers. Full-size EDNS, partial-TC retry, decode failure, synthesis pressure and
+shared discovery-response lifetime have controlled evidence. Daemon DNS still
+requires discovery/task/channel/native metadata admission and resolver wiring.
 
 On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
 `Connection<AcceptedStream>` from a caller-owned option, the validated query,

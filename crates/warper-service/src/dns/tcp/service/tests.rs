@@ -448,10 +448,18 @@ async fn service_reply_retains_original_observation_and_releases_shared_packet_o
         ),
     ]);
     let (_owner, request) = context();
+    let buffers = crate::dns::memory::Budget::new(64 * 1024 * 1024).unwrap();
+    let root = Packet::request_with_budget(
+        &wire("start.example.test", 65, false),
+        packet_limits(),
+        &buffers,
+    )
+    .unwrap();
+    let query_storage = buffers.used();
     let start = Instant::now();
     let mut result = transport
         .discover_service_bindings(
-            &query(),
+            &root,
             request,
             &QueryBudget::new(2).unwrap(),
             &policy(),
@@ -481,6 +489,22 @@ async fn service_reply_retains_original_observation_and_releases_shared_packet_o
             .encode()
             .unwrap()
     );
+    let retained = buffers.used();
+    let sample = Packet::response(&expected, &root, packet_limits()).unwrap();
+    let response_storage = buffers.used() - retained;
+    drop(sample);
+    assert_eq!(
+        retained,
+        query_storage + response_storage,
+        "completed discovery must release dependency packets"
+    );
+    let shared = result.response.clone();
+    drop(result);
+    assert_eq!(buffers.used(), retained);
+    drop(shared);
+    assert_eq!(buffers.used(), query_storage);
+    drop(root);
+    assert_eq!(buffers.used(), 0);
     assert_eq!(fixture.finish(transport).await.len(), 2);
 }
 

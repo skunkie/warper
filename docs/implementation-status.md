@@ -563,8 +563,23 @@ cleanup. Checked exhaustion/overflow and concurrent ownership are tested, along
 with shared-pool refusal before I/O, original output retention and larger
 upstream limits. The native workload shares one explicit budget and checks
 zero retained charges after joined worker release; privileged evidence for
-this increment remains pending. Decoded protocol graphs, discovery/task/channel
-metadata and native storage still need global admission before daemon DNS.
+this increment passes at `7708ca9` in
+[CI 42888722815](https://github.com/skunkie/warper/actions/runs/42888722815).
+The full native build/test matrix and five inspected Linux manifests pass.
+Four isolated probes exit zero without timeout and preserve host state;
+installed idle-service acceptance has no errors. Evidence belongs under
+`target/evidence/phase-2/dns-scratch-admission/`.
+
+Decoded packets now reserve shared storage before name/record allocation and
+retain that charge through response, dependency and shared discovery ownership.
+The pinned-layout bound accounts for compressed names, variable RDATA and
+CSYNC bitmap expansion. Response envelope admission preserves correlated TC
+retry even when the final record is incomplete. Controlled tests cover exact
+shortage, malformed decode, synthesis pressure, shared ownership, TCP framing,
+discovery dependencies and maximum-size EDNS. Both worker protocols use these
+budgeted entry points; native evidence for this increment remains pending.
+Discovery/task/channel/native metadata and daemon/resolver integration remain
+required before Phase 2 closure.
 
 ## Phase 0 Exit Evidence
 

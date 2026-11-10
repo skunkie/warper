@@ -72,6 +72,15 @@ pub struct Reservation {
     budget: Budget,
     bytes: usize,
 }
+impl Reservation {
+    pub(super) fn budget(&self) -> &Budget {
+        &self.budget
+    }
+
+    pub(super) fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
 impl Drop for Reservation {
     fn drop(&mut self) {
         // Reservations cannot be cloned or released twice. Every increment

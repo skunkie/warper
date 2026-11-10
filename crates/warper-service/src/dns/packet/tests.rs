@@ -797,3 +797,243 @@ fn dependency_synthesis_refuses_a_transaction_signature() {
         Err(Error::UnsupportedOperation)
     ));
 }
+
+#[test]
+fn decoded_reservations_follow_dependencies_responses_and_shared_packet_ownership() {
+    let budget = crate::dns::memory::Budget::new(4 * 1024 * 1024).unwrap();
+    let request = Packet::request_with_budget(&request_wire(), limits(), &budget).unwrap();
+    let query_bytes = budget.used();
+    assert!(query_bytes > request_wire().len());
+    let dependency = request
+        .dependency(Question {
+            name: Name::from_ascii("dependency.example.test").unwrap(),
+            ..request.question()
+        })
+        .unwrap();
+    assert_eq!(budget.used(), 2 * query_bytes);
+    drop(dependency);
+    assert_eq!(budget.used(), query_bytes);
+    let wire = request.local_reply(LocalReply::ServFail).unwrap();
+    assert_eq!(budget.used(), query_bytes);
+    assert_eq!(
+        Packet::response(&wire, &request, limits())
+            .unwrap()
+            .response_code(),
+        2
+    );
+    assert_eq!(budget.used(), query_bytes);
+    let mut wire = response_wire();
+    answer(&mut wire, 1, 0, &[192, 0, 2, 7]);
+    let response = std::sync::Arc::new(Packet::response(&wire, &request, limits()).unwrap());
+    let retained = budget.used();
+    let shared = response.clone();
+    drop(response);
+    assert_eq!(budget.used(), retained);
+    drop(shared);
+    assert_eq!(budget.used(), query_bytes);
+    drop(request);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn decoded_storage_shortages_and_failed_decode_preserve_existing_owners() {
+    let budget = crate::dns::memory::Budget::new(4 * 1024 * 1024).unwrap();
+    let request = Packet::request_with_budget(&request_wire(), limits(), &budget).unwrap();
+    let used = budget.used();
+    let short = crate::dns::memory::Budget::new(used - 1).unwrap();
+    assert!(matches!(
+        Packet::request_with_budget(&request_wire(), limits(), &short),
+        Err(Error::ResourceLimit)
+    ));
+    assert_eq!(short.used(), 0);
+    let competing = budget.reserve(budget.limit() - used).unwrap();
+    assert!(matches!(
+        request.dependency(request.question()),
+        Err(Error::ResourceLimit)
+    ));
+    assert!(matches!(
+        request.local_reply(LocalReply::ServFail),
+        Err(Error::ResourceLimit)
+    ));
+    assert!(matches!(
+        Packet::response(&response_wire(), &request, limits()),
+        Err(Error::ResourceLimit)
+    ));
+    assert_eq!(budget.used(), budget.limit());
+    drop(competing);
+    let mut wire = response_wire();
+    let owner = wire.len();
+    answer(&mut wire, 1, 0, &[192, 0, 2, 7]);
+    wire[owner + 1] = 255;
+    assert!(matches!(
+        Packet::response(&wire, &request, limits()),
+        Err(Error::Malformed)
+    ));
+    assert_eq!(budget.used(), used);
+    let mut mismatch = response_wire();
+    mismatch[0] ^= 1;
+    assert!(matches!(
+        Packet::response(&mismatch, &request, limits()),
+        Err(Error::MismatchedResponse)
+    ));
+    assert_eq!(budget.used(), used);
+    for end in 0..request_wire().len() {
+        assert!(
+            Packet::request_with_budget(&request_wire()[..end], limits(), &budget).is_err(),
+            "prefix {end}"
+        );
+        assert_eq!(budget.used(), used, "prefix {end}");
+    }
+    drop(request);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn budgeted_truncated_responses_correlate_before_inspecting_cut_record_data() {
+    let budget = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let request = Packet::request_with_budget(&request_wire(), limits(), &budget).unwrap();
+    let used = budget.used();
+    let mut wire = response_wire();
+    answer(&mut wire, 1, 0, &[192, 0, 2, 7]);
+    wire[2] |= 2;
+    wire.pop();
+    assert!(matches!(
+        Packet::response(&wire, &request, limits()),
+        Err(Error::Truncated)
+    ));
+    assert_eq!(budget.used(), used);
+    wire[0] ^= 1;
+    assert!(matches!(
+        Packet::response(&wire, &request, limits()),
+        Err(Error::MismatchedResponse)
+    ));
+    assert_eq!(budget.used(), used);
+    drop(request);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn bitmap_expansion_is_reserved_before_decoding_and_released_on_error() {
+    let budget = crate::dns::memory::Budget::new(4 * 1024 * 1024).unwrap();
+    let request = Packet::request_with_budget(&request_wire(), limits(), &budget).unwrap();
+    let used = budget.used();
+    let mut sparse = response_wire();
+    answer(&mut sparse, 62, 0, &[0, 0, 0, 0, 0, 0, 0, 1, 2]);
+    let packet = Packet::response(&sparse, &request, limits()).unwrap();
+    let sparse_bytes = budget.used() - used;
+    drop(packet);
+    let mut dense = sparse.clone();
+    *dense.last_mut().unwrap() = 255;
+    let packet = Packet::response(&dense, &request, limits()).unwrap();
+    assert!(budget.used() - used > sparse_bytes);
+    drop(packet);
+    let length = dense.len();
+    dense[length - 2] = 0;
+    assert!(matches!(
+        Packet::response(&dense, &request, limits()),
+        Err(Error::Malformed)
+    ));
+    assert_eq!(budget.used(), used);
+    drop(request);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn full_size_edns_requests_and_dependency_clones_fit_the_default_shared_budget() {
+    let mut wire = request_wire();
+    wire[11] = 1;
+    let data = 65_535 - wire.len() - 11;
+    wire.extend_from_slice(&[0, 0, 41, 16, 0, 0, 0, 0, 0]);
+    wire.extend_from_slice(&(data as u16).to_be_bytes());
+    wire.extend_from_slice(&12_u16.to_be_bytes());
+    wire.extend_from_slice(&((data - 4) as u16).to_be_bytes());
+    wire.resize(65_535, 0);
+    let limits = Limits::new(65_535, 4096).unwrap();
+    let budget = crate::dns::memory::Budget::new(64 * 1024 * 1024).unwrap();
+    let packet = Packet::request_with_budget(&wire, limits, &budget).unwrap();
+    let dependency = packet.dependency(packet.question()).unwrap();
+    assert_eq!(dependency.encode().unwrap().len(), 65_535);
+    assert!(budget.used() < budget.limit());
+    drop(dependency);
+    drop(packet);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn compressed_maximum_length_names_reserve_decoded_storage_before_release() {
+    let budget = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let mut wire = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    for length in [63, 63, 63, 61] {
+        wire.push(length);
+        wire.extend(std::iter::repeat_n(b'a', usize::from(length)));
+    }
+    wire.extend_from_slice(&[0, 0, 1, 0, 1]);
+    let request = Packet::request_with_budget(&wire, limits(), &budget).unwrap();
+    let query_storage = budget.used();
+    assert_eq!(request.question().name.wire().len(), 255);
+    wire[2..4].copy_from_slice(&[0x81, 0x80]);
+    for _ in 0..8 {
+        answer(&mut wire, 5, 0, &[0xc0, 0x0c]);
+    }
+    let response = Packet::response(&wire, &request, limits()).unwrap();
+    let response_storage = budget.used() - query_storage;
+    assert!(response_storage > wire.len());
+    assert_eq!(response.encode().unwrap(), wire);
+    drop(response);
+    let competing = budget
+        .reserve(budget.limit() - query_storage - response_storage + 1)
+        .unwrap();
+    assert!(matches!(
+        Packet::response(&wire, &request, limits()),
+        Err(Error::ResourceLimit)
+    ));
+    drop(competing);
+    assert_eq!(budget.used(), query_storage);
+    drop(request);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn malformed_storage_envelopes_leave_existing_reservations_unchanged() {
+    let budget = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let request = Packet::request_with_budget(&request_wire(), limits(), &budget).unwrap();
+    let used = budget.used();
+    let mut name_code = request_wire();
+    name_code[12] = 64;
+    let mut trailing = request_wire();
+    trailing.push(0);
+    let mut bitmap_header = response_wire();
+    answer(&mut bitmap_header, 62, 0, &[0, 0, 0, 0, 0, 0, 0]);
+    struct Case {
+        id: &'static str,
+        input: Vec<u8>,
+        is_response: bool,
+    }
+    for case in [
+        Case {
+            id: "reserved name code",
+            input: name_code,
+            is_response: false,
+        },
+        Case {
+            id: "trailing data",
+            input: trailing,
+            is_response: false,
+        },
+        Case {
+            id: "cut bitmap header",
+            input: bitmap_header,
+            is_response: true,
+        },
+    ] {
+        let result = if case.is_response {
+            Packet::response(&case.input, &request, limits())
+        } else {
+            Packet::request_with_budget(&case.input, limits(), &budget)
+        };
+        assert!(matches!(result, Err(Error::Malformed)), "{}", case.id);
+        assert_eq!(budget.used(), used, "{}", case.id);
+    }
+    drop(request);
+    assert_eq!(budget.used(), 0);
+}

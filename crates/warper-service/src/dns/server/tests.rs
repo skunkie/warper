@@ -589,7 +589,8 @@ async fn receive_loop_continues_after_bad_input_but_preserves_uncertain_output_f
         )))
     );
     assert!(workers.stopping());
-    assert_eq!(buffers.used(), retained);
+    assert!(buffers.used() > storage);
+    assert!(buffers.used() <= retained);
     assert_eq!(workers.active(), 1);
     assert_eq!(events.lock().unwrap().len(), 1);
     workers
@@ -611,6 +612,14 @@ async fn shared_scratch_budget_rejects_before_io_and_releases_after_native_join(
     let (mut second, second_events) =
         direct_workers_with_budget(fixture.controller.clone(), budget.clone());
     let storage = budget.used();
+    let sample = Packet::request_with_budget(
+        &query("sample.invalid", 1).encode().unwrap(),
+        limits(),
+        &budget,
+    )
+    .unwrap();
+    let graph = budget.used() - storage;
+    drop(sample);
     first
         .admit_udp(fixture.input("first.invalid").await)
         .unwrap();
@@ -624,7 +633,9 @@ async fn shared_scratch_budget_rejects_before_io_and_releases_after_native_join(
         .unwrap();
     let scratch = budget.used() - storage;
     assert!(scratch > 0);
-    let competing = budget.reserve(budget.limit() - budget.used()).unwrap();
+    let competing = budget
+        .reserve(budget.limit() - budget.used() - graph)
+        .unwrap();
     assert_eq!(
         second.admit_udp(fixture.input("second.invalid").await),
         Err(WorkerError::Full)
@@ -632,10 +643,10 @@ async fn shared_scratch_budget_rejects_before_io_and_releases_after_native_join(
     assert_eq!(second.active(), 0);
     assert!(second_events.lock().unwrap().is_empty());
     assert_eq!(first_events.lock().unwrap().len(), 1);
-    assert_eq!(budget.used(), budget.limit());
+    assert_eq!(budget.used(), budget.limit() - graph);
     packet.complete(Ok(())).unwrap();
     first.join_next().await.unwrap().unwrap().outcome.unwrap();
-    assert_eq!(budget.used(), budget.limit() - scratch);
+    assert_eq!(budget.used(), budget.limit() - graph - scratch);
     second
         .admit_udp(fixture.input("second.invalid").await)
         .unwrap();
@@ -650,7 +661,7 @@ async fn shared_scratch_budget_rejects_before_io_and_releases_after_native_join(
     packet.complete(Ok(())).unwrap();
     second.join_next().await.unwrap().unwrap().outcome.unwrap();
     assert_eq!(second_events.lock().unwrap().len(), 1);
-    assert_eq!(budget.used(), budget.limit() - scratch);
+    assert_eq!(budget.used(), budget.limit() - graph - scratch);
     drop(competing);
     assert_eq!(budget.used(), storage);
     second

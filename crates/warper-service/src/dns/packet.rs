@@ -15,6 +15,7 @@ use warper_core::dns::Name;
 
 mod address;
 mod service;
+mod storage;
 
 pub use address::{Address, AddressAnswer, AddressError, AddressLookup, AddressProgress};
 
@@ -117,10 +118,30 @@ pub struct Packet {
     message: Message,
     question: Question,
     limits: Limits,
+    storage: Option<super::memory::Reservation>,
 }
 
 impl Packet {
     pub fn request(bytes: &[u8], limits: Limits) -> Result<Self, Error> {
+        Self::read_request(bytes, limits, None)
+    }
+
+    /// Reserve decoded storage before parsing names or record data. Replies
+    /// and synthesized dependency queries inherit the same shared budget.
+    pub fn request_with_budget(
+        bytes: &[u8],
+        limits: Limits,
+        budget: &super::memory::Budget,
+    ) -> Result<Self, Error> {
+        let storage = Some(storage::reserve(bytes, limits, budget)?);
+        Self::read_request(bytes, limits, storage)
+    }
+
+    fn read_request(
+        bytes: &[u8],
+        limits: Limits,
+        storage: Option<super::memory::Reservation>,
+    ) -> Result<Self, Error> {
         let (header, question) = envelope(bytes, limits)?;
         if header.message_type != MessageType::Query || header.truncation {
             return Err(Error::Malformed);
@@ -128,7 +149,7 @@ impl Packet {
         if header.counts.answers != 0 || header.counts.authorities != 0 {
             return Err(Error::Malformed);
         }
-        Self::decode(bytes, question, limits)
+        Self::decode(bytes, question, limits, storage)
     }
 
     /// Correlate ID, canonical question, class and type before accepting TC or
@@ -138,6 +159,11 @@ impl Packet {
         if request.message.message_type != MessageType::Query {
             return Err(Error::MismatchedResponse);
         }
+        let envelope_storage = request
+            .storage
+            .as_ref()
+            .map(|reservation| storage::local(reservation.budget()))
+            .transpose()?;
         let (header, question) = envelope(bytes, limits)?;
         if header.message_type != MessageType::Response
             || header.id != request.id()
@@ -148,13 +174,25 @@ impl Packet {
         if header.truncation {
             return Err(Error::Truncated);
         }
-        Self::decode(bytes, question, limits)
+        drop(envelope_storage);
+        let storage = request
+            .storage
+            .as_ref()
+            .map(|reservation| storage::reserve(bytes, limits, reservation.budget()))
+            .transpose()?;
+        Self::decode(bytes, question, limits, storage)
     }
 
     /// Construct a dependency query without copying authentication over a
     /// changed question. Each dependency uses its own owned TCP stream.
     pub(super) fn dependency(&self, question: Question) -> Result<Self, Error> {
         self.check_synthesis()?;
+        let storage = self
+            .storage
+            .as_ref()
+            .map(|reservation| reservation.budget().reserve(reservation.bytes()))
+            .transpose()
+            .map_err(|_| Error::ResourceLimit)?;
         let mut decoder = BinDecoder::new(question.name.wire());
         let name = hickory_proto::rr::Name::read(&mut decoder).map_err(|_| Error::Malformed)?;
         let mut message = Message::new(self.id(), MessageType::Query, OpCode::Query);
@@ -168,6 +206,7 @@ impl Packet {
             message,
             question,
             limits: self.limits,
+            storage,
         };
         // Account for a longer dependency name before upstream work starts.
         packet.encode()?;
@@ -205,6 +244,11 @@ impl Packet {
     /// copied into an unsigned local answer.
     pub fn local_reply(&self, reply: LocalReply) -> Result<Vec<u8>, Error> {
         self.check_synthesis()?;
+        let storage = self
+            .storage
+            .as_ref()
+            .map(|reservation| storage::local(reservation.budget()))
+            .transpose()?;
         if reply == LocalReply::DisabledIpv6
             && (self.question.record_type != 28 || self.question.class != 1)
         {
@@ -241,6 +285,7 @@ impl Packet {
             message,
             question: self.question,
             limits: self.limits,
+            storage,
         };
         let mut wire = packet.encode_limited(self.udp_payload_limit())?;
         // Set intentional TC only after the entire small message fits. Ordinary
@@ -372,7 +417,12 @@ impl Packet {
         Ok(bytes)
     }
 
-    fn decode(bytes: &[u8], question: Question, limits: Limits) -> Result<Self, Error> {
+    fn decode(
+        bytes: &[u8],
+        question: Question,
+        limits: Limits,
+        storage: Option<super::memory::Reservation>,
+    ) -> Result<Self, Error> {
         let mut decoder = BinDecoder::new(bytes);
         let message = Message::read(&mut decoder).map_err(|_| Error::Malformed)?;
         if decoder.index() != bytes.len() {
@@ -382,6 +432,7 @@ impl Packet {
             message,
             question,
             limits,
+            storage,
         })
     }
 }

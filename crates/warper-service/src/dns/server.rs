@@ -38,6 +38,10 @@ pub struct Limits {
     pub grace: Duration,
     pub packet: PacketLimits,
 }
+struct Settings {
+    limits: Limits,
+    budget: Budget,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidLimits,
@@ -127,22 +131,18 @@ impl Workers {
         mailbox: Mailbox,
         limits: Limits,
     ) -> Result<Self, Error> {
-        let (storage, request) = reservations(limits, dispatcher.wire_bytes())?;
-        let bytes = request
-            .checked_mul(limits.requests)
-            .and_then(|bytes| bytes.checked_add(storage))
-            .ok_or(Error::InvalidLimits)?;
+        reservations(limits, dispatcher.wire_bytes())?;
         Self::with_budget(
             dispatcher,
             controller,
             mailbox,
             limits,
-            Budget::new(bytes).map_err(|_| Error::InvalidLimits)?,
+            Budget::new(64 * 1024 * 1024).map_err(|_| Error::InvalidLimits)?,
         )
     }
 
-    /// Share the caller's admitted scratch-storage budget across worker pools.
-    /// Decoded protocol graphs and native/runtime storage are separate charges.
+    /// Share the caller's admitted storage budget across worker pools.
+    /// Scratch and decoded packets share it; native/runtime storage is separate.
     pub fn with_budget(
         dispatcher: Arc<Dispatcher>,
         controller: Arc<Controller>,
@@ -226,7 +226,10 @@ impl Workers {
         let pending = slot.pending.clone();
         let dispatcher = self.dispatcher.clone();
         let controller = self.controller.clone();
-        let limits = self.limits;
+        let settings = Settings {
+            limits: self.limits,
+            budget: self.buffers.clone(),
+        };
         let operation = Request {
             deadline,
             cancellation: self.cancellation.subscribe(),
@@ -235,7 +238,7 @@ impl Workers {
         self.tasks.spawn(async move {
             let _storage = (storage, buffers);
             let outcome = work(
-                datagram, dispatcher, controller, mailbox, limits, operation, pending,
+                datagram, dispatcher, controller, mailbox, settings, operation, pending,
             )
             .await;
             Completion {
@@ -270,7 +273,10 @@ impl Workers {
         let pending = slot.pending.clone();
         let dispatcher = self.dispatcher.clone();
         let controller = self.controller.clone();
-        let limits = self.limits;
+        let settings = Settings {
+            limits: self.limits,
+            budget: self.buffers.clone(),
+        };
         let cancellation = self.cancellation.subscribe();
         let storage = self._storage.clone();
         self.tasks.spawn(async move {
@@ -280,7 +286,7 @@ impl Workers {
                 dispatcher,
                 controller,
                 mailbox,
-                limits,
+                settings,
                 cancellation,
                 pending,
             )
@@ -498,11 +504,16 @@ async fn work(
     dispatcher: Arc<Dispatcher>,
     controller: Arc<Controller>,
     mailbox: Mailbox,
-    limits: Limits,
+    settings: Settings,
     operation: Request,
     pending: Arc<Mutex<Option<Pending>>>,
 ) -> Result<Option<RequestFailure>, Error> {
-    let query = Packet::request(datagram.payload(), limits.packet).map_err(Error::Packet)?;
+    let Settings {
+        limits,
+        budget: storage,
+    } = settings;
+    let query = Packet::request_with_budget(datagram.payload(), limits.packet, &storage)
+        .map_err(Error::Packet)?;
     let budget = QueryBudget::new(limits.attempts).map_err(|_| Error::InvalidLimits)?;
     let prepared = dispatcher.prepare(&query, operation.clone(), &budget).await;
     let mut request_failure = prepared
@@ -613,11 +624,15 @@ async fn work_tcp(
     dispatcher: Arc<Dispatcher>,
     controller: Arc<Controller>,
     mailbox: Mailbox,
-    limits: Limits,
+    settings: Settings,
     cancellation: watch::Receiver<bool>,
     pending: Arc<Mutex<Option<Pending>>>,
 ) -> Result<Option<RequestFailure>, Error> {
-    let mut connection = Connection::new(flow.stream, limits.packet);
+    let Settings {
+        limits,
+        budget: storage,
+    } = settings;
+    let mut connection = Connection::with_budget(flow.stream, limits.packet, storage);
     let (observer_owner, _) = watch::channel(false);
     let observer = || Request {
         deadline: Instant::now() + limits.cleanup_timeout,

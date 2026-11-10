@@ -376,3 +376,23 @@ async fn zero_length_write_stops_without_retrying_a_frame() {
         Err(Error::Io(io::ErrorKind::WriteZero))
     );
 }
+
+#[tokio::test]
+async fn framed_queries_keep_the_shared_decoded_charge_until_packet_drop() {
+    let budget = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let (stream, mut peer) = duplex(1024);
+    let mut connection =
+        Connection::with_budget(stream, Limits::new(512, 8).unwrap(), budget.clone());
+    let (owner, _) = watch::channel(false);
+    connection.begin_read(request(&owner, 1)).unwrap();
+    peer.write_all(&frame(&query())).await.unwrap();
+    let Completion::Query(packet) = connection.wait(request(&owner, 1)).await.unwrap() else {
+        panic!("expected a budgeted query");
+    };
+    assert!(budget.used() > 0);
+    drop(connection);
+    assert!(budget.used() > 0);
+    drop(packet);
+    assert_eq!(budget.used(), 0);
+    peer.shutdown().await.unwrap();
+}

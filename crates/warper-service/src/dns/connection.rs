@@ -75,6 +75,7 @@ pub struct Connection<S> {
     operation: Option<Request>,
     work: Option<Work>,
     terminal: Option<Error>,
+    budget: Option<super::memory::Budget>,
 }
 impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     pub fn new(stream: S, limits: Limits) -> Self {
@@ -84,7 +85,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             operation: None,
             work: None,
             terminal: None,
+            budget: None,
         }
+    }
+
+    pub fn with_budget(stream: S, limits: Limits, budget: super::memory::Budget) -> Self {
+        let mut connection = Self::new(stream, limits);
+        connection.budget = Some(budget);
+        connection
     }
 
     /// Recover the owned stream for supervised shutdown. A partially transferred
@@ -241,9 +249,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                     }
                     *body_read += read;
                 }
-                Packet::request(body, self.limits)
-                    .map(|packet| Completion::Query(Box::new(packet)))
-                    .map_err(Error::Packet)
+                match &self.budget {
+                    Some(budget) => Packet::request_with_budget(body, self.limits, budget),
+                    None => Packet::request(body, self.limits),
+                }
+                .map(|packet| Completion::Query(Box::new(packet)))
+                .map_err(Error::Packet)
             }
             Work::Write { bytes, written } => {
                 while *written < bytes.len() {
