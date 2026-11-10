@@ -126,6 +126,17 @@ impl Progress {
     pub(super) fn acknowledge(&self, queued: usize) -> Result<(), Error> {
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
         if let Some(error) = state.failure {
+            // A fully joined reply can still owe the peer a FIN after the
+            // application drops its stream. Keep the host bridge alive for
+            // that handshake; pending/unacknowledged output remains terminal.
+            if error == Error::Closed
+                && state.request.is_none()
+                && !state.outstanding
+                && state.accepted == state.acknowledged
+                && queued == 0
+            {
+                return Ok(());
+            }
             return Err(error);
         }
         if let Some(request) = &state.request {

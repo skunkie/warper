@@ -3360,6 +3360,10 @@ new flow admission. Receipt metadata therefore cannot accumulate outside the
 existing flow count by repeatedly closing streams and retaining their handles.
 Joined receipts clear their request and progress references; retaining an empty
 joined receipt cannot retain heap metadata outside that admission.
+After all payload is acknowledged and its receipt joins, dropping a stream
+after peer EOF still permits the host bridge to finish the FIN handshake.
+Writes remain closed; pending requests, unjoined receipts, unacknowledged data,
+reset, cancellation and expiry never acquire that close-only exception.
 
 Dropping or cancelling an observation does not consume the receipt or renew
 the original deadline. Original cancellation/expiry and connection termination

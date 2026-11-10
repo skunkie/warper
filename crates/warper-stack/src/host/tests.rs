@@ -382,6 +382,64 @@ async fn retained_dns_output_handles_prevent_reusing_flow_admission_until_join_o
 }
 
 #[tokio::test]
+async fn completed_dns_output_drains_fin_after_the_application_drops_its_stream() {
+    use tokio::sync::watch;
+    use warper_core::transport::Request;
+    let endpoint = "192.0.2.9:53".parse().unwrap();
+    let (mut host, _backend, mut dns) = HostAdapter::with_dns(
+        Limits::default(),
+        policy(endpoint),
+        Seed::fixture(),
+        endpoint,
+    )
+    .unwrap();
+    let mut peer = Peer::with_destination(false, 50000, endpoint);
+    let mut accepted = None;
+    for turn in 0..100 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+        if let Ok(flow) = dns.try_recv() {
+            accepted = Some(flow);
+            break;
+        }
+    }
+    let mut flow = accepted.unwrap();
+    let (owner, _) = watch::channel(false);
+    let request = || Request {
+        deadline: tokio::time::Instant::now() + Duration::from_secs(10),
+        cancellation: owner.subscribe(),
+    };
+    let control = flow.stream.dns_output().unwrap();
+    control.begin(request()).unwrap();
+    flow.stream.write_all(b"reply").await.unwrap();
+    let mut receipt = control.receipt().unwrap();
+    for turn in 100..300 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+    }
+    receipt.wait(request()).await.unwrap();
+    let mut bytes = [0; 5];
+    assert_eq!(peer.tcp().recv_slice(&mut bytes).unwrap(), 5);
+    assert_eq!(&bytes, b"reply");
+    peer.tcp().close();
+    for turn in 300..400 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+    }
+    assert_eq!(flow.stream.read(&mut [0]).await.unwrap(), 0);
+    flow.stream.shutdown().await.unwrap();
+    drop(flow);
+    drop(control);
+    for turn in 400..500 {
+        pump(&mut host, &mut peer, Duration::from_millis(turn));
+    }
+    assert_eq!(
+        peer.tcp().state(),
+        tcp::State::TimeWait,
+        "a completed response must end with FIN rather than reset when its stream drops after EOF"
+    );
+    host.cancel();
+    assert_eq!(host.retained_flows(), 0);
+}
+
+#[tokio::test]
 async fn local_dns_tcp_preserves_tuple_and_response_after_fin_without_backend_acceptance() {
     for ipv6 in [false, true] {
         let endpoint = if ipv6 {
