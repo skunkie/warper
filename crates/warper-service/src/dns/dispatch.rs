@@ -111,6 +111,20 @@ impl Dispatcher {
             .map_err(Error::Request)?
     }
 
+    pub(super) fn wire_bytes(&self) -> usize {
+        self.selected
+            .iter()
+            .flat_map(|group| {
+                group
+                    .upstreams
+                    .iter()
+                    .map(|transport| transport.wire_bytes())
+            })
+            .chain(self.direct.iter().map(|transport| transport.wire_bytes()))
+            .max()
+            .unwrap_or(0)
+    }
+
     async fn prepare_owned(
         &self,
         query: &Packet,

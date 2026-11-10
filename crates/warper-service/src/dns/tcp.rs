@@ -148,6 +148,10 @@ impl TcpTransport {
         self.backend.id()
     }
 
+    pub(super) fn wire_bytes(&self) -> usize {
+        self.limits.wire_bytes()
+    }
+
     pub fn capabilities(&self) -> warper_core::transport::Capabilities {
         self.backend.capabilities()
     }

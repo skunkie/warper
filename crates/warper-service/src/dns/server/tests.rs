@@ -416,6 +416,21 @@ async fn worker_panic_is_joined_and_stops_admission_without_losing_parent_owned_
 }
 
 fn direct_workers(controller: Arc<Controller>) -> (Workers, Events) {
+    direct_workers_with_budget(
+        controller,
+        crate::dns::memory::Budget::new(1_048_576).unwrap(),
+    )
+}
+fn direct_workers_with_budget(
+    controller: Arc<Controller>,
+    buffers: crate::dns::memory::Budget,
+) -> (Workers, Events) {
+    try_direct_workers_with_budget(controller, buffers).unwrap()
+}
+fn try_direct_workers_with_budget(
+    controller: Arc<Controller>,
+    buffers: crate::dns::memory::Budget,
+) -> Result<(Workers, Events), WorkerError> {
     let events = Arc::new(Mutex::new(Vec::new()));
     let peer = Arc::new(MockPeer {
         marker: 54,
@@ -436,10 +451,10 @@ fn direct_workers(controller: Arc<Controller>) -> (Workers, Events) {
         .unwrap(),
     );
     let (mailbox, _commits) = queue::fixture_mailbox();
-    (
-        Workers::new(dispatcher, controller, mailbox, worker_limits()).unwrap(),
+    Ok((
+        Workers::with_budget(dispatcher, controller, mailbox, worker_limits(), buffers)?,
         events,
-    )
+    ))
 }
 
 #[tokio::test(start_paused = true)]
@@ -524,7 +539,10 @@ async fn receive_loop_surfaces_closed_consumers_and_stops_admission() {
 #[tokio::test(start_paused = true)]
 async fn receive_loop_continues_after_bad_input_but_preserves_uncertain_output_for_cleanup() {
     let mut fixture = RuntimeFixture::new();
-    let (mut workers, events) = direct_workers(fixture.controller.clone());
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let (mut workers, events) =
+        direct_workers_with_budget(fixture.controller.clone(), buffers.clone());
+    let storage = buffers.used();
     let (_tcp_owner, mut tcp) = tokio::sync::mpsc::channel(1);
     let (observer, _) = watch::channel(false);
     let observe = || Request {
@@ -559,6 +577,8 @@ async fn receive_loop_continues_after_bad_input_but_preserves_uncertain_output_f
         .recv()
         .await
         .unwrap();
+    let retained = buffers.used();
+    assert!(retained > storage);
     packet.complete(Err(delivery::Failure::Uncertain)).unwrap();
     assert_eq!(
         workers
@@ -569,6 +589,7 @@ async fn receive_loop_continues_after_bad_input_but_preserves_uncertain_output_f
         )))
     );
     assert!(workers.stopping());
+    assert_eq!(buffers.used(), retained);
     assert_eq!(workers.active(), 1);
     assert_eq!(events.lock().unwrap().len(), 1);
     workers
@@ -576,4 +597,150 @@ async fn receive_loop_continues_after_bad_input_but_preserves_uncertain_output_f
         .await
         .unwrap();
     fixture.close(&mut workers).await;
+    assert_eq!(buffers.used(), storage);
+    drop(workers);
+    assert_eq!(buffers.used(), 0);
+}
+
+#[tokio::test]
+async fn shared_scratch_budget_rejects_before_io_and_releases_after_native_join() {
+    let mut fixture = RuntimeFixture::new();
+    let budget = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let (mut first, first_events) =
+        direct_workers_with_budget(fixture.controller.clone(), budget.clone());
+    let (mut second, second_events) =
+        direct_workers_with_budget(fixture.controller.clone(), budget.clone());
+    let storage = budget.used();
+    first
+        .admit_udp(fixture.input("first.invalid").await)
+        .unwrap();
+    let packet = fixture
+        .channels
+        .as_mut()
+        .unwrap()
+        .packets
+        .recv()
+        .await
+        .unwrap();
+    let scratch = budget.used() - storage;
+    assert!(scratch > 0);
+    let competing = budget.reserve(budget.limit() - budget.used()).unwrap();
+    assert_eq!(
+        second.admit_udp(fixture.input("second.invalid").await),
+        Err(WorkerError::Full)
+    );
+    assert_eq!(second.active(), 0);
+    assert!(second_events.lock().unwrap().is_empty());
+    assert_eq!(first_events.lock().unwrap().len(), 1);
+    assert_eq!(budget.used(), budget.limit());
+    packet.complete(Ok(())).unwrap();
+    first.join_next().await.unwrap().unwrap().outcome.unwrap();
+    assert_eq!(budget.used(), budget.limit() - scratch);
+    second
+        .admit_udp(fixture.input("second.invalid").await)
+        .unwrap();
+    let packet = fixture
+        .channels
+        .as_mut()
+        .unwrap()
+        .packets
+        .recv()
+        .await
+        .unwrap();
+    packet.complete(Ok(())).unwrap();
+    second.join_next().await.unwrap().unwrap().outcome.unwrap();
+    assert_eq!(second_events.lock().unwrap().len(), 1);
+    assert_eq!(budget.used(), budget.limit() - scratch);
+    drop(competing);
+    assert_eq!(budget.used(), storage);
+    second
+        .join(Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    drop(second);
+    first
+        .join(Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    fixture.close(&mut first).await;
+    drop(first);
+    assert_eq!(budget.used(), 0);
+}
+
+#[tokio::test]
+async fn scratch_reservation_uses_upstream_limit_before_upstream_io() {
+    let mut fixture = RuntimeFixture::new();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let peer = Arc::new(MockPeer {
+        marker: 54,
+        backend: BackendId(7),
+        tcp: Mutex::new(None),
+        udp_error: None,
+        events: events.clone(),
+    });
+    let direct = Arc::new(
+        DirectUdpTransport::new(
+            peer.clone(),
+            peer,
+            "192.0.2.54:53".parse().unwrap(),
+            Limits::new(65_535, 8).unwrap(),
+            Admission::new(1).unwrap(),
+        )
+        .unwrap(),
+    );
+    let dispatcher = Arc::new(
+        Dispatcher::new(
+            domains(),
+            fixture.controller.clone(),
+            Vec::new(),
+            vec![direct],
+            true,
+            discovery(),
+        )
+        .unwrap(),
+    );
+    let buffers = crate::dns::memory::Budget::new(1_048_576).unwrap();
+    let (mailbox, _commits) = queue::fixture_mailbox();
+    let mut workers = Workers::with_budget(
+        dispatcher,
+        fixture.controller.clone(),
+        mailbox,
+        worker_limits(),
+        buffers.clone(),
+    )
+    .unwrap();
+    let storage = buffers.used();
+    workers
+        .admit_udp(fixture.input("unmatched.invalid").await)
+        .unwrap();
+    assert!(buffers.used() - storage >= 8 * 65_537);
+    assert!(events.lock().unwrap().is_empty());
+    let packet = fixture
+        .channels
+        .as_mut()
+        .unwrap()
+        .packets
+        .recv()
+        .await
+        .unwrap();
+    packet.complete(Ok(())).unwrap();
+    workers.join_next().await.unwrap().unwrap().outcome.unwrap();
+    assert_eq!(buffers.used(), storage);
+    workers
+        .join(Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    fixture.close(&mut workers).await;
+    drop(workers);
+    assert_eq!(buffers.used(), 0);
+}
+
+#[test]
+fn worker_storage_shortage_preserves_the_shared_budget() {
+    let buffers = crate::dns::memory::Budget::new(1).unwrap();
+    assert!(matches!(
+        try_direct_workers_with_budget(routes(), buffers.clone()),
+        Err(WorkerError::BufferBudget)
+    ));
+    assert_eq!(buffers.used(), 0);
 }

@@ -26,6 +26,7 @@ use warper_service::{
 pub(super) struct Peer {
     pub transport: Arc<TcpTransport>,
     pub domains: Arc<Policy>,
+    pub buffers: warper_service::dns::memory::Budget,
     pub backend: Arc<Socks5>,
     stop: watch::Sender<bool>,
     task: JoinHandle<Result<(usize, usize, usize), Failure>>,
@@ -36,6 +37,7 @@ impl Peer {
         excluded: NonZeroU32,
         owner: &watch::Sender<bool>,
     ) -> Result<Self, Failure> {
+        let buffers = warper_service::dns::memory::Budget::new(1_048_576)?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = listener.local_addr()?;
         let connector = egress::Preparation::new(context, &[endpoint], excluded, 2)?
@@ -82,6 +84,7 @@ impl Peer {
         Ok(Self {
             transport,
             domains,
+            buffers,
             backend,
             stop,
             task,

@@ -6,6 +6,7 @@
 
 pub mod connection;
 pub mod dispatch;
+pub mod memory;
 pub mod output;
 mod packet;
 pub mod prepare;

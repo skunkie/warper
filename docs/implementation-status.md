@@ -545,8 +545,26 @@ uncertain output stops admission while retaining native-output owners for
 cleanup. Controlled runtime tests cover pressure/resumption, closed consumers,
 malformed input and uncertain delivery. Both native workload paths now use the
 receive loop instead of manually receiving/admitting/joining each request;
-privileged evidence for this integration remains pending. Daemon configuration,
+this integration passes at `7ca73c9` in
+[CI 42872193625](https://github.com/skunkie/warper/actions/runs/42872193625).
+All native build/test targets and five inspected Linux manifests pass. Four
+isolated probes exit zero without timeout and preserve host state; installed
+idle-service acceptance has no errors. Both coordinator scenarios complete the
+UDP/TCP workloads, admission recovery and FINs with zero ingress drops or
+discarded output. Evidence belongs under
+`target/evidence/phase-2/dns-receive-loop/`. Daemon configuration,
 resolver composition and global transient memory admission remain open.
+
+Shared DNS scratch reservations now precede worker task startup and upstream I/O.
+A common byte budget covers fixed slot storage and retained per-request scratch,
+using both client and configured upstream packet ceilings. Successful output
+releases scratch on join; uncertain output keeps it charged through native
+cleanup. Checked exhaustion/overflow and concurrent ownership are tested, along
+with shared-pool refusal before I/O, original output retention and larger
+upstream limits. The native workload shares one explicit budget and checks
+zero retained charges after joined worker release; privileged evidence for
+this increment remains pending. Decoded protocol graphs, discovery/task/channel
+metadata and native storage still need global admission before daemon DNS.
 
 ## Phase 0 Exit Evidence
 

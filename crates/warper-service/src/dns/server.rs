@@ -4,7 +4,7 @@
 
 //! Supervised DNS request work with output retained outside task lifetimes.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, mem::size_of, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tokio::{
     sync::{Mutex, mpsc, watch},
@@ -18,6 +18,7 @@ use warper_stack::runtime::{delivery, udp_dns};
 use super::{
     Limits as PacketLimits, LocalReply, Packet, QueryBudget,
     dispatch::{self, Dispatcher},
+    memory::{Budget, Reservation},
     output::{self, RoutedReply, UdpOutput},
     prepare::Prepared,
     routes::{self, Controller},
@@ -40,6 +41,7 @@ pub struct Limits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidLimits,
+    BufferBudget,
     Full,
     Stopping,
     Expired,
@@ -74,6 +76,7 @@ enum Pending {
 struct Slot {
     active: bool,
     pending: Arc<Mutex<Option<Pending>>>,
+    buffers: Option<Arc<Reservation>>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestFailure {
@@ -113,6 +116,9 @@ pub struct Workers {
     first_request_error: Option<Error>,
     shutdown_error: Option<Error>,
     rejected_inputs: RejectedInputs,
+    buffers: Budget,
+    request_bytes: usize,
+    _storage: Arc<Reservation>,
 }
 impl Workers {
     pub fn new(
@@ -121,16 +127,33 @@ impl Workers {
         mailbox: Mailbox,
         limits: Limits,
     ) -> Result<Self, Error> {
-        if !(1..=64).contains(&limits.requests)
-            || Instant::now().checked_add(limits.grace).is_none()
-            || limits.attempts == 0
-            || limits.attempts > 65536
-            || [limits.request_timeout, limits.cleanup_timeout]
-                .iter()
-                .any(|duration| duration.is_zero() || *duration > Duration::from_secs(30))
-        {
-            return Err(Error::InvalidLimits);
-        }
+        let (storage, request) = reservations(limits, dispatcher.wire_bytes())?;
+        let bytes = request
+            .checked_mul(limits.requests)
+            .and_then(|bytes| bytes.checked_add(storage))
+            .ok_or(Error::InvalidLimits)?;
+        Self::with_budget(
+            dispatcher,
+            controller,
+            mailbox,
+            limits,
+            Budget::new(bytes).map_err(|_| Error::InvalidLimits)?,
+        )
+    }
+
+    /// Share the caller's admitted scratch-storage budget across worker pools.
+    /// Decoded protocol graphs and native/runtime storage are separate charges.
+    pub fn with_budget(
+        dispatcher: Arc<Dispatcher>,
+        controller: Arc<Controller>,
+        mailbox: Mailbox,
+        limits: Limits,
+        buffers: Budget,
+    ) -> Result<Self, Error> {
+        let (storage_bytes, request_bytes) = reservations(limits, dispatcher.wire_bytes())?;
+        let storage = buffers
+            .reserve(storage_bytes)
+            .map_err(|_| Error::BufferBudget)?;
         Ok(Self {
             dispatcher,
             controller,
@@ -140,6 +163,7 @@ impl Workers {
                 .map(|_| Slot {
                     active: false,
                     pending: Arc::new(Mutex::new(None)),
+                    buffers: None,
                 })
                 .collect(),
             tasks: JoinSet::new(),
@@ -149,6 +173,9 @@ impl Workers {
             first_request_error: None,
             shutdown_error: None,
             rejected_inputs: RejectedInputs::default(),
+            buffers,
+            request_bytes,
+            _storage: Arc::new(storage),
         })
     }
 
@@ -187,18 +214,26 @@ impl Workers {
             .iter()
             .position(|slot| !slot.active)
             .ok_or(Error::Full)?;
+        let mailbox = self.mailbox.as_ref().ok_or(Error::Stopping)?.clone();
         let slot = &mut self.slots[index];
+        let buffers = Arc::new(
+            self.buffers
+                .reserve(self.request_bytes)
+                .map_err(|_| Error::Full)?,
+        );
         slot.active = true;
+        slot.buffers = Some(buffers.clone());
         let pending = slot.pending.clone();
         let dispatcher = self.dispatcher.clone();
         let controller = self.controller.clone();
-        let mailbox = self.mailbox.as_ref().ok_or(Error::Stopping)?.clone();
         let limits = self.limits;
         let operation = Request {
             deadline,
             cancellation: self.cancellation.subscribe(),
         };
+        let storage = self._storage.clone();
         self.tasks.spawn(async move {
+            let _storage = (storage, buffers);
             let outcome = work(
                 datagram, dispatcher, controller, mailbox, limits, operation, pending,
             )
@@ -223,15 +258,23 @@ impl Workers {
             .iter()
             .position(|slot| !slot.active)
             .ok_or(Error::Full)?;
+        let mailbox = self.mailbox.as_ref().ok_or(Error::Stopping)?.clone();
         let slot = &mut self.slots[index];
+        let buffers = Arc::new(
+            self.buffers
+                .reserve(self.request_bytes)
+                .map_err(|_| Error::Full)?,
+        );
         slot.active = true;
+        slot.buffers = Some(buffers.clone());
         let pending = slot.pending.clone();
         let dispatcher = self.dispatcher.clone();
         let controller = self.controller.clone();
-        let mailbox = self.mailbox.as_ref().ok_or(Error::Stopping)?.clone();
         let limits = self.limits;
         let cancellation = self.cancellation.subscribe();
+        let storage = self._storage.clone();
         self.tasks.spawn(async move {
+            let _storage = (storage, buffers);
             let outcome = work_tcp(
                 flow,
                 dispatcher,
@@ -267,6 +310,7 @@ impl Workers {
                 }
                 if pending.is_none() {
                     slot.active = false;
+                    slot.buffers.take();
                 } else {
                     drop(pending);
                     self.stop();
@@ -355,6 +399,7 @@ impl Workers {
         for slot in &mut self.slots {
             slot.pending.lock().await.take();
             slot.active = false;
+            slot.buffers.take();
         }
         Ok(())
     }
@@ -408,6 +453,44 @@ impl Workers {
             }
         }
     }
+}
+
+fn reservations(limits: Limits, upstream_bytes: usize) -> Result<(usize, usize), Error> {
+    if !(1..=64).contains(&limits.requests)
+        || Instant::now().checked_add(limits.grace).is_none()
+        || limits.attempts == 0
+        || limits.attempts > 65536
+        || [limits.request_timeout, limits.cleanup_timeout]
+            .iter()
+            .any(|duration| duration.is_zero() || *duration > Duration::from_secs(30))
+    {
+        return Err(Error::InvalidLimits);
+    }
+    let slot = size_of::<Slot>() + size_of::<Mutex<Option<Pending>>>() + 2 * size_of::<usize>();
+    let storage = slot
+        .checked_mul(limits.requests)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                size_of::<Workers>() + size_of::<Reservation>() + 2 * size_of::<usize>(),
+            )
+        })
+        .ok_or(Error::InvalidLimits)?;
+    // Two-capacity encoded frames, upstream input, client framing and temporary
+    // output can overlap. Eight wire-sized reservations cover those payloads.
+    // Hickory 0.26.3 retains at most 64 compression candidates, each with at
+    // most one 255-byte decompressed name and its vector/index metadata.
+    let compression = 64 * (255 + size_of::<(usize, Vec<u8>)>());
+    let request = limits
+        .packet
+        .wire_bytes()
+        .max(upstream_bytes)
+        .checked_add(2)
+        .and_then(|bytes| bytes.checked_mul(8))
+        .and_then(|bytes| {
+            bytes.checked_add(compression + size_of::<Reservation>() + 2 * size_of::<usize>())
+        })
+        .ok_or(Error::InvalidLimits)?;
+    Ok((storage, request))
 }
 
 async fn work(

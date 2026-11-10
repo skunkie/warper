@@ -3454,6 +3454,38 @@ it separately drives native commit/expiry work and supervises runtime/packet
 producers. The receive loop spawns no additional task or queue and does not
 supply resolver policy, daemon readiness or global byte admission.
 
+`dns::memory::Budget` provides shared byte reservations without a waiter queue.
+Checked atomic admission rejects overflow/exhaustion without changing usage;
+an owned reservation releases only its own bytes on final drop. Cloning the
+budget does not create capacity. This is logical storage accounting, not an
+allocator/RSS or kernel-memory ceiling, nor a native-cleanup acknowledgment.
+
+`Workers::with_budget` charges fixed worker/slot storage before allocation and
+reserves scratch bytes before starting each UDP request or TCP connection.
+The scratch ceiling uses the larger of the client packet limit and every
+configured selected/direct upstream limit. It reserves eight wire-sized buffers
+including two-byte TCP framing, covering overlapping upstream request/response,
+client framing, encoded output and vector capacity growth. It also reserves
+Hickory 0.26.3's 64 compression candidates with at most 255 name bytes and their
+vector/index metadata, plus reservation ownership storage. Dependencies use
+these scratch buffers sequentially under their parent worker, without separate
+unbounded reservations. Count admission remains independent of byte admission.
+
+The parent slot and task both retain the reservation. Joining successful work
+releases scratch after native output completion. Failed output, panic or abort
+keeps the parent charge until native packet join/destruction and explicit slot
+release. Emergency owner drop cannot release scratch still retained by an
+aborting task. Fixed pool storage stays reserved until its owner and tasks are
+gone. `Workers::new` creates a standalone bounded budget sized for its slots;
+a composed service must supply its shared admitted budget with `with_budget`.
+The native controlled UDP/TCP workloads share one explicitly bounded budget.
+
+This scratch admission does not yet account for decoded Hickory graphs,
+discovery metadata, task/channel allocations or native transport/route metadata.
+Those separately bounded allocations still require global transient admission
+and composition with the existing runtime/relay budget before daemon DNS is
+enabled. Retained DNS lease/cache ownership keeps its independent state budget.
+
 On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
 `Connection<AcceptedStream>` from a caller-owned option, the validated query,
 a prepared positive reply and its uncommitted reservation, and the supervised

@@ -946,7 +946,7 @@ async fn routed_udp_workload(
             work_items: 16,
         },
     )?);
-    *pending = Some(DnsWorkers::new(
+    *pending = Some(DnsWorkers::with_budget(
         dispatcher,
         controller.clone(),
         mailbox,
@@ -958,6 +958,7 @@ async fn routed_udp_workload(
             grace: Duration::from_secs(1),
             packet: PacketLimits::new(512, 8)?,
         },
+        peer.buffers.clone(),
     )?);
     let local_addr = endpoint.local_addr();
     let workload = async {
@@ -1056,6 +1057,9 @@ async fn routed_udp_workload(
     }
     preserve(workload, cleanup)?;
     drop(pending.take());
+    if peer.buffers.used() != 0 {
+        return Err("UDP workers retained scratch storage after join".into());
+    }
     let elapsed = started.elapsed().as_nanos();
     let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
@@ -1278,7 +1282,7 @@ async fn dns_reply(
         },
     )?);
     let pressure_mailbox = mailbox.clone();
-    *pending = Some(DnsWorkers::new(
+    *pending = Some(DnsWorkers::with_budget(
         dispatcher,
         controller.clone(),
         mailbox,
@@ -1290,6 +1294,7 @@ async fn dns_reply(
             grace: Duration::from_secs(1),
             packet: limits,
         },
+        peer.buffers.clone(),
     )?);
     let workload = async {
         let clients = timeout(Duration::from_secs(5), async {
@@ -1418,6 +1423,9 @@ async fn dns_reply(
     }
     preserve(workload, cleanup)?;
     drop(pending.take());
+    if peer.buffers.used() != 0 {
+        return Err("TCP workers retained scratch storage after join".into());
+    }
     // Observe the current generation after the worker released every output;
     // this temporary fixture reference grants no new grace and sends no answer.
     let mut response = reserve(&controller, &[ipv4(70)])?;

@@ -57,6 +57,10 @@ impl DirectUdpTransport {
             .map_err(ExchangeError::Direct)?
     }
 
+    pub(super) fn wire_bytes(&self) -> usize {
+        self.limits.wire_bytes()
+    }
+
     async fn exchange_owned(
         &self,
         query: &Packet,
