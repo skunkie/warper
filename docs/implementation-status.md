@@ -27,7 +27,7 @@ Linux x86-64 only. Phase 2's production DNS/route transaction gate is next.
 | 0: Baseline and feasibility | Complete for Linux | Both default `scripts/verify-feasibility.sh` role gates pass; closure artifacts are indexed at `target/evidence/phase-0/closure/README.md`; expanded PMTU gate evidence is under `target/evidence/phase-0/runtime-pmtu/README.md` |
 | Initial Linux contract gate | Passed for the initial boundaries | Compile-checked TCP/setup, route-driver and task ownership in `experiments/initial-contract/`; real accepted-stream/TCP backend usage in host probes. Contract models cover ACK/recovery/rollback, task termination and NET-10–NET-12 boundaries, not production DNS acceptance |
 | 1: Headless Linux service slice | Complete for the verified Linux slice | [Closure audit](phase-1-acceptance.md): actual application TCP/FIN through selected SOCKS5/TUN, failed-start restoration, detached clients, explicit Down, authorization, bounded ownership, recovery, equivalent diagnostics and installed systemd lifecycle. Full native matrix and all privileged gates pass at `687b293` in [CI 41597810149](https://github.com/skunkie/warper/actions/runs/41597810149). Inspected evidence is under `target/evidence/phase-1/lifecycle-tracing/`. Linux ARM64 privileged acceptance and native macOS networking are not claimed. |
-| 2: Linux DNS and routing | In progress | Bounded DNS transports/discovery, retained route/lease ownership, output guards and native route coordination are implemented with scoped evidence. Production UDP/TCP listener and daemon supervision, transient buffer accounting, native capacity alignment, output-time coverage, resolved split/global modes, backend hostname resolution and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
+| 2: Linux DNS and routing | In progress | Bounded DNS transports/discovery, upstream dispatch, retained route/lease ownership, native route coordination and supervised UDP/TCP request workers have scoped evidence. Daemon composition, global transient accounting, native capacity alignment, remaining output failure coverage, resolved split/global modes, backend hostname resolution and isolated NET-02–NET-04/NET-10–NET-12 acceptance remain required |
 | 3: Backends and IPv6 | Not started | WireGuard feasibility is established; production SSH/WireGuard integration, physical transport protection, PMTU integration and all backend acceptance remain required |
 | 4: macOS networking and helper | Not started | Native utun/route/DNS/recovery and ADR 0005/UX-05 exact-build enrollment and mutual authentication remain unverified; Linux evidence cannot substitute |
 | 5: Tauri desktop and release | Not started | GUI/control lifecycle, native packaging, UX-01–UX-05, production-mode exclusion tests and public signing/notarization remain required |
@@ -486,8 +486,20 @@ local NODATA and typed-request-failure SERVFAIL replies. Request diagnostics are
 separate from task-join and native cleanup results. Controlled tests cover
 admission pressure, original deadlines, malformed/expired input, SERVFAIL,
 panic, abort and retained routing through native-output destruction. Both
-native workload paths now use these workers. Privileged worker evidence remains
-pending. Global transient admission, TCP native-admission rejection recovery,
+native workload paths now use these workers. Worker acceptance passes at
+`cf81947` in [CI 42860913429](https://github.com/skunkie/warper/actions/runs/42860913429),
+including Linux x86-64/ARM64 and macOS ARM64 builds/tests. All five Linux
+manifests were inspected: four isolated probes exit zero without timeout and
+preserve host state; installed-unit acceptance has no errors for its idle scope.
+Both coordinator scenarios complete 20 supervised UDP replies, 20 selected TCP
+replies plus local NODATA/SERVFAIL, and both FINs. Their original zero-drop,
+zero-discard, receipt and retained-request assertions pass unchanged. Output
+payloads retain original deadlines/cancellation; pure TCP control frames use
+ordinary transport lifetime, and fully joined output permits FIN processing
+after stream drop. Evidence, controlled workload metrics and regressions belong
+under `target/evidence/phase-2/udp-workers/`. This is service-component evidence,
+not production daemon DNS or native macOS networking acceptance.
+Global transient admission, TCP native-admission rejection recovery,
 daemon/resolver composition and the remaining Phase 2 gates remain open.
 
 ## Phase 0 Exit Evidence
