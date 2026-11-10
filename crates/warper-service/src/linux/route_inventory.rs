@@ -13,8 +13,9 @@ use netlink_packet_route::{
 use std::{fmt, net::Ipv4Addr, num::NonZeroU32};
 use warper_core::transport::Request;
 
-pub const MAX_ROUTES: usize = 8192;
-const MAX_MESSAGES: usize = 16384;
+// Allow a full managed capture set plus independently owned host routes.
+pub const MAX_ROUTES: usize = 32_768;
+const MAX_MESSAGES: usize = 65_536;
 
 /// Adapter-owned metadata. Unknown selectors remain visible as `exact = false`;
 /// no entry alone authorizes deletion, replacement or a physical send.
@@ -75,6 +76,7 @@ pub fn inspect(request: Request) -> Result<Inventory, Error> {
         RouteNetlinkMessage::GetRoute(query),
         &wait,
         MAX_MESSAGES,
+        512,
         Inventory {
             entries: Vec::new(),
         },

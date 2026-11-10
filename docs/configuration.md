@@ -843,7 +843,7 @@ root and the retained runtime lease. It does not itself establish OS ownership,
 authorize RPC requests or replay an operation.
 
 The version-one envelope is `WJNL`, big-endian u32 version 1, nonzero u64 revision,
-u32 payload length, four reserved zero bytes and 1..65536 payload bytes. The
+u32 payload length, four reserved zero bytes and 1..262144 payload bytes. The
 platform owns the payload schema and must store only bounded, validated network
 metadata, never credentials, packet contents or raw imported configuration.
 Unknown/malformed envelopes and unsafe or changed files fail closed. Replacement
@@ -914,8 +914,8 @@ accepted quiescence. This internal barrier does not change CLI connection state
 or authorize removing routes; the supervisor must still drain references and
 complete native retirement before reporting disconnected cleanup success.
 
-The internal read-only IPv4 route inventory accepts at most 8192 entries, 64
-netlink datagrams and 16384 messages per completed dump. Its 32 KiB datagram
+The internal read-only IPv4 route inventory accepts at most 32768 entries, 512
+netlink datagrams and 65536 messages per completed dump. Its 32 KiB datagram
 bound and at most 64 KiB kernel receive queue are independent of payload-buffer
 limits. These are implementation ceilings, not configurable route capacity or
 permission to capture traffic. Unknown route selectors remain visible to
@@ -927,17 +927,17 @@ rules and shares the bounded inventory transport. Custom rules, selectors,
 suppression or extra actions are reported as unsupported without mutation.
 This internal observation does not change CLI behavior or establish readiness.
 
-The initial journaled capture owner admits 1..4096 canonical static IPv4
-prefixes for one retained runtime, after packet-port creation. WTUN v4 extends
-the 160-byte header with at most 4096 eight-byte prefix records (32928 bytes
-maximum). Admission rejects local-route overlaps and equal/more specific
-foreign routes before mutation. Capture changes retain a bounded monitor;
+The journaled capture owner admits up to 16384 canonical managed IPv4
+prefixes plus one separate DNS reachability route for one retained runtime,
+after packet-port creation. WTUN v4 extends the 160-byte header with at most
+16385 eight-byte prefix records (131240 bytes maximum). Admission rejects
+local-route overlaps and equal/more specific foreign routes before mutation. Capture changes retain a bounded monitor;
 service supervision and aggregate native budget admission remain required.
 Quiescence and zero retained flows fence withdrawal, with packet/grace draining
 owned by the supervisor. Explicit TUN close refuses an attached capture batch.
 These internal operations do not expose new CLI behavior or connected readiness.
 
-Pure Phase 1 service preparation rejects more than 4096 actual static prefixes
+Pure Linux service preparation rejects more than 16384 actual static prefixes
 with ResourceLimit before entropy, sockets or TUN allocation, even when the
 configured `max_route_entries` is larger. Offline schema validation retains its
 configured ceiling; passing `check-config` does not establish runtime capability.

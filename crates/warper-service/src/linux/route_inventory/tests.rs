@@ -242,3 +242,33 @@ fn native_inventory_workload() {
         latencies[49], latencies[94], latencies[98]
     );
 }
+
+#[test]
+fn default_managed_capacity_leaves_room_for_foreign_host_routes() {
+    let managed = crate::preflight::MAX_CAPTURE_ROUTES + 1;
+    let foreign = 8192;
+    let mut inventory = Inventory {
+        entries: Vec::new(),
+    };
+    for index in 0..managed + foreign {
+        let mut message = sample();
+        message.header.destination_prefix_length = 32;
+        message.attributes[0] = RouteAttribute::Destination(RouteAddress::Inet(Ipv4Addr::from(
+            0xc6120000 + index as u32,
+        )));
+        message.attributes[2] = RouteAttribute::Oif(if index < managed { 9 } else { 10 });
+        inventory
+            .observe(RouteNetlinkMessage::NewRoute(message))
+            .unwrap();
+    }
+    assert_eq!(inventory.entries().len(), 24_577);
+    assert_eq!(
+        inventory
+            .entries()
+            .iter()
+            .filter(|entry| entry.interface.unwrap().get() == 10)
+            .count(),
+        foreign
+    );
+    assert!(inventory.entries().iter().all(|entry| entry.exact));
+}

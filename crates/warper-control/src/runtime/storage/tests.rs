@@ -410,3 +410,17 @@ fn a_same_length_staged_rewrite_never_becomes_committed_metadata() {
 }
 
 mod managed;
+
+#[test]
+fn native_capture_capacity_survives_reopen_without_changing_the_envelope() {
+    let fixture = Fixture::new();
+    let lease = fixture.acquire().unwrap();
+    let mut journal = store(&fixture);
+    // Secret-free synthetic metadata with the maximum WTUN v4 payload length.
+    let payload = vec![0x42; 131_240];
+    let snapshot = journal.replace(&lease, 0, &payload).unwrap();
+    drop(journal);
+    let reopened = store(&fixture);
+    assert_eq!(reopened.read(&lease).unwrap(), Some(snapshot));
+    assert_eq!(reopened.read(&lease).unwrap().unwrap().payload(), payload);
+}

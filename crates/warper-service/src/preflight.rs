@@ -26,7 +26,7 @@ use warper_stack::{
     runtime::{Channels, Runtime},
 };
 
-pub const MAX_CAPTURE_ROUTES: usize = 4096;
+pub const MAX_CAPTURE_ROUTES: usize = 16_384;
 
 const PACKET_QUEUE: usize = 64;
 const MAX_BACKENDS: usize = 64;

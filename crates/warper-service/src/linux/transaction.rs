@@ -302,6 +302,7 @@ pub(super) fn dump<T>(
     message: RouteNetlinkMessage,
     wait: &Wait,
     max_messages: usize,
+    max_datagrams: usize,
     mut state: T,
     mut observe: impl FnMut(&mut T, RouteNetlinkMessage) -> Result<(), Cause>,
 ) -> Result<T, Cause> {
@@ -316,7 +317,7 @@ pub(super) fn dump<T>(
     )?;
     send(&socket, &request, wait)?;
     let mut dump = Dump::new(sequence, port, max_messages);
-    for _ in 0..64 {
+    for _ in 0..max_datagrams {
         let mut bytes = [0; MAX_DATAGRAM + 1];
         let (length, sender) = receive(&socket, &mut bytes, wait)?;
         if dump.observe(&bytes[..length], sender, |message| {

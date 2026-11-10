@@ -24,7 +24,7 @@ file APIs would expand the control boundary.
 Add fixed protected `network.journal`/`network.pending` storage under the same
 root-owned state directory, reusing existing directory pins and runtime lease
 validation. Keep its bounded versioned envelope independent of the platform's
-payload schema. Payloads contain 1..65536 bytes of validated, secret-free native
+payload schema. Payloads contain 1..262144 bytes of validated, secret-free native
 metadata, never raw configuration or application data. No public path, UID or
 file-descriptor override exists. Storage success is not OS ownership or a
 kernel acknowledgement, and no RPC request can write arbitrary payloads.
@@ -79,3 +79,8 @@ The platform payload schema, boot/namespace/instance ownership, mutation ACKs,
 rollback/recovery application, service worker admission and the running daemon
 remain open. Reconsider if required bounded metadata cannot fit or filesystem
 failure evidence requires a different publication/recovery protocol.
+
+The Phase 2 native capture limit raises the payload ceiling from 64 KiB to
+256 KiB so the unchanged WTUN v4 format can retain 16,384 managed prefixes
+plus DNS reachability. The envelope encoding and durability rules are unchanged;
+older bounded snapshots remain readable.

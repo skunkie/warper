@@ -21,7 +21,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub const MAX_PAYLOAD: usize = 65536;
+pub const MAX_PAYLOAD: usize = 262_144;
 const HEADER: usize = 24;
 #[derive(Clone, Copy)]
 pub(super) enum Slot {

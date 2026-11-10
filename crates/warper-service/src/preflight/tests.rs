@@ -325,6 +325,7 @@ async fn instantiated_backend_failure_is_reported_once_and_all_allocated_owners_
 #[test]
 fn capture_prefix_capacity_is_checked_before_runtime_or_host_preparation() {
     let mut config = config();
+    assert_eq!(config.limits.max_route_entries, MAX_CAPTURE_ROUTES);
     let backend = config.protocols[0].registry_id;
     config.protocols[0].routes = (0..MAX_CAPTURE_ROUTES)
         .map(|index| warper_core::routing::Entry {

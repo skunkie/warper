@@ -21,7 +21,8 @@ use std::{
 use warper_core::transport::Request;
 use warper_stack::runtime::Publication;
 
-pub(super) const MAX_PREFIXES: usize = crate::preflight::MAX_CAPTURE_ROUTES;
+// Keep DNS reachability separate from the configured static/dynamic route budget.
+pub(super) const MAX_PREFIXES: usize = crate::preflight::MAX_CAPTURE_ROUTES + 1;
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct Prefix {
     pub(super) network: Ipv4Addr,

@@ -55,6 +55,7 @@ pub fn inspect(request: Request) -> Result<Inventory, Error> {
         RouteNetlinkMessage::GetRule(query),
         &wait,
         MAX_RULES + 1,
+        64,
         Inventory {
             rules: 0,
             tables: 0,

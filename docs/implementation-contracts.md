@@ -2173,8 +2173,8 @@ its fixed references/counters are separately bounded metadata.
 
 The read-only route inventory runs synchronously in a retained native worker
 under the caller's cancellation and absolute deadline (at most 30 seconds).
-It requests all IPv4 tables, retains at most 8192 compact entries, and accepts
-at most 64 datagrams / 16384 messages. Each datagram is bounded to 32768 bytes,
+It requests all IPv4 tables, retains at most 32768 compact entries, and accepts
+at most 512 datagrams / 65536 messages. Each datagram is bounded to 32768 bytes,
 with a one-byte oversize sentinel and a verified kernel receive queue of at
 most 65536 bytes. Parsing retains one bounded upstream message at a time.
 There are no tasks, subprocesses, name lookups, mutations or retries.
@@ -2222,7 +2222,7 @@ capture readiness or support for custom policy routing.
 ### Initial journaled static IPv4 capture batch
 
 After creating the packet port, the retained TUN owner can publish the complete
-immutable IPv4 policy of one allocated host runtime (at most 4096 prefixes).
+immutable IPv4 policy of one allocated host runtime (at most 16384 prefixes).
 The caller must start and retain the real runtime/packet owners first; the
 publication observation alone proves allocation, not task scheduling. No
 backend dispatch or connected readiness is inferred from capture publication.
@@ -2253,11 +2253,11 @@ prefix/metric is a conflict. Explicit TUN close refuses an attached capture
 batch, even after an error, until withdrawal succeeds. Drop/crash still closes
 the original nonpersistent descriptor; restart reconciliation remains required.
 
-WTUN version four retains the 160-byte header and adds up to 4096 eight-byte
+WTUN version four retains the 160-byte header and adds up to 16385 eight-byte
 canonical IPv4 prefix entries. Header bytes 140..142 hold count, 144..148 the
 metric, with remaining reserved bytes zero. Entries contain address, prefix
 length and three zero bytes in policy selection order. The maximum payload is
-32928 bytes. Legacy versions remain conservatively readable; only Retired
+131240 bytes. Legacy versions remain conservatively readable; only Retired
 permits fresh allocation. Routing/Captured/RoutesRetiring require a nonempty
 batch, address and device identity. Retiring/Retired may retain batch history;
 recorded data alone never authorizes touching a named/reused device or route.
@@ -3766,11 +3766,14 @@ identity and full intent on failure. Any post-intent failure is sticky; uncertai
 delivery never authorizes another add. The same runtime mapping stays retained
 until checked withdrawal, including active TCP pins.
 
-This increment retains WTUN version four's bounded 4096-key snapshot and its
-conservative abandoned-owner recovery. Whole-batch withdrawal still requires
+WTUN version four retains up to 16385 keys: the default 16384 managed capture
+entries plus separate DNS reachability. Its 131240-byte maximum fits the
+protected journal's 256-KiB payload ceiling without changing either wire format.
+Smaller existing version-four snapshots and prior header-only versions retain
+their decoding and conservative abandoned-owner recovery. Whole-batch withdrawal still requires
 runtime quiescence, drained packet work and zero retained flows. Per-address
-retirement, larger native admission aligned with configured DNS capacity, and
-supervised DNS session integration remain required before enabling daemon DNS.
+retirement and supervised DNS session integration remain required before
+enabling daemon DNS.
 This operation refreshes the capture monitor, not existing protected socket
 proofs. Their narrowly scoped continuity policy is defined below; it needs
 separate native acceptance before live DNS session integration.

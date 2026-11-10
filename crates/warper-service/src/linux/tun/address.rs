@@ -29,6 +29,7 @@ pub(super) fn inspect(index: u32, address: Ipv4Addr, wait: &Wait) -> Result<Snap
         RouteNetlinkMessage::GetAddress(query),
         wait,
         MAX_MESSAGES,
+        64,
         Snapshot::default(),
         |snapshot, message| match message {
             RouteNetlinkMessage::NewAddress(message) => observe(snapshot, message, index, address),

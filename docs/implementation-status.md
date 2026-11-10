@@ -510,8 +510,25 @@ partial frames remain nonrecoverable through this path. The controlled
 full-mailbox regression verifies connection preservation and no deadline
 renewal, and fails with the former mutating readiness behavior. The native
 workload now holds both publication slots, checks SERVFAIL, releases the slots
-and sends a subsequent query on the same TCP connection. Privileged evidence
-for this admission recovery remains pending.
+and sends a subsequent query on the same TCP connection. Linux acceptance
+passes at `9202691` in
+[CI 42866907214](https://github.com/skunkie/warper/actions/runs/42866907214).
+All five Linux manifests were inspected: four isolated probes exit zero without
+timeout and preserve host state; installed idle-service acceptance has no errors.
+Both coordinator scenarios complete 24 TCP queries, including the overload
+SERVFAIL and subsequent query, with zero ingress drops or discarded output.
+Linux x86-64/ARM64 and macOS ARM64 builds/tests pass.
+Evidence belongs under `target/evidence/phase-2/tcp-admission-recovery/`.
+
+Native capacity now admits 16,384 managed IPv4 capture prefixes plus one DNS
+reachability route. The unchanged WTUN v4 encoding fits a 256-KiB protected
+journal payload, including reopening the maximum capture-sized record. Route
+inventory retains up to 32,768 entries with 512 datagrams / 65,536 messages,
+leaving room for a full managed set and independent foreign host state. Existing
+smaller records and conservative recovery remain supported. Boundary and
+foreign-inventory tests cover these limits; large native route publication and
+recovery acceptance remain unverified. Daemon composition must still enforce
+the configured shared static/dynamic route count and reserve native metadata.
 
 ## Phase 0 Exit Evidence
 

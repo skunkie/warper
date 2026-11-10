@@ -480,7 +480,8 @@ mod tests {
             })
             .collect();
         let bytes = record.encode();
-        assert_eq!(bytes.len(), 32928);
+        assert_eq!(bytes.len(), 131_240);
+        assert!(bytes.len() <= warper_control::runtime::journal::MAX_PAYLOAD);
         assert!(Record::decode(&bytes).is_ok());
         record.capture.as_mut().unwrap().prefixes.reverse();
         assert!(matches!(
