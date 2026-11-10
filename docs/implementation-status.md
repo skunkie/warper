@@ -470,8 +470,25 @@ queries, missing selected groups and closed sessions fail without transport
 I/O. Controlled peers verify retry order, retained deadlines/budgets, final
 negative answers, local disabled-IPv6 handling and registry rejection. Both
 native coordinator DNS paths now use this dispatcher; privileged evidence for
-this increment remains pending. Request-worker supervision, global transient
-admission and daemon/resolver composition remain required before enabling DNS.
+this increment passes at `069cca3` in
+[CI 42834634457](https://github.com/skunkie/warper/actions/runs/42834634457).
+The full native build matrix and all five inspected Linux manifests pass;
+four isolated probes preserve host state with zero exit/no timeout and the
+installed idle-service result has no errors. Evidence belongs under
+`target/evidence/phase-2/dns-dispatch/`.
+
+The shared service request workers now admit UDP requests and TCP connections
+before decoding or upstream work, retain and join their tasks, and keep native
+output outside task lifetimes. Successful selected responses join native
+publication and output; local, negative and direct responses join output without
+capture permission. TCP handles consecutive frames and clean EOF, including
+local NODATA and typed-request-failure SERVFAIL replies. Request diagnostics are
+separate from task-join and native cleanup results. Controlled tests cover
+admission pressure, original deadlines, malformed/expired input, SERVFAIL,
+panic, abort and retained routing through native-output destruction. Both
+native workload paths now use these workers. Privileged worker evidence remains
+pending. Global transient admission, TCP native-admission rejection recovery,
+daemon/resolver composition and the remaining Phase 2 gates remain open.
 
 ## Phase 0 Exit Evidence
 

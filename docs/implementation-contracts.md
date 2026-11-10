@@ -3406,6 +3406,30 @@ upstreams. The dispatcher does not discover resolvers or mutate the host.
 Registry storage is bounded to 64 selected groups and 4,096 total configured
 upstream transports, checked before constructing its owned session storage.
 
+Linux `server::Workers` admits at most 64 UDP requests/TCP connections before
+decoding or starting upstream I/O. UDP deadlines start at datagram receipt;
+each TCP frame shares one original read/discovery/output deadline. TCP keeps
+its admission while reading subsequent frames and joins clean EOF/FIN. The supervisor
+retains and joins every task; a bounded per-slot owner holds routed output or
+plain native receipts outside task futures, including across task panic/abort.
+Selected positive replies use queued route publication; local, negative and
+direct replies use joined native output without capture reservations. Parsed
+dispatch failures synthesize SERVFAIL under the original deadline; UDP
+pre-output size failure synthesizes TC. TCP native-mailbox admission rejection
+currently closes the connection; its parsed SERVFAIL recovery remains open
+for Phase 2 acceptance.
+Malformed input and expired requests receive no new output deadline.
+
+Stopping rejects admission and cancels original requests. Failed/uncertain
+native output stops admission and remains owned until the parent joins native
+packet I/O and discards queued frames, then explicitly releases retained slots.
+The parent must retain the worker supervisor outside cancellable service work;
+object drop is not a native cleanup acknowledgment. Request count admission is
+separate from the still-required global transient byte accounting. This worker
+pool does not enable daemon DNS or install resolver policy by itself.
+Task join success means tasks joined, independently of native cleanup; typed
+request/response diagnostics and shutdown failures remain separately available.
+
 On Linux, `tcp_output::TcpOutput::begin_queued` takes an idle
 `Connection<AcceptedStream>`, the validated query, a prepared positive reply and
 its uncommitted reservation, and the supervised native commit mailbox. It

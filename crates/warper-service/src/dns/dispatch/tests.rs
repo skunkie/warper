@@ -175,12 +175,29 @@ fn failed(marker: u8, error: TransportError, events: &Events) -> Arc<MockPeer> {
     })
 }
 fn negative(marker: u8, code: u8, events: &Events) -> (Arc<MockPeer>, JoinHandle<()>) {
+    response_peer(marker, code, None, events)
+}
+#[cfg(target_os = "linux")]
+fn positive(marker: u8, events: &Events) -> (Arc<MockPeer>, JoinHandle<()>) {
+    response_peer(marker, 0, Some([203, 0, 113, 7]), events)
+}
+fn response_peer(
+    marker: u8,
+    code: u8,
+    address: Option<[u8; 4]>,
+    events: &Events,
+) -> (Arc<MockPeer>, JoinHandle<()>) {
     let (stream, mut server) = tokio::io::duplex(1024);
     let task = tokio::spawn(async move {
         let length = server.read_u16().await.unwrap();
         let mut bytes = vec![0; usize::from(length)];
         server.read_exact(&mut bytes).await.unwrap();
         bytes[2..4].copy_from_slice(&[0x81, 0x80 | code]);
+        if let Some(address) = address {
+            bytes[7] = 1;
+            bytes.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4]);
+            bytes.extend_from_slice(&address);
+        }
         server.write_u16(bytes.len() as u16).await.unwrap();
         server.write_all(&bytes).await.unwrap();
         assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
@@ -607,3 +624,7 @@ async fn direct_authentication_protocol_and_resource_errors_are_final() {
         assert_eq!(events.lock().unwrap().len(), 1);
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "../server/tests.rs"]
+mod server_tests;

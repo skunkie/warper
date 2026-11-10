@@ -11,6 +11,8 @@ mod packet;
 pub mod prepare;
 mod query;
 pub mod routes;
+#[cfg(target_os = "linux")]
+pub mod server;
 mod tcp;
 #[cfg(target_os = "linux")]
 pub mod tcp_output;

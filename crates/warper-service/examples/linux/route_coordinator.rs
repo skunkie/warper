@@ -42,7 +42,7 @@ use warper_service::{
     dns::dispatch::{Dispatcher, Selected},
     dns::output::{RoutedReply, UdpOutput},
     dns::prepare::Prepared,
-    dns::tcp_output::{Reply as TcpReply, TcpOutput},
+    dns::server::{Limits as WorkerLimits, Workers as DnsWorkers},
     dns::{Limits as PacketLimits, Packet, routes::Controller},
     dns::{QueryBudget, ServiceDiscoveryLimits},
     linux::{
@@ -200,7 +200,7 @@ async fn run(
     let mut latency = Vec::with_capacity(20);
     let mut saw_intent = false;
     let mut pending_udp: Option<UdpOutput> = None;
-    let mut pending_tcp: Option<TcpOutput> = None;
+    let mut dns_workers: Option<DnsWorkers> = None;
     let mut selected_peer = None;
     // Fixture-owned DNS capture only. Production route publication still
     // requires both DNS transports and daemon lifecycle integration.
@@ -389,8 +389,8 @@ async fn run(
         .await??;
         pending_udp.as_mut().ok_or("UDP completion ownership lost")?.wait(request(&service_owner)).await?;
         drop(pending_udp.take());
-        routed_udp_workload(controller.clone(),manager,&mut dns,&service_owner,&mut pending_udp,peer).await?;
-        let renewed_route = dns_reply(controller.clone(), manager, &mut tcp_dns, peer, &mut pending_tcp).await?;
+        routed_udp_workload(controller.clone(),manager,&mut dns,&service_owner,&mut dns_workers,peer).await?;
+        let renewed_route = dns_reply(controller.clone(), manager, &mut tcp_dns, peer, &mut dns_workers).await?;
         if renewed_route == route { return Err("automatic retirement reused the stale route generation".into()); }
         let route = renewed_route;
         udp_dns_reply(&mut dns).await?;
@@ -571,7 +571,12 @@ async fn run(
     if let Err(error) = controller.close() {
         cleanup.push(Box::new(error) as Failure);
     }
-    if pending_udp.is_some() || pending_tcp.is_some() {
+    if let Some(workers) = &mut dns_workers
+        && let Err(error) = workers.join(Instant::now() + Duration::from_secs(2)).await
+    {
+        cleanup.push(Box::new(error) as Failure);
+    }
+    if pending_udp.is_some() || dns_workers.is_some() {
         // A failed fixture can still own queued native output. Stop producers,
         // join packet I/O and destroy the queued frames before releasing it.
         match channels.admission.cancel_flows() {
@@ -612,7 +617,11 @@ async fn run(
             }
             drop(output);
         }
-        drop(pending_tcp.take());
+        if let Some(mut workers) = dns_workers.take()
+            && let Err(error) = workers.release_after_native_join().await
+        {
+            cleanup.push(Box::new(error) as Failure);
+        }
     }
     if manager.has_pending() {
         match manager.wait(request(&service_owner)).await {
@@ -897,7 +906,7 @@ async fn routed_udp_workload(
     manager: &mut Manager,
     endpoint: &mut udp_dns::Endpoint,
     owner: &watch::Sender<bool>,
-    pending: &mut Option<UdpOutput>,
+    pending: &mut Option<DnsWorkers>,
     peer: &selected_dns::Peer,
 ) -> Result<(), Failure> {
     let mut latencies = Vec::with_capacity(20);
@@ -917,80 +926,106 @@ async fn routed_udp_workload(
     {
         return Err("cancelled mailbox observation did not retain its driver".into());
     }
-    let (query_owner, _) = watch::channel(false);
+    let dispatcher = Arc::new(Dispatcher::new(
+        peer.domains.clone(),
+        controller.clone(),
+        vec![Selected {
+            mode: RoutingMode::Dynamic,
+            upstreams: vec![peer.transport.clone()],
+        }],
+        Vec::new(),
+        false,
+        ServiceDiscoveryLimits {
+            alias_hops: 4,
+            addresses: 4,
+            ipv6: false,
+            work_items: 16,
+        },
+    )?);
+    *pending = Some(DnsWorkers::new(
+        dispatcher,
+        controller.clone(),
+        mailbox,
+        WorkerLimits {
+            requests: 2,
+            request_timeout: Duration::from_secs(2),
+            cleanup_timeout: Duration::from_secs(2),
+            attempts: 4,
+            grace: Duration::from_secs(1),
+            packet: PacketLimits::new(512, 8)?,
+        },
+    )?);
     let workload = async {
-        let mailbox = mailbox;
-        for index in 0..20 {
-            let before = Instant::now();
-            let operation = request(&query_owner);
-            let (client, datagram, query, reply) =
-                routed_udp_query(endpoint, peer, &controller, operation.clone()).await?;
-            transferred += datagram.payload().len();
-            let mut datagram = Some(datagram);
-            *pending = Some(UdpOutput::begin_queued(
-                controller.clone(),
-                &mut datagram,
-                reply,
-                &mailbox,
-                operation,
-            )?);
-            if index == 0 {
-                let output = pending.as_mut().ok_or("queued UDP output owner lost")?;
-                if output.wait(request(&cancelled)).await
-                    != Err(warper_service::dns::output::Error::WaitCancelled)
-                    || !output.has_pending()
-                    || output.take_unsubmitted_datagram().is_some()
-                {
-                    return Err(
-                        "queued UDP observation lost its accepted commit or datagram".into(),
-                    );
+        let result = async {
+            let mut wire = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            wire.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
+            wire.extend_from_slice(&[0, 1, 0, 1]);
+            let query = Packet::request(&wire, PacketLimits::new(512, 8)?)?;
+            for _ in 0..20 {
+                let before = Instant::now();
+                let client = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+                client.connect(endpoint.local_addr()).await?;
+                if client.send(&wire).await? != wire.len() {
+                    return Err("worker query datagram was incomplete".into());
                 }
+                let datagram = timeout(Duration::from_secs(2), endpoint.requests.recv())
+                    .await?
+                    .ok_or("UDP request consumer stopped")?;
+                transferred += datagram.payload().len();
+                let workers = pending.as_mut().ok_or("UDP worker ownership missing")?;
+                workers.admit_udp(datagram)?;
+                let completion = timeout(Duration::from_secs(3), workers.join_next())
+                    .await?
+                    .ok_or("UDP worker result disappeared")??;
+                if completion.outcome?.is_some() {
+                    return Err("selected UDP worker synthesized a failure reply".into());
+                }
+                let mut reply = [0; 512];
+                let length = timeout(Duration::from_secs(2), client.recv(&mut reply)).await??;
+                if Packet::response(&reply[..length], &query, PacketLimits::new(512, 8)?)?
+                    .response_code()
+                    != 0
+                {
+                    return Err("supervised routed UDP worker lost its positive reply".into());
+                }
+                if reply[6..8] != [0, 1] || reply[length - 4..length] != ipv4(70).octets() {
+                    return Err("supervised UDP worker changed its discovered endpoint".into());
+                }
+                transferred += length;
+                if workers.active() != 0
+                    || endpoint.retained_requests() != 0
+                    || controller.stats()?.responses != 0
+                    || controller.reserved_bytes()? != reserved
+                {
+                    return Err("supervised UDP workers leaked request or output ownership".into());
+                }
+                latencies.push(before.elapsed().as_nanos());
             }
-            pending
-                .as_mut()
-                .ok_or("routed UDP workload lost output")?
-                .wait(request(owner))
-                .await?;
-            if mailbox.active() != 0 {
-                return Err("joined commit receipt retained mailbox admission".into());
-            }
-            let mut wire = [0; 512];
-            let length = timeout(Duration::from_secs(2), client.recv(&mut wire)).await??;
-            if Packet::response(&wire[..length], &query, PacketLimits::new(512, 8)?)?
-                .response_code()
-                != 0
-            {
-                return Err("routed UDP workload lost its positive answer".into());
-            }
-            transferred += length;
-            drop(pending.take());
-            if endpoint.retained_requests() != 0
-                || controller.stats()?.responses != 0
-                || controller.reserved_bytes()? != reserved
-            {
-                return Err("routed UDP workload leaked output ownership".into());
-            }
-            latencies.push(before.elapsed().as_nanos());
-        }
-        // Keep the mailbox open without submitting another DNS query. Only
-        // the retained maintenance owner may advance expiry and retire routes.
-        timeout(Duration::from_secs(3), async {
-            while controller.stats()?.routes != 0 {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
+            timeout(Duration::from_secs(3), async {
+                while controller.stats()?.routes != 0 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Ok::<_, Failure>(())
+            })
+            .await??;
             Ok::<_, Failure>(())
-        })
-        .await??;
-        Ok::<_, Failure>(())
-    };
-    let driven = async {
-        let result = driver.run(request(owner)).await;
-        if result.is_err() {
-            query_owner.send_replace(true);
         }
-        result
+        .await;
+        let joined = pending
+            .as_mut()
+            .ok_or("UDP worker ownership lost")?
+            .join(Instant::now() + Duration::from_secs(2))
+            .await;
+        preserve(
+            result,
+            joined
+                .err()
+                .map(|error| Box::new(error) as Failure)
+                .into_iter()
+                .collect(),
+        )
     };
-    let (workload, driven) = tokio::join!(workload, driven);
+    let (workload, driven) = tokio::join!(workload, driver.run(request(owner)));
     let mut cleanup = Vec::new();
     if let Err(error) = driven {
         cleanup.push(Box::new(error) as Failure);
@@ -1004,6 +1039,7 @@ async fn routed_udp_workload(
         }
     }
     preserve(workload, cleanup)?;
+    drop(pending.take());
     let elapsed = started.elapsed().as_nanos();
     let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
@@ -1016,7 +1052,7 @@ async fn routed_udp_workload(
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("routed UDP RSS unavailable")?;
     println!(
-        "routed_udp_output requests=20 concurrency=1 dns_payload_bytes={transferred} reserved_route_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; fresh kernel UDP socket per query, real selected SOCKS DNS discovery, existing capture reverified",
+        "routed_udp_output requests=20 concurrency=1 dns_payload_bytes={transferred} reserved_route_bytes={reserved} elapsed_ns={elapsed} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; fresh kernel UDP socket per query, supervised request workers, real selected SOCKS DNS discovery, existing capture reverified",
         latencies[9], latencies[18], latencies[19]
     );
     Ok(())
@@ -1162,19 +1198,14 @@ async fn dns_reply(
     manager: &mut Manager,
     accepted: &mut tokio::sync::mpsc::Receiver<warper_stack::host::AcceptedDnsFlow>,
     peer: &selected_dns::Peer,
-    pending: &mut Option<TcpOutput>,
+    pending: &mut Option<DnsWorkers>,
 ) -> Result<lease::Route, Failure> {
-    use warper_service::dns::connection::{Completion as StreamCompletion, Connection};
     use warper_service::linux::dns_routes::queue::Driver;
     let started = Instant::now();
     let cpu = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
-    let mut latencies = Vec::with_capacity(20);
+    let mut latencies = Vec::with_capacity(22);
     let mut transferred = 0usize;
     let limits = PacketLimits::new(512, 8)?;
-    let mut bytes = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
-    bytes.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
-    bytes.extend_from_slice(&[0, 1, 0, 1]);
-    let query = Packet::request(&bytes, limits)?;
     let endpoint = "203.0.113.53:53".parse()?;
     let (mut client, flow) = timeout(Duration::from_secs(2), async {
         let client = TcpStream::connect(endpoint);
@@ -1194,88 +1225,118 @@ async fn dns_reply(
     client.set_nodelay(true)?;
     let (owner, _) = watch::channel(false);
     let (mailbox, mut driver) = Driver::new(manager, 2)?;
+    let dispatcher = Arc::new(Dispatcher::new(
+        peer.domains.clone(),
+        controller.clone(),
+        vec![Selected {
+            mode: RoutingMode::Dynamic,
+            upstreams: vec![peer.transport.clone()],
+        }],
+        Vec::new(),
+        false,
+        ServiceDiscoveryLimits {
+            alias_hops: 4,
+            addresses: 4,
+            ipv6: false,
+            work_items: 16,
+        },
+    )?);
+    *pending = Some(DnsWorkers::new(
+        dispatcher,
+        controller.clone(),
+        mailbox,
+        WorkerLimits {
+            requests: 2,
+            request_timeout: Duration::from_secs(2),
+            cleanup_timeout: Duration::from_secs(2),
+            attempts: 4,
+            grace: Duration::from_secs(1),
+            packet: limits,
+        },
+    )?);
+    pending
+        .as_mut()
+        .ok_or("TCP worker owner missing")?
+        .admit_tcp(flow)?;
     let workload = async {
         let result = timeout(Duration::from_secs(5), async {
-            let mut server = Some(Connection::new(flow.stream, limits));
-            let encoded = query.encode()?;
-            let mut last_route = None;
-            for index in 0..20 {
+            for index in 0..22 {
                 let before = Instant::now();
-                client.write_u16(encoded.len() as u16).await?;
-                client.write_all(&encoded).await?;
-                let connection = server.as_mut().ok_or("TCP framing owner missing")?;
-                connection.begin_read(request(&owner))?;
-                let StreamCompletion::Query(incoming) = connection.wait(request(&owner)).await? else {
-                    return Err("framed DNS server did not receive a query".into());
-                };
-                let operation = request(&owner);
-                let resolver = Dispatcher::new(peer.domains.clone(), controller.clone(),
-                    vec![Selected { mode: RoutingMode::Dynamic, upstreams: vec![peer.transport.clone()] }], Vec::new(), false,
-                    ServiceDiscoveryLimits { alias_hops: 4, addresses: 4, ipv6: false, work_items: 16 })?;
-                let Prepared::Upstream { packet, received_at, reservation: Some(reservation), .. } =
-                    resolver.prepare(&incoming, operation.clone(), &QueryBudget::new(4)?).await? else {
-                        return Err("selected TCP discovery did not reserve its positive answer".into());
-                    };
-                last_route = Some(controller.response_route(&reservation, 0)?);
-                let wire = packet.encode()?;
-                *pending = Some(TcpOutput::begin_queued(controller.clone(),
-                    server.take().ok_or("TCP framing owner lost")?, &incoming,
-                    TcpReply { packet: *packet, received_at, reservation, grace: Duration::from_secs(1) },
-                    &mailbox, operation)?);
-                if index == 0 {
-                    let (cancelled, _) = watch::channel(true);
-                    if pending.as_mut().ok_or("TCP output owner lost")?.wait(request(&cancelled)).await
-                        != Err(warper_service::dns::tcp_output::Error::WaitCancelled) {
-                        return Err("TCP output observation cancellation lost publication ownership".into());
-                    }
-                    if !matches!(client.try_read(&mut [0; 2]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock) {
-                        return Err("TCP positive answer preceded committed publication".into());
-                    }
+                let mut bytes = vec![0, 17, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+                bytes.extend_from_slice(Name::from_ascii("managed.example.test")?.wire());
+                bytes.extend_from_slice(&if index == 20 {
+                    [0, 28, 0, 1]
+                } else if index == 21 {
+                    [0, 16, 0, 1]
+                } else {
+                    [0, 1, 0, 1]
+                });
+                let query = Packet::request(&bytes, limits)?;
+                client.write_u16(bytes.len() as u16).await?;
+                client.write_all(&bytes).await?;
+                let length = client.read_u16().await?;
+                let mut received = vec![0; usize::from(length)];
+                client.read_exact(&mut received).await?;
+                let reply = Packet::response(&received, &query, limits)?;
+                if reply.response_code() != if index == 21 { 2 } else { 0 } {
+                    return Err("supervised TCP worker lost its successful reply".into());
                 }
-                let output = pending.as_mut().ok_or("TCP output owner missing")?;
-                let read = async {
-                    let length = client.read_u16().await?;
-                    let mut received = vec![0; usize::from(length)];
-                    client.read_exact(&mut received).await?;
-                    Packet::response(&received, &query, limits)?;
-                    if received != wire || u32::from_be_bytes(received[received.len()-10..received.len()-6].try_into()?) != 0 {
-                        return Err("coordinated zero-TTL TCP reply differs".into());
+                if index >= 20 {
+                    if received[6..8] != [0, 0] {
+                        return Err("disabled IPv6 NODATA exposed answers".into());
                     }
-                    Ok::<_, Failure>(received.len())
-                };
-                let (joined, received) = tokio::join!(output.wait(request(&owner)), read);
-                joined?;
-                transferred += encoded.len() + received?;
-                server = output.take_connection();
-                drop(pending.take());
-                if mailbox.active() != 0 || controller.stats()?.responses != 0 {
-                    return Err("routed TCP reply retained joined admission or output ownership".into());
+                } else if received[6..8] != [0, 1]
+                    || received[received.len() - 4..] != ipv4(70).octets()
+                    || u32::from_be_bytes(
+                        received[received.len() - 10..received.len() - 6].try_into()?,
+                    ) != 0
+                {
+                    return Err("supervised TCP reply raised its zero TTL".into());
                 }
+                transferred += bytes.len() + received.len();
                 latencies.push(before.elapsed().as_nanos());
             }
             client.shutdown().await?;
-            let mut server = server.take().ok_or("TCP connection missing after output")?;
-            server.begin_read(request(&owner))?;
-            if !matches!(server.wait(request(&owner)).await?, StreamCompletion::End) {
-                return Err("framed DNS server lost clean EOF".into());
+            if client.read(&mut [0]).await? != 0 {
+                return Err("virtual TCP DNS lost server FIN".into());
             }
-            let mut stream = server.into_inner();
-            stream.shutdown().await?;
-            if client.read(&mut [0]).await? != 0 { return Err("virtual TCP DNS lost server FIN".into()); }
-            drop(stream);
-            last_route.ok_or_else(|| "routed TCP did not expose a route".into())
-        }).await.map_err(|error| Box::new(error) as Failure).and_then(|result| result);
-        drop(mailbox);
-        result
+            let workers = pending.as_mut().ok_or("TCP worker owner lost")?;
+            let completion = workers
+                .join_next()
+                .await
+                .ok_or("TCP worker completion disappeared")??;
+            if !matches!(
+                completion.outcome?,
+                Some(warper_service::dns::server::RequestFailure::Dispatch(
+                    warper_service::dns::dispatch::Error::Selected(
+                        warper_service::dns::prepare::Error::UnsupportedQuestion
+                    )
+                ))
+            ) || workers.active() != 0
+                || controller.stats()?.responses != 0
+            {
+                return Err("TCP worker retained output or synthesized a request failure".into());
+            }
+            Ok::<_, Failure>(())
+        })
+        .await
+        .map_err(|error| Box::new(error) as Failure)
+        .and_then(|result| result);
+        let joined = pending
+            .as_mut()
+            .ok_or("TCP worker ownership disappeared")?
+            .join(Instant::now() + Duration::from_secs(2))
+            .await;
+        preserve(
+            result,
+            joined
+                .err()
+                .map(|error| Box::new(error) as Failure)
+                .into_iter()
+                .collect(),
+        )
     };
-    let driven = async {
-        let result = driver.run(request(&owner)).await;
-        if result.is_err() {
-            owner.send_replace(true);
-        }
-        result
-    };
-    let (workload, driven) = tokio::join!(workload, driven);
+    let (workload, driven) = tokio::join!(workload, driver.run(request(&owner)));
     let mut cleanup = Vec::new();
     if let Err(error) = driven {
         cleanup.push(Box::new(error) as Failure);
@@ -1288,7 +1349,13 @@ async fn dns_reply(
             cleanup.push(Box::new(error) as Failure);
         }
     }
-    let route = preserve(workload, cleanup)?;
+    preserve(workload, cleanup)?;
+    drop(pending.take());
+    // Observe the current generation after the worker released every output;
+    // this temporary fixture reference grants no new grace and sends no answer.
+    let mut response = reserve(&controller, &[ipv4(70)])?;
+    let route = controller.response_route(&response, 0)?;
+    controller.cancel(&mut response)?;
     latencies.sort_unstable();
     let after = rustix::time::clock_gettime(rustix::time::ClockId::ProcessCPUTime);
     let cpu_ns = (i128::from(after.tv_sec) - i128::from(cpu.tv_sec)) * 1_000_000_000
@@ -1300,14 +1367,14 @@ async fn dns_reply(
         .find(|line| line.starts_with("VmHWM:"))
         .ok_or("local TCP DNS RSS unavailable")?;
     println!(
-        "local_tcp_dns requests=20 concurrency=1 dns_payload_bytes={transferred} framing_bytes=80 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, selected SOCKS discovery, per-response native route commit, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
+        "local_tcp_dns requests=22 selected=20 local_nodata=1 local_servfail=1 concurrency=1 dns_payload_bytes={transferred} framing_bytes=88 elapsed_ns={} cpu_ns={cpu_ns} p50_ns={} p95_ns={} p99_ns={} {peak}; one kernel TCP/TUN connection, client NODELAY, supervised request workers, selected SOCKS discovery, per-response native route commit, joined TCP acknowledgment before grace, kernel_drops=unmeasured",
         started.elapsed().as_nanos(),
-        latencies[9],
-        latencies[18],
-        latencies[19]
+        latencies[10],
+        latencies[20],
+        latencies[21]
     );
     println!(
-        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, discovers selected SOCKS answers, commits each route before framed zero-TTL output, joins peer acknowledgments before grace and joins both FINs"
+        "PASS local TCP DNS receives real kernel queries through TUN, preserves tuples, discovers selected SOCKS answers, commits each route before framed zero-TTL output, joins peer acknowledgments before grace and returns local NODATA/SERVFAIL and joins both FINs"
     );
     Ok(route)
 }
